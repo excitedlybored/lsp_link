@@ -1,104 +1,104 @@
 #!/usr/bin/env python3
 """
-Custom Business Flows, Entry Points & Exit Points Inspector (Python).
+Custom Business Flows, Entry Points & Exit Points Inspector (Python + LadybugDB).
 
-Reads directly from the `.gitnexus/` graph database and extracts:
-- Entry Points (REST Controllers, API Handlers, CLI Handlers, Main entry points)
-- Exit Points / Terminal Sinks (Database Repositories, Kafka Producers, External Calls)
-- Full Step-by-Step Execution Traces
+Connects directly to the LadybugDB (.gitnexus/lbug) database and runs OpenCypher queries:
+- Extracts Entry Points (REST Controllers, API Handlers, CLI Handlers, Main entry points)
+- Extracts Exit Points / Terminal Sinks (Database Repositories, Kafka Producers, External Calls)
+- Extracts Step-by-Step Execution Traces via STEP_IN_PROCESS relations
 """
 
 import sys
 import os
-import json
 from pathlib import Path
+import ladybug
 
 def inspect_flows(project_path: str):
     abs_project = Path(project_path).resolve()
-    db_file = abs_project / ".gitnexus" / "graph.json"
+    db_path = abs_project / ".gitnexus" / "lbug"
     
-    if not db_file.exists():
-        print(f"❌ Error: Knowledge graph database not found at '{db_file}'")
-        print(f"   Run 'npm run analyze -- {project_path}' first.")
+    if not db_path.exists():
+        print(f"❌ Error: LadybugDB database not found at '{db_path}'")
+        print(f"   Run 'npm run analyze -- {project_path}' first to generate the database.")
         sys.exit(1)
         
-    with open(db_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    db = ladybug.Database(str(db_path), read_only=True)
+    conn = ladybug.Connection(db)
+    
+    print("\n" + "=" * 74)
+    print("📍 CUSTOM BUSINESS FLOWS, ENTRY POINTS & EXIT POINTS (LadybugDB + Cypher)")
+    print(f"   Database: {db_path}")
+    print("=" * 74 + "\n")
+    
+    # 1. Query all Process nodes
+    process_query = """
+        MATCH (p:Process)
+        RETURN p.id, p.label, p.processType, p.stepCount, p.entryPointId, p.terminalId;
+    """
+    proc_result = conn.execute(process_query)
+    processes = []
+    while proc_result.has_next():
+        row = proc_result.get_next()
+        processes.append({
+            "id": row[0],
+            "label": row[1],
+            "processType": row[2],
+            "stepCount": row[3],
+            "entryPointId": row[4],
+            "terminalId": row[5],
+        })
         
-    nodes = {n["id"]: n for n in data.get("nodes", [])}
-    relationships = data.get("relationships", [])
-    
-    # Extract Process nodes
-    process_nodes = [n for n in nodes.values() if n.get("label") == "Process"]
-    
-    # Build relationship mappings
-    entry_rels = {}
-    step_rels = {}
-    for rel in relationships:
-        if rel.get("type") == "ENTRY_POINT_OF":
-            entry_rels[rel["targetId"]] = rel["sourceId"]
-        elif rel.get("type") == "STEP_IN":
-            step_rels.setdefault(rel["targetId"], []).append(rel["sourceId"])
-            
-    print("\n" + "=" * 72)
-    print("📍 CUSTOM BUSINESS FLOWS, ENTRY POINTS & EXIT POINTS INSPECTOR (Python)")
-    print(f"   Database: {db_file}")
-    print(f"   Indexed At: {data.get('indexedAt', 'N/A')} | Mode: {'LSP-Enriched' if data.get('lspEnriched') else 'AST-Only'}")
-    print("=" * 72 + "\n")
-    
-    if not process_nodes:
+    if not processes:
         print("No multi-step business processes detected in this codebase.")
         return
-
-    print(f"Detected {len(process_nodes)} end-to-end execution flows:\n")
+        
+    print(f"Detected {len(processes)} end-to-end execution flows in LadybugDB:\n")
     
-    for idx, proc in enumerate(process_nodes, 1):
-        props = proc.get("properties", {})
+    # 2. Query execution step traces
+    for idx, proc in enumerate(processes, 1):
         proc_id = proc["id"]
-        label = props.get("label", proc_id)
-        entry_id = props.get("entryPointId") or entry_rels.get(proc_id, "(unknown)")
-        terminal_id = props.get("terminalId", "(unknown)")
-        step_count = props.get("stepCount", len(props.get("trace", [])))
-        process_type = props.get("processType", "Execution Process")
         
-        entry_node = nodes.get(entry_id)
-        terminal_node = nodes.get(terminal_id)
+        # Query steps for this process
+        steps_query = f"""
+            MATCH (n)-[r:CodeRelation]->(p:Process)
+            WHERE p.id = '{proc_id}' AND r.type = 'STEP_IN_PROCESS'
+            RETURN r.step, n.id, n.name, n.filePath
+            ORDER BY r.step;
+        """
+        step_result = conn.execute(steps_query)
+        steps = []
+        while step_result.has_next():
+            s_row = step_result.get_next()
+            steps.append({
+                "step": s_row[0],
+                "id": s_row[1],
+                "name": s_row[2] or s_row[1].split(":")[-1],
+                "filePath": s_row[3] or "",
+            })
+            
+        entry_id = proc["entryPointId"]
+        entry_name = entry_id.split(":")[-1]
+        terminal_id = proc["terminalId"]
+        terminal_name = terminal_id.split(":")[-1]
         
-        entry_name = entry_node["properties"].get("name") if entry_node else entry_id.split(":")[-1]
-        entry_file = entry_node["properties"].get("filePath", "") if entry_node else ""
-        entry_line = entry_node["properties"].get("startLine", 1) if entry_node else 1
-        
-        terminal_name = terminal_node["properties"].get("name") if terminal_node else terminal_id.split(":")[-1]
-        terminal_file = terminal_node["properties"].get("filePath", "") if terminal_node else ""
-        terminal_line = terminal_node["properties"].get("startLine", 1) if terminal_node else 1
-        
-        print("━" * 72)
-        print(f"⚡ Flow #{idx}: \033[1;36m{label}\033[0m")
-        print(f"   Type: {process_type} | Steps: {step_count}")
+        print("━" * 74)
+        print(f"⚡ Flow #{idx}: \033[1;36m{proc['label']}\033[0m")
+        print(f"   ID: {proc['id']} | Type: {proc['processType']} | Steps: {proc['stepCount']}")
         print(f"\n   🏁 \033[32mENTRY POINT:\033[0m {entry_name}")
-        if entry_file:
-            print(f"      File: {entry_file}:{entry_line}")
-            
+        print(f"      Node ID: {entry_id}")
         print(f"\n   🛑 \033[31mEXIT POINT / TERMINAL SINK:\033[0m {terminal_name}")
-        if terminal_file:
-            print(f"      File: {terminal_file}:{terminal_line}")
-            
-        trace = props.get("trace")
-        if trace and isinstance(trace, list):
-            print(f"\n   📋 \033[33mFull Execution Trace:\033[0m")
-            for s_idx, step_id in enumerate(trace, 1):
-                s_node = nodes.get(step_id)
-                s_name = s_node["properties"].get("name") if s_node else step_id.split(":")[-1]
-                s_file = s_node["properties"].get("filePath", "") if s_node else ""
-                
+        print(f"      Node ID: {terminal_id}")
+        
+        if steps:
+            print(f"\n   📋 \033[33mFull Execution Trace ({len(steps)} steps):\033[0m")
+            for s_idx, st in enumerate(steps, 1):
                 is_first = (s_idx == 1)
-                is_last = (s_idx == len(trace))
+                is_last = (s_idx == len(steps))
                 icon = "🏁 (Entry)" if is_first else ("🛑 (Exit) " if is_last else "├── (Step) ")
-                
-                print(f"      {s_idx}. \033[90m{icon}\033[0m {s_name} \033[90m({s_file})\033[0m")
+                print(f"      {s_idx}. \033[90m{icon}\033[0m {st['name']} \033[90m({st['filePath']})\033[0m")
         print("\n")
         
-    print("=" * 72 + "\n")
+    print("=" * 74 + "\n")
 
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "sample_projects/spring-boot-demo"

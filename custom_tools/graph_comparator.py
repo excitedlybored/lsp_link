@@ -1,63 +1,93 @@
 #!/usr/bin/env python3
 """
-Custom Graph Benchmark & Comparison Tool (Python).
+Custom Graph Benchmark & Comparison Tool (Python + LadybugDB).
 
-Reads the persisted `.gitnexus/` graph databases and computes:
-- Exact Node & Relationship count differences
-- Newly discovered compiler-verified CALLS and IMPLEMENTS edges
-- Confidence score distributions
+Connects directly to the LadybugDB (.gitnexus/lbug) database and computes:
+- Exact Node Table & CodeRelation counts
+- Breakdown of Compiler-verified LSP Edges (confidence = 1.0) vs AST Heuristic Edges (confidence < 1.0)
+- Sample LSP-discovered edges and reasons
 """
 
 import sys
-import json
 from pathlib import Path
+import ladybug
 from tabulate import tabulate
 
-def compare_graphs(project_path: str):
+def compare_lbug(project_path: str):
     abs_project = Path(project_path).resolve()
-    gitnexus_dir = abs_project / ".gitnexus"
+    db_path = abs_project / ".gitnexus" / "lbug"
     
-    current_db = gitnexus_dir / "graph.json"
-    if not current_db.exists():
-        print(f"❌ Error: Knowledge graph database not found at '{current_db}'")
+    if not db_path.exists():
+        print(f"❌ Error: LadybugDB database not found at '{db_path}'")
         sys.exit(1)
         
-    with open(current_db, "r", encoding="utf-8") as f:
-        current_data = json.load(f)
+    db = ladybug.Database(str(db_path), read_only=True)
+    conn = ladybug.Connection(db)
+    
+    print("\n" + "=" * 70)
+    print("🔬 LADYBUGDB KNOWLEDGE GRAPH PRECISION BENCHMARK (Python + Cypher)")
+    print(f"   Database: {db_path}")
+    print("=" * 70)
+    
+    # 1. Total Edges & Confidence Distribution
+    res = conn.execute("""
+        MATCH ()-[r:CodeRelation]->()
+        RETURN 
+            count(r) AS total,
+            sum(CASE WHEN r.confidence >= 1.0 AND r.reason CONTAINS 'LSP:' THEN 1 ELSE 0 END) AS lsp_count,
+            sum(CASE WHEN r.confidence < 1.0 OR NOT r.reason CONTAINS 'LSP:' THEN 1 ELSE 0 END) AS ast_count;
+    """)
+    
+    total_edges, lsp_edges, ast_edges = 0, 0, 0
+    if res.has_next():
+        row = res.get_next()
+        total_edges, lsp_edges, ast_edges = row[0], row[1], row[2]
         
-    nodes = current_data.get("nodes", [])
-    relationships = current_data.get("relationships", [])
-    
-    lsp_edges = [r for r in relationships if r.get("confidence", 0) >= 1.0 and "LSP:" in r.get("reason", "")]
-    ast_edges = [r for r in relationships if r.get("confidence", 0) < 1.0 or "LSP:" not in r.get("reason", "")]
-    
-    print("\n" + "=" * 68)
-    print("🔬 KNOWLEDGE GRAPH PRECISION BENCHMARK (Python)")
-    print(f"   Project Database: {current_db}")
-    print("=" * 68)
-    
+    # 2. Total Nodes Count
+    table_result = conn.execute("CALL show_tables() RETURN name, type;")
+    tables = []
+    while table_result.has_next():
+        row = table_result.get_next()
+        if row[1] == "NODE" and row[0] != "CodeEmbedding":
+            tables.append(row[0])
+            
+    total_nodes = 0
+    for nt in tables:
+        try:
+            cnt_res = conn.execute(f"MATCH (n:{nt}) RETURN count(n);")
+            if cnt_res.has_next():
+                total_nodes += cnt_res.get_next()[0]
+        except Exception:
+            pass
+            
     summary_table = [
-        ["Total Graph Nodes", len(nodes)],
-        ["Total Graph Relationships", len(relationships)],
-        ["⚡ Compiler-Verified LSP Edges (confidence = 1.0)", len(lsp_edges)],
-        ["AST Structural / Heuristic Edges", len(ast_edges)],
-        ["Identified Communities / Clusters", current_data.get("stats", {}).get("communities", "N/A")],
-        ["Identified Execution Processes", current_data.get("stats", {}).get("processes", "N/A")],
+        ["Total Graph Nodes", total_nodes],
+        ["Total Graph Relationships (CodeRelation)", total_edges],
+        ["⚡ Compiler-Verified LSP Edges (confidence = 1.0)", lsp_edges],
+        ["AST Structural & Heuristic Edges", ast_edges],
     ]
+    print("\n" + tabulate(summary_table, headers=["Metric", "Value"], tablefmt="github"))
     
-    print(tabulate(summary_table, headers=["Metric", "Value"], tablefmt="github"))
+    # 3. Sample LSP edges
+    lsp_sample = conn.execute("""
+        MATCH (src)-[r:CodeRelation]->(tgt)
+        WHERE r.confidence >= 1.0 AND r.reason CONTAINS 'LSP:'
+        RETURN src.name, r.type, tgt.name, r.reason
+        LIMIT 8;
+    """)
     
-    if lsp_edges:
+    sample_rows = []
+    while lsp_sample.has_next():
+        r = lsp_sample.get_next()
+        sample_rows.append((r[0] or "(node)", r[1], r[2] or "(node)", r[3]))
+        
+    if sample_rows:
         print("\n⚡ Top Compiler-Verified Discovered Edges (Sample):")
-        for r in lsp_edges[:8]:
-            src = r["sourceId"].split(":")[-1]
-            tgt = r["targetId"].split(":")[-1]
-            rtype = r.get("type", "CALLS")
-            reason = r.get("reason", "")
+        for src, rtype, tgt, reason in sample_rows:
             print(f"   • [{rtype}] {src} ──► {tgt} \033[90m({reason})\033[0m")
             
-    print("\n" + "=" * 68 + "\n")
+    print("\n" + "=" * 70 + "\n")
 
 if __name__ == "__main__":
     target = sys.argv[1] if len(sys.argv) > 1 else "sample_projects/spring-boot-demo"
-    compare_graphs(target)
+    compare_lbug(target)
