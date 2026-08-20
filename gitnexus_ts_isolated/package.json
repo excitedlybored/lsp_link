@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "commander": "^15.0.0",
-    "gitnexus-shared": "file:../gitnexus/gitnexus-shared",
+    "gitnexus-shared": "file:./_shared",
     "glob": "^13.0.6",
     "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
