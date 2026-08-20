@@ -1,6 +1,6 @@
-# Contributing to IDE-Link
+# Contributing to LSP-Link
 
-Thank you for your interest in contributing to **IDE-Link**! This guide outlines how to set up the development environment, run tests, and add new Language Server Protocol (LSP) adapters.
+Thank you for your interest in contributing to **LSP-Link**! This guide outlines how to set up the development environment, run tests, and add new Language Server Protocol (LSP) adapters.
 
 ---
 
@@ -13,8 +13,8 @@ Thank you for your interest in contributing to **IDE-Link**! This guide outlines
 
 ### Clone & Install
 ```bash
-git clone <repo-url> ide_link
-cd ide_link
+git clone git@github.com:excitedlybored/lsp_link.git
+cd lsp_link
 
 # Install dependencies across all packages
 npm install

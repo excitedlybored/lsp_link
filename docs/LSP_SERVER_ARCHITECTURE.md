@@ -1,6 +1,6 @@
 # Language Server Protocol (LSP) Server Architecture & Setup
 
-This document details the internal architecture, lifecycle handshake, and multi-language adapter design of the **IDE-Link LSP Server Engine** ([`lsp_server/`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server)).
+This document details the internal architecture, lifecycle handshake, and multi-language adapter design of the **LSP-Link Server Engine** ([`lsp_server/`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server)).
 
 ---
 

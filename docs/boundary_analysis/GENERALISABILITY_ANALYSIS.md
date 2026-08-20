@@ -7,7 +7,7 @@
 
 ## 1. Executive Summary
 
-This document evaluates the generalisability of the **SDK-Driven Boundary Taxonomy + Graph-Based Post-Analysis** architecture implemented in **IDE-Link**.
+This document evaluates the generalisability of the **SDK-Driven Boundary Taxonomy + Graph-Based Post-Analysis** architecture implemented in **LSP-Link**.
 
 The system detects:
 1. **Ingress Boundaries**: External HTTP/REST routes, message consumers, gRPC handlers, workflow triggers, and CLI entry points.

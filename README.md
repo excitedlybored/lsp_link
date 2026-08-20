@@ -1,12 +1,12 @@
-# IDE-Link: Polyglot Banking LSP Engine & Knowledge Graph
+# LSP-Link: Polyglot Banking LSP Engine & Knowledge Graph
 
-[![CI](https://github.com/your-org/ide_link/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/ide_link/actions/workflows/ci.yml)
+[![CI](https://github.com/excitedlybored/lsp_link/actions/workflows/ci.yml/badge.svg)](https://github.com/excitedlybored/lsp_link/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node: v20+](https://img.shields.io/badge/node-v20%2B-blue.svg)](https://nodejs.org/)
 [![Java: OpenJDK 21](https://img.shields.io/badge/java-OpenJDK%2021-orange.svg)](https://adoptium.net/)
 [![LSP: 3.17+](https://img.shields.io/badge/LSP-3.17%2B-green.svg)](https://microsoft.github.io/language-server-protocol/)
 
-**IDE-Link** provides enterprise-grade code intelligence, standardized retrieval queries, and compiler-verified knowledge graphs across polyglot banking and financial codebases (**Java / Spring Boot**, **COBOL / Mainframes**, **Python / Quant**, **C++ / HFT**, **Rust**, **TypeScript**, and **C#**).
+**LSP-Link** provides enterprise-grade code intelligence, standardized retrieval queries, and compiler-verified knowledge graphs across polyglot banking and financial codebases (**Java / Spring Boot**, **COBOL / Mainframes**, **Python / Quant**, **C++ / HFT**, **Rust**, **TypeScript**, and **C#**).
 
 ---
 
@@ -143,7 +143,7 @@ GROUP BY r.confidence;
 ## 📁 Repository Structure
 
 ```
-ide_link/
+lsp_link/
 ├── lsp_server/                        # [Set 1] Standalone LSP Server Daemon & Query CLI
 │   ├── server_launcher.ts             # Process lifecycle manager
 │   ├── start_server.sh                # Launcher daemon script

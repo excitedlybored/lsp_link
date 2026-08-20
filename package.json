@@ -1,5 +1,5 @@
 {
-  "name": "ide-link",
+  "name": "lsp-link",
   "version": "1.0.0",
   "description": "Polyglot Language Server Protocol (LSP) Engine & Compiler-Verified Knowledge Graph for Enterprise Banking and Modern IDEs",
   "private": true,

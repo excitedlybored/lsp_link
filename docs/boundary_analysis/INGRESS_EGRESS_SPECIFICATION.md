@@ -1,6 +1,6 @@
 # Ingress & Egress Boundary Architecture Specification
 
-This specification documents the **SDK-Driven Boundary Taxonomy & Graph Linking Engine** implemented in **IDE-Link**.
+This specification documents the **SDK-Driven Boundary Taxonomy & Graph Linking Engine** implemented in **LSP-Link**.
 
 ---
 
