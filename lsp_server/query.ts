@@ -1,13 +1,14 @@
 /**
- * Standardized LSP Query Engine & CLI.
+ * Standardized Polyglot LSP Query Engine & CLI.
  *
- * Provides a unified query interface for LSP operations:
+ * Provides a unified query interface for LSP operations across all banking languages
+ * (Java, Python, C++, Rust, TypeScript, C#, COBOL):
  *   - calls    : Outgoing / incoming call hierarchy
  *   - impl     : Interface to concrete implementation lookup
  *   - hover    : Type definitions & doc hover
  *   - context  : 360-degree compiler symbol context
  *
- * Automatically resolves symbol names to file coordinates.
+ * Automatically resolves symbol names across polyglot source trees to exact coordinates.
  */
 
 import * as path from 'path';
@@ -20,28 +21,33 @@ interface SymbolLocation {
   filePath: string;
   line: number;
   character: number;
+  language: string;
   containerName?: string;
   kind?: string;
 }
 
 /**
- * Scans Java source files to resolve a symbol name to its file location.
+ * Scans polyglot source files to resolve a symbol name to its file location and language.
  */
-function findSymbolInWorkspace(workspacePath: string, symbolName: string): SymbolLocation | null {
-  const javaFiles = globSync('src/**/*.java', { cwd: workspacePath });
+function findSymbolInWorkspace(workspacePath: string, symbolName: string, langOverride?: string): SymbolLocation | null {
+  const sourceFiles = globSync('**/*.{java,py,c,cpp,cc,cxx,h,hpp,rs,ts,tsx,js,jsx,cs,cbl,cob,cpy,go}', {
+    cwd: workspacePath,
+    ignore: ['node_modules/**', 'dist/**', 'target/**', '.git/**', '.venv/**', 'build/**'],
+  });
 
   let bestMatch: SymbolLocation | null = null;
   let highestScore = 0;
 
-  for (const relFile of javaFiles) {
+  for (const relFile of sourceFiles) {
     const fullPath = path.join(workspacePath, relFile);
+    const ext = path.extname(fullPath).toLowerCase();
     const lines = fs.readFileSync(fullPath, 'utf-8').split('\n');
 
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
       const line = lines[lineIdx];
       const trimmed = line.trim();
 
-      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('import ')) {
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('#') || trimmed.startsWith('import ')) {
         continue;
       }
 
@@ -50,9 +56,13 @@ function findSymbolInWorkspace(workspacePath: string, symbolName: string): Symbo
 
       if (match) {
         let score = 1;
-        // Prioritize definition patterns
-        if (new RegExp(`(public|protected|private)?\\s+(interface|class|enum|record)\\s+${symbolName}\\b`).test(trimmed)) {
+        // Generic & language-specific definition patterns
+        if (new RegExp(`(public|protected|private)?\\s*(interface|class|enum|record|struct|trait|impl)\\s+${symbolName}\\b`).test(trimmed)) {
           score = 100;
+        } else if (new RegExp(`(def|fn|function)\\s+${symbolName}\\b`).test(trimmed)) {
+          score = 95;
+        } else if (new RegExp(`PROGRAM-ID\\.\\s+${symbolName}\\b`, 'i').test(trimmed) || trimmed.startsWith(`${symbolName} SECTION.`)) {
+          score = 95;
         } else if (new RegExp(`(public|protected|private)?\\s+[\\w<>\\[\\]]+\\s+${symbolName}\\s*\\(`).test(trimmed)) {
           score = 80;
         } else if (trimmed.includes(`class ${symbolName}`) || trimmed.includes(`interface ${symbolName}`)) {
@@ -65,6 +75,7 @@ function findSymbolInWorkspace(workspacePath: string, symbolName: string): Symbo
             filePath: fullPath,
             line: lineIdx,
             character: match.index,
+            language: langOverride || path.extname(fullPath).slice(1),
           };
           if (score >= 100) return bestMatch;
         }
@@ -98,192 +109,179 @@ async function handleCalls(
   }
 
   console.log(`\n📞 LSP Call Hierarchy (${direction.toUpperCase()}): \x1b[36m${rootLabel}\x1b[0m`);
-  console.log(`   Location: \x1b[90m${path.basename(loc.filePath)}:${loc.line + 1}\x1b[0m\n`);
+  console.log(`   File: ${loc.filePath}:${loc.line + 1}\n`);
 
   const visited = new Set<string>();
 
   async function printTree(item: any, currentDepth: number, prefix: string) {
-    if (currentDepth >= depth) return;
-    const key = `${item.uri}:${item.name}`;
-    if (visited.has(key)) return;
+    if (currentDepth > depth) return;
+    const key = `${item.uri}:${item.range.start.line}:${item.name}`;
+    if (visited.has(key)) {
+      console.log(`${prefix}└── \x1b[90m${item.name} (recursive)\x1b[0m`);
+      return;
+    }
     visited.add(key);
 
-    if (direction === 'outgoing') {
-      const outgoing = await adapter.getOutgoingCalls(item);
-      for (let i = 0; i < outgoing.length; i++) {
-        const isLast = i === outgoing.length - 1;
-        const branch = isLast ? '└── ' : '├── ';
-        const to = outgoing[i].to;
-        const toFile = to.uri.split('/').pop();
-        console.log(`${prefix}${branch}\x1b[32m↳ calls:\x1b[0m \x1b[33m${to.name}\x1b[0m \x1b[90m(${toFile})\x1b[0m`);
-        await printTree(to, currentDepth + 1, prefix + (isLast ? '    ' : '│   '));
-      }
-    } else {
-      const incoming = await adapter.getIncomingCalls(item);
-      for (let i = 0; i < incoming.length; i++) {
-        const isLast = i === incoming.length - 1;
-        const branch = isLast ? '└── ' : '├── ';
-        const from = incoming[i].from;
-        const fromFile = from.uri.split('/').pop();
-        console.log(`${prefix}${branch}\x1b[35m⮤ called by:\x1b[0m \x1b[33m${from.name}\x1b[0m \x1b[90m(${fromFile})\x1b[0m`);
-        await printTree(from, currentDepth + 1, prefix + (isLast ? '    ' : '│   '));
-      }
+    const calls = direction === 'outgoing'
+      ? await adapter.getOutgoingCalls(item)
+      : await adapter.getIncomingCalls(item);
+
+    for (let i = 0; i < calls.length; i++) {
+      const call = calls[i];
+      const target = direction === 'outgoing' ? call.to : call.from;
+      const isLast = i === calls.length - 1;
+      const branch = isLast ? '└── ' : '├── ';
+      const nextPrefix = prefix + (isLast ? '    ' : '│   ');
+
+      const targetLabel = target.containerName ? `\x1b[33m${target.containerName}\x1b[0m.${target.name}` : `\x1b[32m${target.name}\x1b[0m`;
+      console.log(`${prefix}${branch}${targetLabel}`);
+
+      await printTree(target, currentDepth + 1, nextPrefix);
     }
   }
 
-  await printTree(root, 0, '');
+  await printTree(root, 1, '  ');
+  console.log('');
 }
 
-async function handleImpl(adapter: ILspAdapter, loc: SymbolLocation, format: 'tree' | 'json' = 'tree') {
+async function handleImpl(
+  adapter: ILspAdapter,
+  loc: SymbolLocation,
+  symbolName: string
+) {
   const impls = await adapter.findImplementations(loc.filePath, loc.line, loc.character);
 
-  if (format === 'json') {
-    console.log(JSON.stringify({ location: loc, implementations: impls }, null, 2));
+  console.log(`\n🔗 LSP Concrete Implementations for: \x1b[36m${symbolName}\x1b[0m`);
+  console.log(`   Declared at: ${path.basename(loc.filePath)}:${loc.line + 1}\n`);
+
+  if (!impls || impls.length === 0) {
+    console.log(`   (No concrete implementations found or symbol is already concrete)`);
     return;
   }
 
-  console.log(`\n🔍 LSP Implementations for: \x1b[36m${path.basename(loc.filePath)}\x1b[0m (line ${loc.line + 1})`);
-  if (impls.length === 0) {
-    console.log('   No implementations found.');
-    return;
-  }
-
-  console.log(`✓ Found ${impls.length} concrete implementation(s):`);
   for (const impl of impls) {
-    const implFile = impl.uri.split('/').pop();
-    console.log(`   \x1b[32m↳ implements:\x1b[0m \x1b[33m${implFile}\x1b[0m \x1b[90m(line ${impl.range.start.line + 1})\x1b[0m`);
+    const file = impl.uri.replace('file://', '');
+    const line = (impl.range?.start?.line ?? 0) + 1;
+    console.log(`   • \x1b[32m${path.basename(file)}:${line}\x1b[0m \x1b[90m(${file})\x1b[0m`);
   }
+  console.log('');
 }
 
-async function handleHover(adapter: ILspAdapter, loc: SymbolLocation) {
+async function handleHover(
+  adapter: ILspAdapter,
+  loc: SymbolLocation,
+  symbolName: string
+) {
   const hover = await adapter.getHover(loc.filePath, loc.line, loc.character);
-  console.log(`\n💡 LSP Type Hover: \x1b[36m${path.basename(loc.filePath)}\x1b[0m (line ${loc.line + 1})\n`);
-  if (!hover) {
-    console.log('   No hover information available.');
+
+  console.log(`\n🔍 LSP Type & Documentation Hover: \x1b[36m${symbolName}\x1b[0m`);
+  console.log(`   Location: ${path.basename(loc.filePath)}:${loc.line + 1}\n`);
+
+  if (!hover || !hover.contents) {
+    console.log(`   (No hover information available)`);
     return;
   }
 
-  if (typeof hover.contents === 'string') {
-    console.log(hover.contents);
-  } else if (Array.isArray(hover.contents)) {
-    for (const c of hover.contents) {
-      console.log(typeof c === 'string' ? c : c.value);
-    }
-  } else if (typeof hover.contents === 'object' && 'value' in hover.contents) {
-    console.log(hover.contents.value);
-  }
+  console.log(hover.contents);
+  console.log('');
 }
 
-async function handleContext(adapter: ILspAdapter, loc: SymbolLocation, symbolName: string) {
-  console.log(`\n================================================================`);
-  console.log(`⚡ 360-Degree Compiler Context for: \x1b[36m${symbolName}\x1b[0m`);
-  console.log(`   Defined in: ${loc.filePath}:${loc.line + 1}`);
-  console.log(`================================================================`);
+async function handleContext(
+  adapter: ILspAdapter,
+  loc: SymbolLocation,
+  symbolName: string
+) {
+  console.log(`\n========================================================================`);
+  console.log(`⚡ 360-DEGREE LSP COMPILER CONTEXT: \x1b[36m${symbolName}\x1b[0m`);
+  console.log(`   File: ${loc.filePath}:${loc.line + 1}`);
+  console.log(`========================================================================`);
 
-  // 1. Hover Type
-  console.log(`\n[1. Type Signature]`);
-  const hover = await adapter.getHover(loc.filePath, loc.line, loc.character);
-  if (hover && typeof hover.contents === 'object' && 'value' in hover.contents) {
-    console.log(`   ${hover.contents.value.split('\n')[0]}`);
-  } else {
-    console.log(`   Type resolved at compile-time.`);
-  }
-
-  // 2. Implementations
-  console.log(`\n[2. Interface Implementations]`);
-  const impls = await adapter.findImplementations(loc.filePath, loc.line, loc.character);
-  if (impls.length > 0) {
-    for (const impl of impls) {
-      console.log(`   ↳ ${impl.uri.split('/').pop()}:${impl.range.start.line + 1}`);
-    }
-  } else {
-    console.log(`   (No interface implementations)`);
-  }
-
-  // 3. Outgoing Call Hierarchy
-  console.log(`\n[3. Outgoing Call Tree]`);
-  await handleCalls(adapter, loc, 'outgoing', 2, 'tree');
-
-  // 4. Incoming Callers
-  console.log(`\n[4. Incoming Callers]`);
-  await handleCalls(adapter, loc, 'incoming', 2, 'tree');
+  await handleHover(adapter, loc, symbolName);
+  await handleImpl(adapter, loc, symbolName);
+  await handleCalls(adapter, loc, 'outgoing', 2);
+  await handleCalls(adapter, loc, 'incoming', 2);
 }
+
+// ============================================================================
+// CLI PARSER & MAIN
+// ============================================================================
 
 async function main() {
   const args = process.argv.slice(2);
+  const command = args[0];
 
-  if (args.length === 0 || args.includes('--help') || args.includes('-h')) {
+  if (!command || command === '--help' || command === '-h') {
     console.log(`
-Standardized LSP Query CLI:
-
-Usage:
-  npx tsx src/lsp/query.ts <command> <project-path> [options]
+Standardized Polyglot LSP Query CLI
 
 Commands:
-  calls    Retrieve outgoing or incoming call hierarchy tree
-  impl     Find concrete class/bean implementations of an interface
-  hover    Inspect compiler-resolved type signatures & documentation
-  context  Get 360-degree unified compiler context (types, calls, impls)
+  calls <project> --symbol <name> [--direction outgoing|incoming] [--depth <n>]
+  impl <project> --symbol <name>
+  hover <project> --symbol <name>
+  context <project> --symbol <name>
+
+Supported Languages:
+  Java, Python, C++, Rust, TypeScript, C#, COBOL
 
 Options:
-  --symbol <name>          Symbol name to query (e.g. 'sayHello', 'HelloWorkflow')
-  --file <path>            Target file path (optional if --symbol is given)
-  --line <number>          0-indexed line number (optional if --symbol is given)
-  --direction <out|in>     Call hierarchy direction ('outgoing' or 'incoming', default: outgoing)
-  --depth <number>         Call tree recursion depth (default: 3)
-  --json                   Output result in JSON format
-
-Examples:
-  npx tsx src/lsp/query.ts calls sample_projects/samples-java/springboot --symbol helloSample
-  npx tsx src/lsp/query.ts impl sample_projects/samples-java/springboot --symbol HelloWorkflow
-  npx tsx src/lsp/query.ts context sample_projects/spring-boot-demo --symbol showExecutionHistory
+  --file <relPath>      Specify target file explicitly
+  --line <n>            Specify 1-indexed line number
+  --char <n>            Specify 0-indexed character offset
+  --direction <dir>     Call hierarchy direction: 'outgoing' (default) or 'incoming'
+  --depth <n>           Call tree recursion depth (default: 3)
+  --format <fmt>        Output format: 'tree' (default), 'json', 'mermaid'
+  --language <lang>     Language server override (e.g. 'python', 'cpp', 'rust', 'java')
 `);
     return;
   }
 
-  const command = args[0];
-  const projectPath = path.resolve(process.cwd(), args[1] || '.');
+  const workspaceArg = args[1] || '.';
+  const workspacePath = path.resolve(process.cwd(), workspaceArg);
 
   let symbolName = '';
   let filePath = '';
-  let line = -1;
-  let char = 15;
+  let line = 0;
+  let character = 0;
   let direction: 'outgoing' | 'incoming' = 'outgoing';
   let depth = 3;
-  let format: 'tree' | 'json' = args.includes('--json') ? 'json' : 'tree';
+  let format: 'tree' | 'json' | 'mermaid' = 'tree';
+  let languageOverride = '';
 
   for (let i = 2; i < args.length; i++) {
     if (args[i] === '--symbol' && args[i + 1]) symbolName = args[++i];
-    else if (args[i] === '--file' && args[i + 1]) filePath = args[++i];
-    else if (args[i] === '--line' && args[i + 1]) line = parseInt(args[++i], 10);
-    else if (args[i] === '--direction' && args[i + 1]) direction = args[++i] as any;
-    else if (args[i] === '--depth' && args[i + 1]) depth = parseInt(args[++i], 10);
+    if (args[i] === '--file' && args[i + 1]) filePath = args[++i];
+    if (args[i] === '--line' && args[i + 1]) line = parseInt(args[++i], 10) - 1;
+    if (args[i] === '--char' && args[i + 1]) character = parseInt(args[++i], 10);
+    if (args[i] === '--direction' && args[i + 1]) direction = args[++i] as any;
+    if (args[i] === '--depth' && args[i + 1]) depth = parseInt(args[++i], 10);
+    if (args[i] === '--format' && args[i + 1]) format = args[++i] as any;
+    if (args[i] === '--language' && args[i + 1]) languageOverride = args[++i];
   }
 
   let loc: SymbolLocation | null = null;
 
-  if (symbolName) {
-    loc = findSymbolInWorkspace(projectPath, symbolName);
-    if (!loc) {
-      console.error(`❌ Symbol '${symbolName}' not found in workspace.`);
-      process.exit(1);
-    }
-  } else if (filePath && line >= 0) {
+  if (filePath) {
     loc = {
-      filePath: path.resolve(projectPath, filePath),
+      filePath: path.resolve(workspacePath, filePath),
       line,
-      character: char,
+      character,
+      language: languageOverride || path.extname(filePath).slice(1),
     };
-  } else {
-    console.error(`❌ Error: Specify either --symbol <name> or --file <path> --line <number>.`);
+  } else if (symbolName) {
+    loc = findSymbolInWorkspace(workspacePath, symbolName, languageOverride);
+  }
+
+  if (!loc) {
+    console.error(`❌ Could not resolve coordinates for symbol '${symbolName}'. Specify --file and --line.`);
     process.exit(1);
   }
 
   const registry = new LspAdapterRegistry();
-  const adapter = await registry.getOrStartAdapter('java', projectPath);
+  const langKey = registry.getLanguageForFile(loc.filePath) || loc.language || 'java';
 
+  const adapter = await registry.getOrStartAdapter(langKey, workspacePath);
   if (!adapter) {
-    console.error('❌ Failed to start Language Server adapter.');
+    console.error(`❌ No active or available LSP adapter found for language '${langKey}'.`);
     process.exit(1);
   }
 
@@ -293,16 +291,17 @@ Examples:
         await handleCalls(adapter, loc, direction, depth, format);
         break;
       case 'impl':
-        await handleImpl(adapter, loc, format);
+        await handleImpl(adapter, loc, symbolName);
         break;
       case 'hover':
-        await handleHover(adapter, loc);
+        await handleHover(adapter, loc, symbolName);
         break;
       case 'context':
-        await handleContext(adapter, loc, symbolName || path.basename(loc.filePath));
+        await handleContext(adapter, loc, symbolName);
         break;
       default:
-        console.error(`Unknown command: '${command}'. Use --help for available commands.`);
+        console.error(`Unknown command '${command}'. Use --help.`);
+        process.exit(1);
     }
   } finally {
     await registry.shutdownAll();
@@ -310,6 +309,6 @@ Examples:
 }
 
 main().catch((err) => {
-  console.error('Query execution error:', err);
+  console.error('Fatal LSP Query error:', err);
   process.exit(1);
 });
