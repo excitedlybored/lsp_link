@@ -52,12 +52,18 @@ npx tsx query.ts context ../sample_projects/spring-boot-demo --symbol DemoWorkfl
 ```
 
 ### Set 2: Isolated GitNexus LSP-Enriched Indexer ([`gitnexus_ts_isolated/`](file:///Users/zijie-machine/code_ai/ide_link/gitnexus_ts_isolated))
-Runs the complete 17-phase GitNexus pipeline + live LSP enrichment phase, calling Set 1 to produce compiler-verified `.gitnexus/` knowledge graphs:
+Runs the complete 17-phase GitNexus pipeline with automatic LSP enrichment and graceful fallback, producing compiler-verified `.gitnexus/` knowledge graphs:
 ```bash
 cd gitnexus_ts_isolated
 
-# Run Complete Analyze with LSP Integration:
-npx tsx src/cli/analyze_with_lsp.ts ../sample_projects/spring-boot-demo
+# 1. Run Complete Analyze (LSP enabled by default):
+npx tsx src/cli/analyze.ts ../sample_projects/spring-boot-demo
+
+# 2. Run in fast AST-only mode (opt-out):
+npx tsx src/cli/analyze.ts ../sample_projects/spring-boot-demo --no-lsp
+
+# 3. Run Side-by-Side Comparison Benchmark:
+npx tsx src/cli/compare_graphs.ts ../sample_projects/spring-boot-demo
 ```
 
 ---
@@ -75,17 +81,46 @@ Modern IDEs (VS Code, Cursor, Eclipse) use the **Language Server Protocol (LSP)*
 | **Global Workspace Search** | `workspace/symbol` | Workspace-wide symbol index |
 | **Type Definition & Hover** | `textDocument/hover` | Generic types (`ResponseEntity<T>`), signatures, and Javadocs |
 
-### Standardized Query CLI in TypeScript (`gitnexus_ts_isolated/`)
+### Standardized Query CLI in TypeScript ([`lsp_server/query.ts`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server/query.ts))
 ```bash
+cd lsp_server
+
 # 1. Outgoing / Incoming Call Hierarchy Tree
-npx tsx src/lsp/query.ts calls <project> --symbol <MethodName> [--direction outgoing|incoming]
+npx tsx query.ts calls <project> --symbol <MethodName> [--direction outgoing|incoming]
 
 # 2. Interface to Concrete Class / Spring Bean Implementations
-npx tsx src/lsp/query.ts impl <project> --symbol <InterfaceName>
+npx tsx query.ts impl <project> --symbol <InterfaceName>
 
 # 3. 360-Degree Compiler Context
-npx tsx src/lsp/query.ts context <project> --symbol <SymbolName>
+npx tsx query.ts context <project> --symbol <SymbolName>
 ```
+
+---
+
+## 🧠 LadybugDB (`lbug`) Data Structure & Storage
+
+GitNexus stores its code knowledge graph in an embedded columnar database engine (`.gitnexus/lbug/`).
+
+For full technical specifications, see **[`docs/LBUG_DATA_STRUCTURE.md`](file:///Users/zijie-machine/code_ai/ide_link/docs/LBUG_DATA_STRUCTURE.md)**.
+
+### Hybrid Graph Schema Summary:
+1. **Strongly Typed Node Tables**:
+   - **Structure**: `File`, `Folder`
+   - **Code Elements**: `Class`, `Interface`, `Method`, `Function`, `Struct`, `Trait`, `Enum`, `Property`, `BasicBlock`
+   - **Analysis Overlays**: `Community` (Leiden clusters), `Process` (End-to-end execution flows)
+2. **Unified Relationship Table (`CodeRelation`)**:
+   - All edges (`CALLS`, `IMPLEMENTS`, `EXTENDS`, `ACCESSES`, `STEP_IN`, `IN_COMMUNITY`) connect any node pair with:
+     - `confidence`: `1.0` (LSP Compiler Ground Truth) vs `0.6` (Tree-sitter AST heuristic)
+     - `reason`: Exact compiler signature provenance.
+3. **On-Disk Database Layout**:
+   ```
+   <repo_root>/.gitnexus/
+   ├── lbug/                # LadybugDB / Kùzu Columnar Storage files
+   │   ├── catalog.kuzu     # Table schemas & catalog DDL
+   │   ├── data.kuzu        # Columnar properties & CSR adjacency lists
+   │   └── wal.kuzu         # Write-Ahead Log
+   └── gitnexus.json        # Graph manifest & cluster summaries
+   ```
 
 ---
 
