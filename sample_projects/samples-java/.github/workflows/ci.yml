@@ -1,0 +1,52 @@
+name: "Continuous Integration"
+on: [push, pull_request]
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    name: "Gradle wrapper validation"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: gradle/actions/wrapper-validation@ac396bf1a80af16236baf54bd7330ae21dc6ece5 # v6
+
+  unittest:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        fetch-depth: 0
+        submodules: recursive
+        ref: ${{ github.event.pull_request.head.sha }}
+
+    - name: Run unit tests
+      run: |
+        docker compose -f ./docker/github/docker-compose.yaml up --exit-code-from unit-test unit-test
+
+  code_format:
+    name:  Code format
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        fetch-depth: 0
+        submodules: recursive
+        ref: ${{ github.event.pull_request.head.sha }}
+
+    - name: Set up Java
+      uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
+      with:
+        java-version: "17"
+        distribution: "temurin"
+
+    - name: Set up Gradle
+      uses: gradle/actions/setup-gradle@ac396bf1a80af16236baf54bd7330ae21dc6ece5 # v6
+
+    - name: Run copyright and code format checks
+      run: ./gradlew --no-daemon spotlessCheck

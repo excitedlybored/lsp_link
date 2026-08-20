@@ -1,0 +1,97 @@
+package io.temporal.samples.countinterceptor;
+
+import io.temporal.client.WorkflowClient;
+import io.temporal.client.WorkflowClientOptions;
+import io.temporal.client.WorkflowOptions;
+import io.temporal.client.WorkflowStub;
+import io.temporal.common.interceptors.WorkflowClientInterceptor;
+import io.temporal.envconfig.ClientConfigProfile;
+import io.temporal.samples.countinterceptor.activities.MyActivitiesImpl;
+import io.temporal.samples.countinterceptor.workflow.MyChildWorkflowImpl;
+import io.temporal.samples.countinterceptor.workflow.MyWorkflow;
+import io.temporal.samples.countinterceptor.workflow.MyWorkflowImpl;
+import io.temporal.serviceclient.WorkflowServiceStubs;
+import io.temporal.worker.Worker;
+import io.temporal.worker.WorkerFactory;
+import io.temporal.worker.WorkerFactoryOptions;
+import java.io.IOException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+public class InterceptorStarter {
+
+  public static SimpleCountWorkerInterceptor workerInterceptor = new SimpleCountWorkerInterceptor();
+  private static final String TEST_QUEUE = "test-queue";
+  private static final String WORKFLOW_ID = "TestInterceptorWorkflow";
+
+  private static final Logger logger = LoggerFactory.getLogger(SimpleCountWorkerInterceptor.class);
+
+  public static void main(String[] args) {
+
+    final ClientCounter clientCounter = new ClientCounter();
+    final WorkflowClientInterceptor clientInterceptor = new SimpleClientInterceptor(clientCounter);
+
+    // Load configuration from environment and files
+    ClientConfigProfile profile;
+    try {
+      profile = ClientConfigProfile.load();
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to load client configuration", e);
+    }
+
+    WorkflowServiceStubs service =
+        WorkflowServiceStubs.newServiceStubs(profile.toWorkflowServiceStubsOptions());
+    WorkflowClient client =
+        WorkflowClient.newInstance(
+            service, WorkflowClientOptions.newBuilder().setInterceptors(clientInterceptor).build());
+
+    WorkerFactoryOptions wfo =
+        WorkerFactoryOptions.newBuilder()
+            .setWorkerInterceptors(workerInterceptor)
+            .validateAndBuildWithDefaults();
+
+    WorkerFactory factory = WorkerFactory.newInstance(client, wfo);
+
+    Worker worker = factory.newWorker(TEST_QUEUE);
+    worker.registerWorkflowImplementationTypes(MyWorkflowImpl.class, MyChildWorkflowImpl.class);
+    worker.registerActivitiesImplementations(new MyActivitiesImpl());
+    factory.start();
+
+    WorkflowOptions workflowOptions =
+        WorkflowOptions.newBuilder().setWorkflowId(WORKFLOW_ID).setTaskQueue(TEST_QUEUE).build();
+
+    MyWorkflow workflow = client.newWorkflowStub(MyWorkflow.class, workflowOptions);
+
+    WorkflowClient.start(workflow::exec);
+
+    workflow.signalNameAndTitle("John", "Customer");
+
+    String name = workflow.queryName();
+    String title = workflow.queryTitle();
+
+    // Send exit signal to workflow
+    workflow.exit();
+
+    // Wait for workflow completion via WorkflowStub
+    WorkflowStub untyped = WorkflowStub.fromTyped(workflow);
+    String result = untyped.getResult(String.class);
+
+    // Print workflow
+    logger.info("Workflow Result: " + result);
+
+    // Print the Query results
+    logger.info("Query results: ");
+    logger.info("Name: " + name);
+    logger.info("Title: " + title);
+
+    // Print the Worker Counter Info
+    logger.info("Collected Worker Counter Info: ");
+    logger.info(WorkerCounter.getInfo());
+
+    // Print the Client Counter Info
+    logger.info("Collected Client Counter Info: ");
+    logger.info(clientCounter.getInfo());
+
+    System.exit(0);
+  }
+}

@@ -1,0 +1,15 @@
+target
+.*.swp
+.*.swo
+*.iml
+.DS_Store
+.idea
+.gradle
+**/build/
+**/out/
+.classpath
+.project
+.settings/
+bin/
+core/.vscode/
+.claude/

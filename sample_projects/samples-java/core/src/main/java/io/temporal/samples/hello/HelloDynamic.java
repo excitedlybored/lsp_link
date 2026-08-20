@@ -1,0 +1,136 @@
+package io.temporal.samples.hello;
+
+import io.temporal.activity.Activity;
+import io.temporal.activity.ActivityOptions;
+import io.temporal.activity.DynamicActivity;
+import io.temporal.client.WorkflowClient;
+import io.temporal.client.WorkflowOptions;
+import io.temporal.client.WorkflowStub;
+import io.temporal.common.converter.EncodedValues;
+import io.temporal.envconfig.ClientConfigProfile;
+import io.temporal.serviceclient.WorkflowServiceStubs;
+import io.temporal.worker.Worker;
+import io.temporal.worker.WorkerFactory;
+import io.temporal.workflow.ActivityStub;
+import io.temporal.workflow.DynamicSignalHandler;
+import io.temporal.workflow.DynamicWorkflow;
+import io.temporal.workflow.Workflow;
+import java.io.IOException;
+import java.time.Duration;
+
+public class HelloDynamic {
+  // Define the task queue name
+  public static final String TASK_QUEUE = "HelloDynamicTaskQueue";
+
+  // Define our workflow unique id
+  public static final String WORKFLOW_ID = "HelloDynamicWorkflow";
+
+  // Dynamic Workflow Implementation
+  public static class DynamicGreetingWorkflowImpl implements DynamicWorkflow {
+    private String name;
+
+    @Override
+    public Object execute(EncodedValues args) {
+      String greeting = args.get(0, String.class);
+      String type = Workflow.getInfo().getWorkflowType();
+
+      // Register dynamic signal handler
+      Workflow.registerListener(
+          (DynamicSignalHandler)
+              (signalName, encodedArgs) -> name = encodedArgs.get(0, String.class));
+
+      // Define activity options and get ActivityStub
+      ActivityStub activity =
+          Workflow.newUntypedActivityStub(
+              ActivityOptions.newBuilder().setStartToCloseTimeout(Duration.ofSeconds(10)).build());
+      // Execute the dynamic Activity. Note that the provided Activity name is not
+      // explicitly registered with the Worker
+      String greetingResult = activity.execute("DynamicACT", String.class, greeting, name, type);
+
+      // Return results
+      return greetingResult;
+    }
+  }
+
+  // Dynamic Activity implementation
+  public static class DynamicGreetingActivityImpl implements DynamicActivity {
+    @Override
+    public Object execute(EncodedValues args) {
+      String activityType = Activity.getExecutionContext().getInfo().getActivityType();
+      return activityType
+          + ": "
+          + args.get(0, String.class)
+          + " "
+          + args.get(1, String.class)
+          + " from: "
+          + args.get(2, String.class);
+    }
+  }
+
+  /**
+   * With our dynamic Workflow and Activities defined, we can now start execution. The main method
+   * starts the worker and then the workflow.
+   */
+  public static void main(String[] arg) {
+
+    // Load configuration from environment and files
+    ClientConfigProfile profile;
+    try {
+      profile = ClientConfigProfile.load();
+    } catch (IOException e) {
+      throw new RuntimeException("Failed to load client configuration", e);
+    }
+
+    // Get a Workflow service stub.
+    WorkflowServiceStubs service =
+        WorkflowServiceStubs.newServiceStubs(profile.toWorkflowServiceStubsOptions());
+    WorkflowClient client = WorkflowClient.newInstance(service, profile.toWorkflowClientOptions());
+
+    /*
+     * Define the workflow factory. It is used to create workflow workers for a specific task queue.
+     */
+    WorkerFactory factory = WorkerFactory.newInstance(client);
+
+    /*
+     * Define the workflow worker. Workflow workers listen to a defined task queue and process
+     * workflows and activities.
+     */
+    Worker worker = factory.newWorker(TASK_QUEUE);
+
+    /*
+     * Register our dynamic workflow implementation with the worker. Workflow implementations must
+     * be known to the worker at runtime in order to dispatch workflow tasks.
+     */
+    worker.registerWorkflowImplementationTypes(DynamicGreetingWorkflowImpl.class);
+
+    /*
+     * Register our dynamic workflow activity implementation with the worker. Since workflow
+     * activities are stateless and thread-safe, we need to register a shared instance.
+     */
+    worker.registerActivitiesImplementations(new DynamicGreetingActivityImpl());
+
+    /*
+     * Start all the Workers that are in this process. The Workers will then start polling for
+     * Workflow Tasks and Activity Tasks.
+     */
+    factory.start();
+
+    /*
+     * Create the workflow stub Note that the Workflow type is not explicitly registered with the
+     * Worker
+     */
+    WorkflowOptions workflowOptions =
+        WorkflowOptions.newBuilder().setTaskQueue(TASK_QUEUE).setWorkflowId(WORKFLOW_ID).build();
+    WorkflowStub workflow = client.newUntypedWorkflowStub("DynamicWF", workflowOptions);
+
+    // Start workflow execution and signal right after Pass in the workflow args and signal args
+    workflow.signalWithStart("greetingSignal", new Object[] {"John"}, new Object[] {"Hello"});
+
+    // Wait for workflow to finish getting the results
+    String result = workflow.getResult(String.class);
+
+    System.out.println(result);
+
+    System.exit(0);
+  }
+}

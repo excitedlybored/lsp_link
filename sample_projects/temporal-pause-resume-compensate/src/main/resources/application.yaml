@@ -1,0 +1,19 @@
+server:
+  port: 3003
+spring:
+  main:
+    allow-bean-definition-overriding: true
+  application:
+    name: sample-int
+  temporal:
+    namespace: default
+    connection:
+      target: 127.0.0.1:7233
+    workers-auto-discovery:
+      packages:
+        - io.temporal.sample
+management:
+  endpoints:
+    web:
+      exposure:
+        include: prometheus
