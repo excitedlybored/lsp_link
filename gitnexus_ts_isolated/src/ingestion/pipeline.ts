@@ -297,7 +297,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(markdownPhase)
       .register(cobolPhase)
       .register(parsePhase)
-      .register(lspEnrichmentPhase, { enabledWhen: (o) => o.lsp === true })
+      .register(lspEnrichmentPhase, { enabledWhen: (o) => o.lsp !== false })
       .register(routesPhase)
       .register(toolsPhase)
       .register(ormPhase)

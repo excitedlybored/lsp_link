@@ -21,16 +21,19 @@ export function createAnalyzeCommand(): Command {
     .option('--skip-git', 'Allow indexing folders without a .git directory', true)
     .option('--skip-graph-phases', 'Skip MRO, community detection, and process extraction')
     .option('--workers <number>', 'Worker pool size override', parseInt)
-    .option('--pdg', 'Build control-flow graph / PDG substrate (intra-procedural CFG)')
-    .option('--lsp', '⚡ Enable Language Server Protocol (JDT.LS / LSP) precision enrichment')
+    .option('--lsp', '⚡ Enable Language Server Protocol (JDT.LS / LSP) precision enrichment (default: true)', true)
+    .option('--no-lsp', 'Disable Language Server Protocol precision enrichment (AST only)')
     .option('--lsp-language <lang>', 'Target language for LSP adapter (default: java)', 'java')
     .option('--lsp-depth <depth>', 'Maximum LSP call hierarchy recursion depth', parseInt, 3)
     .action(async (targetPath: string, options: any) => {
       const resolvedRepoPath = path.resolve(process.cwd(), targetPath);
 
       console.log(`\n  GitNexus Analyzer (Isolated Engine)`);
-      if (options.lsp) {
-        console.log(`  ⚡ LSP Precision Mode: ENABLED (Language: ${options.lspLanguage})`);
+      const isLspEnabled = options.lsp !== false;
+      if (isLspEnabled) {
+        console.log(`  ⚡ LSP Precision Mode: ENABLED (Default) [Language: ${options.lspLanguage}]`);
+      } else {
+        console.log(`  ⚡ LSP Precision Mode: DISABLED (--no-lsp AST only)`);
       }
       console.log(`  Target: ${resolvedRepoPath}\n`);
 
@@ -48,7 +51,7 @@ export function createAnalyzeCommand(): Command {
 
       try {
         const result = await runPipelineFromRepo(resolvedRepoPath, onProgress, {
-          lsp: options.lsp === true,
+          lsp: isLspEnabled,
           skipGraphPhases: options.skipGraphPhases === true,
           pdg: options.pdg === true,
           workerPoolSize: options.workers,
