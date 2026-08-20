@@ -33,14 +33,22 @@ ide_link/
 
 ## 🚀 The Two Sets of Code
 
-### Set 1: Standalone LSP Server Daemon ([`lsp_server/`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server))
-Runs Eclipse JDT.LS as a standalone, persistent Language Server over OpenJDK 21 via JSON-RPC stdio:
+### Set 1: Standalone LSP Server Daemon & Query Tool ([`lsp_server/`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server))
+Runs Eclipse JDT.LS as a standalone, persistent Language Server over OpenJDK 21 via JSON-RPC stdio and provides direct retrieval queries:
 ```bash
-# Launch via Shell
-./lsp_server/start_server.sh sample_projects/spring-boot-demo
+cd lsp_server
 
-# Or launch via TypeScript
-npx tsx lsp_server/server_launcher.ts sample_projects/spring-boot-demo
+# 1. Start Server Daemon:
+./start_server.sh ../sample_projects/spring-boot-demo
+
+# 2. Query Call Hierarchy Directly:
+npx tsx query.ts calls ../sample_projects/spring-boot-demo --symbol showExecutionHistory
+
+# 3. Query Interface Implementations Directly:
+npx tsx query.ts impl ../sample_projects/spring-boot-demo --symbol DemoWorkflow
+
+# 4. Query 360-Degree Compiler Context Directly:
+npx tsx query.ts context ../sample_projects/spring-boot-demo --symbol DemoWorkflow
 ```
 
 ### Set 2: Isolated GitNexus LSP-Enriched Indexer ([`gitnexus_ts_isolated/`](file:///Users/zijie-machine/code_ai/ide_link/gitnexus_ts_isolated))
@@ -48,13 +56,8 @@ Runs the complete 17-phase GitNexus pipeline + live LSP enrichment phase, callin
 ```bash
 cd gitnexus_ts_isolated
 
-# 1. Run Complete Analyze with LSP Integration:
+# Run Complete Analyze with LSP Integration:
 npx tsx src/cli/analyze_with_lsp.ts ../sample_projects/spring-boot-demo
-
-# 2. Run Standardized LSP Retrieval Queries:
-npx tsx src/lsp/query.ts calls ../sample_projects/spring-boot-demo --symbol showExecutionHistory
-npx tsx src/lsp/query.ts impl ../sample_projects/spring-boot-demo --symbol DemoWorkflow
-npx tsx src/lsp/query.ts context ../sample_projects/spring-boot-demo --symbol DemoWorkflow
 ```
 
 ---
