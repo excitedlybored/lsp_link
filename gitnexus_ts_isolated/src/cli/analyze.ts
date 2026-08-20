@@ -84,6 +84,49 @@ export function createAnalyzeCommand(): Command {
           },
         };
 
+        // Extract nodes, relationships, and processes
+        const allNodes: any[] = [];
+        for (const node of result.graph.iterNodes ? result.graph.iterNodes() : result.graph.nodes) {
+          allNodes.push({
+            id: node.id,
+            label: node.label,
+            properties: node.properties || {},
+          });
+        }
+
+        const allRels: any[] = [];
+        for (const rel of result.graph.iterRelationships ? result.graph.iterRelationships() : result.graph.relationships) {
+          allRels.push({
+            id: rel.id,
+            sourceId: rel.sourceId,
+            targetId: rel.targetId,
+            type: rel.type,
+            confidence: rel.confidence ?? 1.0,
+            reason: rel.reason || '',
+          });
+        }
+
+        const fullGraphData = {
+          repoPath: resolvedRepoPath,
+          indexedAt: new Date().toISOString(),
+          lspEnriched: isLspEnabled,
+          stats: {
+            files: result.totalFileCount,
+            nodes: result.graph.nodeCount,
+            edges: result.graph.relationshipCount,
+            communities: result.communityResult?.stats.totalCommunities ?? 0,
+            processes: result.processResult?.stats.totalProcesses ?? 0,
+          },
+          nodes: allNodes,
+          relationships: allRels,
+        };
+
+        fs.writeFileSync(
+          path.join(gitnexusDir, 'graph.json'),
+          JSON.stringify(fullGraphData, null, 2),
+          'utf-8'
+        );
+
         fs.writeFileSync(
           path.join(gitnexusDir, 'gitnexus.json'),
           JSON.stringify(manifest, null, 2),

@@ -11,8 +11,9 @@
   "scripts": {
     "analyze": "tsx gitnexus_ts_isolated/src/cli/analyze.ts",
     "analyze:no-lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts --no-lsp",
-    "compare": "tsx custom_tools/graph_comparator.ts",
-    "flows": "tsx custom_tools/flows_inspector.ts",
+    "compare": "uv run python custom_tools/graph_comparator.py",
+    "flows": "uv run python custom_tools/flows_inspector.py",
+    "graph:summary": "uv run python custom_tools/query_db.py",
     "query": "tsx lsp_server/query.ts",
     "server": "tsx lsp_server/server_launcher.ts",
     "build": "npm --workspaces run build --if-present",
