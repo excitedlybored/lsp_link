@@ -21,9 +21,38 @@ ide_link/
 ├── 04_rpc_dynamic_proxy_temporal/
 │   └── temporal-sdk-java/             # Temporal Java SDK, Dynamic Proxy Stubs & Spring Boot Starter
 └── sample_projects/
+    ├── spring-boot-demo/              # Official Spring Boot + Temporal + CloudEvents project
+    ├── temporal-pause-resume-compensate/ # Spring Boot Saga compensation sample
     ├── spring-petclinic/              # Canonical Spring Boot MVC + JPA reference application
     ├── gs-rest-service/               # Official Spring Boot RESTful Web Service guide
     └── samples-java/                  # Temporal Java samples (includes springboot & springboot-basic)
+```
+
+---
+
+## 💡 Architecture Insight: Why IDEs Use LSP for Standardized Code Retrieval
+
+Modern IDEs (VS Code, Cursor, Eclipse) use the **Language Server Protocol (LSP)** to decouple the editor UI from language compilers, standardizing code structure and dependency queries over JSON-RPC:
+
+| Retrieval Target | Standardized LSP Method | What the Compiler Returns |
+| :--- | :--- | :--- |
+| **Call Graph / Dependencies** | `textDocument/prepareCallHierarchy`<br>`callHierarchy/outgoingCalls`<br>`callHierarchy/incomingCalls` | Exact compiler-resolved caller $\rightarrow$ callee tree with types |
+| **Interface Implementations** | `textDocument/implementation` | Concrete classes / Spring beans implementing an interface |
+| **Type Hierarchy** | `textDocument/prepareTypeHierarchy`<br>`typeHierarchy/supertypes`<br>`typeHierarchy/subtypes` | True inheritance & polymorphism tree across multi-module JARs |
+| **AST File Outline** | `textDocument/documentSymbol` | Hierarchical class, interface, method, and field nodes |
+| **Global Workspace Search** | `workspace/symbol` | Workspace-wide symbol index |
+| **Type Definition & Hover** | `textDocument/hover` | Generic types (`ResponseEntity<T>`), signatures, and Javadocs |
+
+### Standardized Query CLI in TypeScript (`gitnexus_ts_isolated/`)
+```bash
+# 1. Outgoing / Incoming Call Hierarchy Tree
+npx tsx src/lsp/query.ts calls <project> --symbol <MethodName> [--direction outgoing|incoming]
+
+# 2. Interface to Concrete Class / Spring Bean Implementations
+npx tsx src/lsp/query.ts impl <project> --symbol <InterfaceName>
+
+# 3. 360-Degree Compiler Context
+npx tsx src/lsp/query.ts context <project> --symbol <SymbolName>
 ```
 
 ---
