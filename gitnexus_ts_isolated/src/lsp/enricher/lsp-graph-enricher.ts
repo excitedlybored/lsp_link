@@ -37,7 +37,7 @@ export class LspGraphEnricher {
     try {
       // 1. Enrich CALLS from Method declarations
       const methodNodes: any[] = [];
-      for (const node of graph.nodes.values()) {
+      for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
         if (node.label === 'Method' && node.properties?.filePath?.endsWith('.java')) {
           methodNodes.push(node);
         }
@@ -48,33 +48,33 @@ export class LspGraphEnricher {
       for (const methodNode of methodNodes) {
         const filePath = path.resolve(repoPath, methodNode.properties.filePath);
         const line = (methodNode.properties.startLine ?? 1) - 1;
-        const char = 15; // Standard identifier search column
+        const char = 15;
 
-        const items = await javaAdapter.prepareCallHierarchy(filePath, line, char);
-        if (items && items.length > 0) {
-          const outgoing = await javaAdapter.getOutgoingCalls(items[0]);
-          for (const call of outgoing) {
-            const targetUri = call.to.uri;
-            const targetFile = targetUri.startsWith('file://')
-              ? path.relative(repoPath, fileURLToPath(targetUri))
-              : targetUri;
-            const targetName = call.to.name;
+        try {
+          const items = await javaAdapter.prepareCallHierarchy(filePath, line, char);
+          if (items && items.length > 0) {
+            const outgoing = await javaAdapter.getOutgoingCalls(items[0]);
+            for (const call of outgoing) {
+              const targetUri = call.to.uri;
+              const targetFile = targetUri.startsWith('file://')
+                ? path.relative(repoPath, fileURLToPath(targetUri))
+                : targetUri;
+              const targetName = call.to.name;
 
-            // Find matching node in graph
-            let targetNodeId: string | null = null;
-            for (const node of graph.nodes.values()) {
-              if (
-                node.properties?.filePath === targetFile &&
-                node.properties?.name === targetName
-              ) {
-                targetNodeId = node.id;
-                break;
+              // Find matching node in graph
+              let targetNodeId: string | null = null;
+              for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
+                if (
+                  node.properties?.filePath === targetFile &&
+                  node.properties?.name === targetName
+                ) {
+                  targetNodeId = node.id;
+                  break;
+                }
               }
-            }
 
-            if (targetNodeId && targetNodeId !== methodNode.id) {
-              const relId = `rel:lsp_call:${methodNode.id}->${targetNodeId}`;
-              if (!graph.relationships.has(relId)) {
+              if (targetNodeId && targetNodeId !== methodNode.id) {
+                const relId = `rel:lsp_call:${methodNode.id}->${targetNodeId}`;
                 graph.addRelationship({
                   id: relId,
                   sourceId: methodNode.id,
@@ -87,12 +87,14 @@ export class LspGraphEnricher {
               }
             }
           }
+        } catch {
+          // Ignore individual method lookup errors
         }
       }
 
       // 2. Enrich IMPLEMENTS from Interface declarations
       const interfaceNodes: any[] = [];
-      for (const node of graph.nodes.values()) {
+      for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
         if (node.label === 'Interface' && node.properties?.filePath?.endsWith('.java')) {
           interfaceNodes.push(node);
         }
@@ -103,19 +105,19 @@ export class LspGraphEnricher {
         const line = (ifaceNode.properties.startLine ?? 1) - 1;
         const char = 10;
 
-        const implementations = await javaAdapter.findImplementations(filePath, line, char);
-        for (const impl of implementations) {
-          const implFile = impl.uri.startsWith('file://')
-            ? path.relative(repoPath, fileURLToPath(impl.uri))
-            : impl.uri;
+        try {
+          const implementations = await javaAdapter.findImplementations(filePath, line, char);
+          for (const impl of implementations) {
+            const implFile = impl.uri.startsWith('file://')
+              ? path.relative(repoPath, fileURLToPath(impl.uri))
+              : impl.uri;
 
-          for (const node of graph.nodes.values()) {
-            if (
-              node.label === 'Class' &&
-              node.properties?.filePath === implFile
-            ) {
-              const relId = `rel:lsp_impl:${node.id}->${ifaceNode.id}`;
-              if (!graph.relationships.has(relId)) {
+            for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
+              if (
+                node.label === 'Class' &&
+                node.properties?.filePath === implFile
+              ) {
+                const relId = `rel:lsp_impl:${node.id}->${ifaceNode.id}`;
                 graph.addRelationship({
                   id: relId,
                   sourceId: node.id,
@@ -128,6 +130,8 @@ export class LspGraphEnricher {
               }
             }
           }
+        } catch {
+          // Ignore individual interface lookup errors
         }
       }
     } finally {

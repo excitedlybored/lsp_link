@@ -17,7 +17,7 @@ export interface LspEnrichmentOutput {
 
 export const lspEnrichmentPhase: PipelinePhase<LspEnrichmentOutput> = {
   name: 'lspEnrichment',
-  dependsOn: ['parse'],
+  deps: ['parse'],
   execute: async ({ graph, repoPath, onProgress }): Promise<PhaseResult<LspEnrichmentOutput>> => {
     const enricher = new LspGraphEnricher();
 
