@@ -11,15 +11,11 @@ ide_link/
 ├── lsp_server/                        # [Set 1] Standalone Eclipse JDT.LS Language Server Daemon
 ├── gitnexus_ts_isolated/              # [Set 2] Isolated GitNexus LSP-Enriched Indexer & Pipeline
 ├── gitnexus/                          # Full Upstream GitNexus Engine & Web App
-├── 01_language_server_protocol/
-│   ├── eclipse.jdt.ls/                # Eclipse Java Language Server (JDT.LS backend for VS Code)
-│   └── lsp4j/                         # LSP Java implementation & JSON-RPC communication
-├── 02_ast_analysis/
-│   └── javaparser/                    # Java AST parsing, symbol solver, and syntax trees
-├── 03_framework_metamodel_spring/
-│   └── spring-tools4/                 # Spring Boot Language Server (ST4) & JDT.LS extensions
-├── 04_rpc_dynamic_proxy_temporal/
-│   └── temporal-sdk-java/             # Temporal Java SDK, Dynamic Proxy Stubs & Spring Boot Starter
+├── language_specs/                    # 📚 Upstream Language & Framework Reference Layers
+│   ├── 01_language_server_protocol/   # Eclipse Java Language Server & LSP4J
+│   ├── 02_ast_analysis/               # JavaParser AST & Symbol Solver
+│   ├── 03_framework_metamodel_spring/ # Spring Boot Language Server (ST4)
+│   └── 04_rpc_dynamic_proxy_temporal/ # Temporal Java SDK & Dynamic Proxy Stubs
 └── sample_projects/
     ├── spring-boot-demo/              # Official Spring Boot + Temporal + CloudEvents project
     ├── temporal-pause-resume-compensate/ # Spring Boot Saga compensation sample
@@ -124,36 +120,36 @@ For full technical specifications, see **[`docs/LBUG_DATA_STRUCTURE.md`](file://
 ---
 
 ## 1. Language Server Protocol (LSP)
-- **Directory**: [`01_language_server_protocol`](file:///Users/zijie-machine/code_ai/ide_link/01_language_server_protocol)
+- **Directory**: [`language_specs/01_language_server_protocol`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/01_language_server_protocol)
 - **Repositories**:
-  - [`eclipse.jdt.ls`](file:///Users/zijie-machine/code_ai/ide_link/01_language_server_protocol/eclipse.jdt.ls): The actual Java language server powering VS Code's Java extension pack. Handles symbol indexing, type hierarchy resolution, and `textDocument/definition`.
-  - [`lsp4j`](file:///Users/zijie-machine/code_ai/ide_link/01_language_server_protocol/lsp4j): Official Eclipse LSP & DAP (Debug Adapter Protocol) bindings in Java over JSON-RPC.
+  - [`eclipse.jdt.ls`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/01_language_server_protocol/eclipse.jdt.ls): The actual Java language server powering VS Code's Java extension pack. Handles symbol indexing, type hierarchy resolution, and `textDocument/definition`.
+  - [`lsp4j`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/01_language_server_protocol/lsp4j): Official Eclipse LSP & DAP (Debug Adapter Protocol) bindings in Java over JSON-RPC.
 
 ---
 
 ## 2. AST Analysis & Symbol Solving
-- **Directory**: [`02_ast_analysis`](file:///Users/zijie-machine/code_ai/ide_link/02_ast_analysis)
+- **Directory**: [`language_specs/02_ast_analysis`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/02_ast_analysis)
 - **Repositories**:
-  - [`javaparser`](file:///Users/zijie-machine/code_ai/ide_link/02_ast_analysis/javaparser): Reference library for generating Java Abstract Syntax Trees (ASTs), traversing nodes, and performing symbol resolution (e.g. mapping string literals and method calls back to method declarations).
+  - [`javaparser`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/02_ast_analysis/javaparser): Reference library for generating Java Abstract Syntax Trees (ASTs), traversing nodes, and performing symbol resolution (e.g. mapping string literals and method calls back to method declarations).
 
 ---
 
 ## 3. Framework Metamodel & Dependency Injection (Spring Boot)
-- **Directory**: [`03_framework_metamodel_spring`](file:///Users/zijie-machine/code_ai/ide_link/03_framework_metamodel_spring)
+- **Directory**: [`language_specs/03_framework_metamodel_spring`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/03_framework_metamodel_spring)
 - **Repositories**:
-  - [`spring-tools4`](file:///Users/zijie-machine/code_ai/ide_link/03_framework_metamodel_spring/spring-tools4): The engine for Spring Boot IDE tooling:
-    - [`spring-boot-language-server`](file:///Users/zijie-machine/code_ai/ide_link/03_framework_metamodel_spring/spring-tools4/headless-services/spring-boot-language-server): Indexes `@Component`, `@Autowired`, `@Value`, and connects Spring symbols to `application.properties`/`application.yml`.
-    - [`jdt-ls-extension`](file:///Users/zijie-machine/code_ai/ide_link/03_framework_metamodel_spring/spring-tools4/headless-services/jdt-ls-extension): Injects Spring semantic awareness directly into Eclipse JDT.LS.
+  - [`spring-tools4`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/03_framework_metamodel_spring/spring-tools4): The engine for Spring Boot IDE tooling:
+    - [`spring-boot-language-server`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/03_framework_metamodel_spring/spring-tools4/headless-services/spring-boot-language-server): Indexes `@Component`, `@Autowired`, `@Value`, and connects Spring symbols to `application.properties`/`application.yml`.
+    - [`jdt-ls-extension`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/03_framework_metamodel_spring/spring-tools4/headless-services/jdt-ls-extension): Injects Spring semantic awareness directly into Eclipse JDT.LS.
 
 ---
 
 ## 4. RPC & Dynamic Proxy Abstraction (Temporal SDK)
-- **Directory**: [`04_rpc_dynamic_proxy_temporal`](file:///Users/zijie-machine/code_ai/ide_link/04_rpc_dynamic_proxy_temporal)
+- **Directory**: [`language_specs/04_rpc_dynamic_proxy_temporal`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/04_rpc_dynamic_proxy_temporal)
 - **Repositories**:
-  - [`temporal-sdk-java`](file:///Users/zijie-machine/code_ai/ide_link/04_rpc_dynamic_proxy_temporal/temporal-sdk-java): The Temporal Java SDK implementation:
-    - [`temporal-sdk`](file:///Users/zijie-machine/code_ai/ide_link/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-sdk): Contains dynamic proxy stub generation (`Workflow.newActivityStub`, `WorkflowInvocationHandler`).
-    - [`temporal-spring-boot-starter`](file:///Users/zijie-machine/code_ai/ide_link/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-spring-boot-starter) & [`temporal-spring-boot-autoconfigure`](file:///Users/zijie-machine/code_ai/ide_link/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-spring-boot-autoconfigure): Auto-configures Spring beans with `@WorkflowImpl` / `@ActivityImpl` to Temporal Workers.
-    - [`temporal-workflowcheck`](file:///Users/zijie-machine/code_ai/ide_link/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-workflowcheck): Static analysis checker for workflow determinism.
+  - [`temporal-sdk-java`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java): The Temporal Java SDK implementation:
+    - [`temporal-sdk`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-sdk): Contains dynamic proxy stub generation (`Workflow.newActivityStub`, `WorkflowInvocationHandler`).
+    - [`temporal-spring-boot-starter`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-spring-boot-starter) & [`temporal-spring-boot-autoconfigure`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-spring-boot-autoconfigure): Auto-configures Spring beans with `@WorkflowImpl` / `@ActivityImpl` to Temporal Workers.
+    - [`temporal-workflowcheck`](file:///Users/zijie-machine/code_ai/ide_link/language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/temporal-workflowcheck): Static analysis checker for workflow determinism.
 
 ---
 
