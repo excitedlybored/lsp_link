@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "lsp:test": "tsx src/lsp/runner.ts"
+    "lsp:test": "tsx src/lsp/runner.ts",
+    "lsp:query": "tsx src/lsp/query.ts"
   },
   "dependencies": {
     "glob": "^13.0.6",
