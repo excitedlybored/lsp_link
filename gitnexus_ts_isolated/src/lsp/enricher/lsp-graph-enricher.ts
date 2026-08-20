@@ -35,70 +35,15 @@ export class LspGraphEnricher {
     }
 
     try {
-      // 1. Enrich CALLS from Method declarations
-      const methodNodes: any[] = [];
-      for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
-        if (node.label === 'Method' && node.properties?.filePath?.endsWith('.java')) {
-          methodNodes.push(node);
-        }
-      }
-
-      onProgress?.(`Enriching ${methodNodes.length} Java methods via JDT.LS Call Hierarchy...`);
-
-      for (const methodNode of methodNodes) {
-        const filePath = path.resolve(repoPath, methodNode.properties.filePath);
-        const line = (methodNode.properties.startLine ?? 1) - 1;
-        const char = 15;
-
-        try {
-          const items = await javaAdapter.prepareCallHierarchy(filePath, line, char);
-          if (items && items.length > 0) {
-            const outgoing = await javaAdapter.getOutgoingCalls(items[0]);
-            for (const call of outgoing) {
-              const targetUri = call.to.uri;
-              const targetFile = targetUri.startsWith('file://')
-                ? path.relative(repoPath, fileURLToPath(targetUri))
-                : targetUri;
-              const targetName = call.to.name;
-
-              // Find matching node in graph
-              let targetNodeId: string | null = null;
-              for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
-                if (
-                  node.properties?.filePath === targetFile &&
-                  node.properties?.name === targetName
-                ) {
-                  targetNodeId = node.id;
-                  break;
-                }
-              }
-
-              if (targetNodeId && targetNodeId !== methodNode.id) {
-                const relId = `rel:lsp_call:${methodNode.id}->${targetNodeId}`;
-                graph.addRelationship({
-                  id: relId,
-                  sourceId: methodNode.id,
-                  targetId: targetNodeId,
-                  type: 'CALLS',
-                  confidence: 1.0,
-                  reason: 'LSP: JDT.LS Compiler Call Hierarchy',
-                });
-                stats.enrichedCalls += 1;
-              }
-            }
-          }
-        } catch {
-          // Ignore individual method lookup errors
-        }
-      }
-
-      // 2. Enrich IMPLEMENTS from Interface declarations
+      // 1. Enrich IMPLEMENTS from Interface declarations
       const interfaceNodes: any[] = [];
       for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
         if (node.label === 'Interface' && node.properties?.filePath?.endsWith('.java')) {
           interfaceNodes.push(node);
         }
       }
+
+      onProgress?.(`Enriching ${interfaceNodes.length} Java interfaces via JDT.LS Implementations...`);
 
       for (const ifaceNode of interfaceNodes) {
         const filePath = path.resolve(repoPath, ifaceNode.properties.filePath);
@@ -132,6 +77,72 @@ export class LspGraphEnricher {
           }
         } catch {
           // Ignore individual interface lookup errors
+        }
+      }
+
+      // 2. Enrich CALLS from Method declarations
+      const methodNodes: any[] = [];
+      for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
+        if (node.label === 'Method' && node.properties?.filePath?.endsWith('.java')) {
+          methodNodes.push(node);
+        }
+      }
+
+      onProgress?.(`Enriching ${methodNodes.length} Java methods via JDT.LS Call Hierarchy...`);
+
+      for (const methodNode of methodNodes) {
+        const filePath = path.resolve(repoPath, methodNode.properties.filePath);
+        const line = (methodNode.properties.startLine ?? 1) - 1;
+        const char = 15;
+
+        try {
+          const items = await javaAdapter.prepareCallHierarchy(filePath, line, char);
+          if (items && items.length > 0) {
+            const outgoing = await javaAdapter.getOutgoingCalls(items[0]);
+            for (const call of outgoing) {
+              const targetUri = call.to.uri;
+              const targetFile = targetUri.startsWith('file://')
+                ? path.relative(repoPath, fileURLToPath(targetUri))
+                : targetUri;
+              const rawTargetName = call.to.name; // e.g. "log(Order) : void" or "save(Order) : Order" or "StripePaymentGateway"
+              const simpleTargetName = rawTargetName.split('(')[0].trim();
+
+              // Find matching method or class node in graph
+              let targetNodeId: string | null = null;
+              for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
+                if (node.properties?.filePath === targetFile) {
+                  if (
+                    node.label === 'Method' &&
+                    (node.properties?.name === simpleTargetName || rawTargetName.startsWith(node.properties?.name + '('))
+                  ) {
+                    targetNodeId = node.id;
+                    break;
+                  } else if (
+                    node.label === 'Class' &&
+                    node.properties?.name === simpleTargetName
+                  ) {
+                    targetNodeId = node.id;
+                    break;
+                  }
+                }
+              }
+
+              if (targetNodeId && targetNodeId !== methodNode.id) {
+                const relId = `rel:lsp_call:${methodNode.id}->${targetNodeId}`;
+                graph.addRelationship({
+                  id: relId,
+                  sourceId: methodNode.id,
+                  targetId: targetNodeId,
+                  type: 'CALLS',
+                  confidence: 1.0,
+                  reason: `LSP: JDT.LS Call Hierarchy (${rawTargetName})`,
+                });
+                stats.enrichedCalls += 1;
+              }
+            }
+          }
+        } catch {
+          // Ignore individual method lookup errors
         }
       }
     } finally {
