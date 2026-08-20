@@ -48,40 +48,67 @@ flowchart TD
 
 ---
 
-## 🚀 Quickstart Guide
+## 🚀 Quickstart & Offline Installation
 
-### 1. Installation
+### 1. Zero-Network 1-Step Setup
+The repository includes all dependencies in [`vendor/`](file:///Users/zijie-machine/code_ai/ide_link/vendor) (offline `.tgz` and `.whl` archives) and raw source code in [`vendor/packages/`](file:///Users/zijie-machine/code_ai/ide_link/vendor/packages). No internet or external npm registry access is required:
+
 ```bash
 # Clone repository
-git clone https://github.com/your-org/ide_link.git
-cd ide_link
+git clone https://github.com/excitedlybored/lsp_link.git
+cd lsp_link
 
-# Install dependencies across all packages
-npm install
+# 1-Step offline setup (installs Node & Python dependencies 100% from vendor/)
+./setup.sh
 ```
 
-### 2. Knowledge Graph Indexing (Set 2)
+---
+
+### 2. Run Multi-Language Example Tests
+Validate all three language testbeds (**Java**, **Python**, **TypeScript**) in 1 command:
+
 ```bash
-# 1. Full compiler-verified analysis (LSP enabled by default):
-npm run analyze sample_projects/spring-boot-demo
+# Test all examples:
+npm run test:examples
 
-# 2. Fast AST-only mode (opt-out):
-npm run analyze:no-lsp sample_projects/spring-boot-demo
-
-# 3. Side-by-side AST vs LSP comparison benchmark:
-npm run compare sample_projects/spring-boot-demo
+# Or test any specific example:
+npm run boundaries -- examples/01_spring_boot_banking
+npm run boundaries -- examples/02_python_fastapi_quant
+npm run boundaries -- examples/03_typescript_express_gateway
 ```
 
-### 3. Direct LSP Retrieval Queries (Set 1)
+---
+
+### 3. Knowledge Graph Indexing & Ingress/Egress Boundaries
+```bash
+# 1. Index codebase with live LSP compiler verification:
+npm run analyze -- sample_projects/spring-boot-demo
+
+# 2. Ingress & Egress Boundary Analysis:
+npm run boundaries -- sample_projects/spring-boot-demo
+
+# 3. View Live GitNexus Graph Node Links (Route -> Method -> Callee -> Sinks):
+npm run boundaries:links -- sample_projects/spring-boot-demo
+
+# 4. Inspect End-to-End Business Flows & Execution Paths:
+npm run flows -- sample_projects/spring-boot-demo
+
+# 5. List all tracked Ingress/Egress SDK signatures:
+npm run sdks:list
+```
+
+---
+
+### 4. Direct Polyglot LSP Retrieval Queries
 ```bash
 # 1. Trace Outgoing Call Hierarchy:
-npm run query calls sample_projects/spring-boot-demo --symbol showExecutionHistory
+npm run query -- calls sample_projects/spring-boot-demo --symbol showExecutionHistory
 
 # 2. Find Concrete Implementations of an Interface:
-npm run query impl sample_projects/spring-boot-demo --symbol PaymentGateway
+npm run query -- impl sample_projects/spring-boot-demo --symbol PaymentGateway
 
 # 3. Get 360-Degree Compiler Context:
-npm run query context sample_projects/spring-boot-demo --symbol DemoWorkflow
+npm run query -- context sample_projects/spring-boot-demo --symbol DemoWorkflow
 ```
 
 ---
