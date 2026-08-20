@@ -180,10 +180,12 @@ def trace_ingress_nodes(project_path: str):
 def analyze_project(project_path: str):
     """Performs boundary analysis on a project using the SDK registry."""
     abs_project = Path(project_path).resolve()
-    db_path = abs_project / ".gitnexus" / "lbug"
+    gitnexus_dir = abs_project / ".gitnexus"
+    db_path = gitnexus_dir / "lbug"
+    graph_json_path = gitnexus_dir / "graph.json"
     
-    if not db_path.exists():
-        print(f"❌ Error: LadybugDB database not found at '{db_path}'")
+    if not db_path.exists() and not graph_json_path.exists():
+        print(f"❌ Error: GitNexus index not found at '{gitnexus_dir}'")
         print(f"   Run 'npm run analyze -- {project_path}' first.")
         sys.exit(1)
         
@@ -191,13 +193,10 @@ def analyze_project(project_path: str):
     ingress_rules = registry.get("ingress", [])
     egress_rules = registry.get("egress", [])
     
-    db = ladybug.Database(str(db_path), read_only=True)
-    conn = ladybug.Connection(db)
-    
     print("\n" + "=" * 80)
     print("📦 SDK-DRIVEN INGRESS & EGRESS BOUNDARY ANALYZER")
     print(f"   Target Repository: {abs_project}")
-    print(f"   Database: {db_path}")
+    print(f"   Storage: {db_path if db_path.exists() else graph_json_path}")
     print(f"   Active SDK Rules: {len(ingress_rules)} Ingress | {len(egress_rules)} Egress")
     print("=" * 80)
     
@@ -236,16 +235,47 @@ def analyze_project(project_path: str):
                     })
                     break
 
-    # 3. Incorporate exposed routes from LadybugDB
-    route_res = conn.execute("MATCH (r:Route) RETURN r.name, r.method, r.filePath;")
-    while route_res.has_next():
-        row = route_res.get_next()
-        ingress_findings.append({
-            "category": "HTTP / REST Route",
-            "package": f"{row[1]} {row[0]}",
-            "description": "Exposed REST API Endpoint",
-            "file": row[2],
-        })
+    # 3. Incorporate exposed routes and execution flows
+    flows = []
+    if db_path.exists():
+        try:
+            db = ladybug.Database(str(db_path), read_only=True)
+            conn = ladybug.Connection(db)
+            route_res = conn.execute("MATCH (r:Route) RETURN r.name, r.method, r.filePath;")
+            while route_res.has_next():
+                row = route_res.get_next()
+                ingress_findings.append({
+                    "category": "HTTP / REST Route",
+                    "package": f"{row[1]} {row[0]}",
+                    "description": "Exposed REST API Endpoint",
+                    "file": row[2],
+                })
+            proc_res = conn.execute("MATCH (p:Process) RETURN p.id, p.label, p.entryPointId, p.terminalId, p.stepCount;")
+            while proc_res.has_next():
+                flows.append(proc_res.get_next())
+        except Exception:
+            pass
+    elif graph_json_path.exists():
+        with open(graph_json_path, "r", encoding="utf-8") as f:
+            graph_data = json.load(f)
+        for node in graph_data.get("nodes", []):
+            if node.get("label") == "Route":
+                props = node.get("properties", {})
+                ingress_findings.append({
+                    "category": "HTTP / REST Route",
+                    "package": f"{props.get('method', 'GET')} {props.get('name', props.get('path', ''))}",
+                    "description": "Exposed REST API Endpoint",
+                    "file": props.get("filePath", ""),
+                })
+            elif node.get("label") == "Process":
+                props = node.get("properties", {})
+                flows.append([
+                    node.get("id"),
+                    props.get("label", "Process Flow"),
+                    props.get("entryPointId", "EntryPoint"),
+                    props.get("terminalId", "TerminalSink"),
+                    props.get("stepCount", 1)
+                ])
 
     dedup_ingress = {(f["category"], f["package"], f["file"]): f for f in ingress_findings}.values()
     dedup_egress = {(f["category"], f["package"], f["file"]): f for f in egress_findings}.values()
@@ -262,17 +292,12 @@ def analyze_project(project_path: str):
     print(tabulate(egress_table, headers=["Boundary Type", "Package / Target Signature", "Source File", "Description"], tablefmt="github"))
     print(f"Total Detected Egress Boundaries: {len(dedup_egress)}\n")
 
-    # 4. End-to-End Tracing via LadybugDB Processes
-    proc_res = conn.execute("MATCH (p:Process) RETURN p.id, p.label, p.entryPointId, p.terminalId, p.stepCount;")
-    flows = []
-    while proc_res.has_next():
-        flows.append(proc_res.get_next())
-        
+    # 4. End-to-End Tracing
     if flows:
-        print("🔄 3. END-TO-END INGRESS ──► EGRESS EXECUTION PATHS (LadybugDB):")
+        print("🔄 3. END-TO-END INGRESS ──► EGRESS EXECUTION PATHS (LadybugDB / Knowledge Graph):")
         for idx, fl in enumerate(flows, 1):
-            entry_name = fl[2].split(":")[-1]
-            exit_name = fl[3].split(":")[-1]
+            entry_name = str(fl[2]).split(":")[-1]
+            exit_name = str(fl[3]).split(":")[-1]
             print(f"   [{idx}] \033[32m[INGRESS: {entry_name}]\033[0m ──({fl[4]} hops)──► \033[31m[EGRESS: {exit_name}]\033[0m")
             print(f"       Process Flow: {fl[1]} (ID: {fl[0]})")
     print("\n" + "=" * 80 + "\n")

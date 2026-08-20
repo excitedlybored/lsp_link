@@ -16,6 +16,7 @@
     "boundaries": "uv run python custom_tools/ingress_egress_analyzer.py",
     "boundaries:links": "uv run python custom_tools/ingress_egress_analyzer.py links",
     "sdks:list": "uv run python custom_tools/ingress_egress_analyzer.py list-sdks",
+    "test:examples": "npm run boundaries -- examples/01_spring_boot_banking && npm run boundaries -- examples/02_python_fastapi_quant && npm run boundaries -- examples/03_typescript_express_gateway",
     "graph:summary": "uv run python custom_tools/query_db.py",
     "query": "tsx lsp_server/query.ts",
     "server": "tsx lsp_server/server_launcher.ts",
