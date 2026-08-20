@@ -1,13 +1,13 @@
 /**
- * LSP Graph Enricher with Explicit Conflict Resolution.
+ * LSP Graph Enricher with Automatic Fallback and Active Conflict Resolution.
  *
  * Traverses KnowledgeGraph nodes (Method, Class, Interface) and enriches them
  * with compiler-verified CALLS and IMPLEMENTS edges from LSP.
  *
- * Conflict Resolution Rule:
- * When LSP verifies an exact call target with 100% compiler precision,
- * any conflicting lower-confidence heuristic AST edges from the same call site
- * are pruned/overridden by the compiler ground truth.
+ * Resiliency & Fallback:
+ * If the language server is not active, fails to launch, or is unavailable,
+ * the enricher gracefully falls back to Tree-sitter AST without interrupting
+ * the pipeline.
  */
 
 import * as path from 'path';
@@ -34,8 +34,16 @@ export class LspGraphEnricher {
       conflictsResolved: 0,
     };
 
-    const javaAdapter = await this.registry.getOrStartAdapter('java', repoPath);
+    let javaAdapter: any = null;
+    try {
+      javaAdapter = await this.registry.getOrStartAdapter('java', repoPath);
+    } catch (err: any) {
+      onProgress?.(`⚠️ LSP server inactive (${err.message || 'unavailable'}). Falling back to Tree-sitter AST.`);
+      return stats;
+    }
+
     if (!javaAdapter) {
+      onProgress?.(`ℹ️ LSP server not active. Continuing with Tree-sitter AST.`);
       return stats;
     }
 
@@ -48,7 +56,9 @@ export class LspGraphEnricher {
         }
       }
 
-      onProgress?.(`Enriching ${interfaceNodes.length} Java interfaces via JDT.LS Implementations...`);
+      if (interfaceNodes.length > 0) {
+        onProgress?.(`Enriching ${interfaceNodes.length} Java interfaces via JDT.LS Implementations...`);
+      }
 
       for (const ifaceNode of interfaceNodes) {
         const filePath = path.resolve(repoPath, ifaceNode.properties.filePath);
@@ -93,7 +103,9 @@ export class LspGraphEnricher {
         }
       }
 
-      onProgress?.(`Enriching ${methodNodes.length} Java methods via JDT.LS Call Hierarchy...`);
+      if (methodNodes.length > 0) {
+        onProgress?.(`Enriching ${methodNodes.length} Java methods via JDT.LS Call Hierarchy...`);
+      }
 
       for (const methodNode of methodNodes) {
         const filePath = path.resolve(repoPath, methodNode.properties.filePath);

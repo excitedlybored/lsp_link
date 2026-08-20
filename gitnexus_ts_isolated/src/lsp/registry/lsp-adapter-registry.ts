@@ -1,5 +1,5 @@
 /**
- * LSP Adapter Registry & Factory.
+ * LSP Adapter Registry & Factory with Automatic Fallback.
  */
 
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
@@ -32,14 +32,19 @@ export class LspAdapterRegistry {
       return null;
     }
 
-    const available = await adapter.isAvailable();
-    if (!available) {
+    try {
+      const available = await adapter.isAvailable();
+      if (!available) {
+        return null;
+      }
+
+      await adapter.start(workspacePath);
+      this.activeAdapters.set(langKey, adapter);
+      return adapter;
+    } catch (err: any) {
+      console.warn(`[LSP Registry] Failed to start adapter for ${language}:`, err.message || err);
       return null;
     }
-
-    await adapter.start(workspacePath);
-    this.activeAdapters.set(langKey, adapter);
-    return adapter;
   }
 
   public async shutdownAll(): Promise<void> {
