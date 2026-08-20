@@ -1,112 +1,130 @@
 #!/usr/bin/env python3
 """
-Package-Driven Ingress & Egress Boundary Analyzer (Python + LadybugDB).
+SDK-Driven Ingress & Egress Boundary Analyzer and SDK Registry Manager.
 
-Detects service boundaries by inspecting third-party SDK packages and imports:
-- 🚪 INGRESS PACKAGES:
-    • Web / REST Frameworks (Spring Web, JAX-RS, FastAPI, Express, ASP.NET Core)
-    • Message Queue Listeners (Spring Kafka, RabbitListener, SQS, JMS)
-    • Orchestration / Workflow Entry (Temporal @WorkflowMethod, Signals, Queries)
-    • gRPC / RPC Servers (io.grpc, grpcio)
-- 🚪 EGRESS PACKAGES:
-    • Persistence / Repositories (Spring Data, JPA, MyBatis, Hibernate, SQLAlchemy, TypeORM)
-    • Outbound HTTP Clients (RestTemplate, WebClient, OpenFeign, OkHttp, Requests, Axios)
-    • Message Queue Producers (KafkaTemplate, RabbitTemplate, JmsTemplate)
-    • Task Workers & Activities (Temporal @ActivityMethod, Celery tasks)
-- 🔄 END-TO-END BOUNDARY MAPPINGS:
-    • Maps Ingress (Source Package) ──► Core Service ──► Egress (Target Package).
+Features:
+1. Boundary Analysis:
+   - Reads tracked SDK definitions from `custom_tools/sdk_registry.json`
+   - Scans project source files for Ingress & Egress package imports
+   - Queries LadybugDB (.gitnexus/lbug) to construct End-to-End Traces
+2. SDK Registry Management:
+   - List tracked SDKs: `uv run python custom_tools/ingress_egress_analyzer.py list-sdks`
+   - Add/Edit SDK: `uv run python custom_tools/ingress_egress_analyzer.py add-sdk ...`
+   - Remove SDK: `uv run python custom_tools/ingress_egress_analyzer.py remove-sdk ...`
 """
 
 import sys
 import os
 import re
+import json
+import argparse
 from pathlib import Path
 import ladybug
 from tabulate import tabulate
 
-# Enterprise Ingress Package Signatures (Java, Python, TS, C#)
-INGRESS_PACKAGE_SIGNATURES = [
-    # HTTP / REST Ingress
-    (r"\borg\.springframework\.web\.bind\.annotation", "HTTP / REST API", "Spring Web REST Controller"),
-    (r"\borg\.springframework\.stereotype\.Controller\b", "HTTP / REST API", "Spring MVC Controller"),
-    (r"\bjakarta\.ws\.rs\b", "HTTP / REST API", "Jakarta JAX-RS Web Endpoint"),
-    (r"\bjavax\.ws\.rs\b", "HTTP / REST API", "Java EE JAX-RS Web Endpoint"),
-    (r"\bfastapi\b", "HTTP / REST API", "FastAPI Route Handler"),
-    (r"\bflask\b", "HTTP / REST API", "Flask Web Handler"),
-    (r"\bexpress\b", "HTTP / REST API", "Express Route Handler"),
-    (r"\bMicrosoft\.AspNetCore\.Mvc\b", "HTTP / REST API", "ASP.NET Core Web API"),
-    
-    # Message Queue Consumer Ingress
-    (r"\borg\.springframework\.kafka\.annotation\.KafkaListener\b", "Message Queue Consumer", "Kafka Topic Listener"),
-    (r"\borg\.springframework\.amqp\.rabbit\.annotation\b", "Message Queue Consumer", "RabbitMQ Queue Listener"),
-    (r"\borg\.springframework\.jms\.annotation\b", "Message Queue Consumer", "JMS Queue Listener"),
-    (r"\bcom\.rabbitmq\.client\.Consumer\b", "Message Queue Consumer", "RabbitMQ Consumer"),
-    (r"\baiokafka\b", "Message Queue Consumer", "Async Kafka Consumer"),
-    
-    # Temporal & Workflow Ingress
-    (r"\bio\.temporal\.workflow\.WorkflowMethod\b", "Temporal Workflow Trigger", "Temporal Workflow Entry Point"),
-    (r"\bio\.temporal\.workflow\.SignalMethod\b", "Temporal Signal Ingress", "Temporal Async Signal Handler"),
-    (r"\bio\.temporal\.workflow\.QueryMethod\b", "Temporal Query Ingress", "Temporal State Query Handler"),
-    (r"\bio\.temporal\.workflow\.WorkflowInterface\b", "Temporal Workflow Contract", "Temporal Orchestration Contract"),
-    
-    # gRPC Ingress
-    (r"\bio\.grpc\.stub\.StreamObserver\b", "gRPC Service Ingress", "gRPC Server Handler"),
-]
+REGISTRY_PATH = Path(__file__).parent / "sdk_registry.json"
 
-# Enterprise Egress Package Signatures (Java, Python, TS, C#)
-EGRESS_PACKAGE_SIGNATURES = [
-    # Database Persistence Egress
-    (r"\borg\.springframework\.data\.repository\b", "Database / Persistence", "Spring Data Repository"),
-    (r"\borg\.springframework\.data\.jpa\.repository\b", "Database / JPA Repository", "Spring Data JPA Repository"),
-    (r"\bjakarta\.persistence\b", "Database / JPA Persistence", "JPA Entity Persistence"),
-    (r"\bjavax\.persistence\b", "Database / JPA Persistence", "JPA Entity Persistence"),
-    (r"\borg\.apache\.ibatis\b", "Database / SQL Mapper", "MyBatis SQL Mapper"),
-    (r"\borg\.springframework\.jdbc\.core\b", "Database / JDBC Driver", "Spring JdbcTemplate"),
-    (r"\bcom\.mongodb\.client\b", "Database / NoSQL Driver", "MongoDB Client Driver"),
-    (r"\bsqlalchemy\b", "Database / ORM", "SQLAlchemy ORM Client"),
-    (r"\btypeorm\b", "Database / ORM", "TypeORM Client"),
-    (r"\bprisma\b", "Database / ORM", "Prisma Database Client"),
+def load_sdk_registry() -> dict:
+    """Loads the SDK boundary registry from JSON."""
+    if not REGISTRY_PATH.exists():
+        print(f"❌ Error: SDK registry not found at '{REGISTRY_PATH}'")
+        sys.exit(1)
+    with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_sdk_registry(data: dict):
+    """Saves the SDK boundary registry to JSON."""
+    with open(REGISTRY_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+def list_sdks(boundary_filter: str = None, lang_filter: str = None):
+    """Lists all tracked Ingress and Egress SDKs."""
+    data = load_sdk_registry()
+    print("\n" + "=" * 80)
+    print("📋 TRACKED SDK BOUNDARY REGISTRY")
+    print(f"   Config File: {REGISTRY_PATH}")
+    print("=" * 80)
+
+    if not boundary_filter or boundary_filter == "ingress":
+        ingress_list = data.get("ingress", [])
+        if lang_filter:
+            ingress_list = [s for s in ingress_list if s.get("language") == lang_filter]
+        print(f"\n🚪 INGRESS SDKs ({len(ingress_list)} tracked):")
+        rows = [[s["id"], s.get("language", "all"), s["category"], s["pattern"], s["description"]] for s in ingress_list]
+        print(tabulate(rows, headers=["ID", "Lang", "Category", "Regex Pattern", "Description"], tablefmt="github"))
+
+    if not boundary_filter or boundary_filter == "egress":
+        egress_list = data.get("egress", [])
+        if lang_filter:
+            egress_list = [s for s in egress_list if s.get("language") == lang_filter]
+        print(f"\n🚪 EGRESS SDKs ({len(egress_list)} tracked):")
+        rows = [[s["id"], s.get("language", "all"), s["category"], s["pattern"], s["description"]] for s in egress_list]
+        print(tabulate(rows, headers=["ID", "Lang", "Category", "Regex Pattern", "Description"], tablefmt="github"))
+    print("\n" + "=" * 80 + "\n")
+
+def add_sdk(boundary: str, sdk_id: str, lang: str, category: str, pattern: str, desc: str):
+    """Adds or updates an SDK entry in the registry."""
+    data = load_sdk_registry()
+    if boundary not in ["ingress", "egress"]:
+        print(f"❌ Error: Boundary must be 'ingress' or 'egress', got '{boundary}'")
+        sys.exit(1)
+        
+    entry_list = data.setdefault(boundary, [])
+    # Check if ID already exists (update) or add new
+    existing = next((item for item in entry_list if item["id"] == sdk_id), None)
+    if existing:
+        existing["language"] = lang
+        existing["category"] = category
+        existing["pattern"] = pattern
+        existing["description"] = desc
+        print(f"✓ Updated existing SDK signature: '{sdk_id}' in {boundary.upper()}")
+    else:
+        entry_list.append({
+            "id": sdk_id,
+            "language": lang,
+            "category": category,
+            "pattern": pattern,
+            "description": desc
+        })
+        print(f"✓ Added new SDK signature: '{sdk_id}' to {boundary.upper()}")
+        
+    save_sdk_registry(data)
+
+def remove_sdk(boundary: str, sdk_id: str):
+    """Removes an SDK entry from the registry."""
+    data = load_sdk_registry()
+    if boundary not in ["ingress", "egress"]:
+        print(f"❌ Error: Boundary must be 'ingress' or 'egress', got '{boundary}'")
+        sys.exit(1)
+        
+    entry_list = data.get(boundary, [])
+    initial_len = len(entry_list)
+    data[boundary] = [item for item in entry_list if item["id"] != sdk_id]
     
-    # Outbound HTTP / RPC Clients
-    (r"\borg\.springframework\.web\.client\.RestTemplate\b", "Outbound HTTP Client", "Spring RestTemplate"),
-    (r"\borg\.springframework\.web\.reactive\.function\.client\.WebClient\b", "Outbound HTTP Client", "Spring WebClient (Reactive)"),
-    (r"\borg\.springframework\.cloud\.openfeign\b", "Outbound RPC Client", "Spring OpenFeign Client"),
-    (r"\bokhttp3\b", "Outbound HTTP Client", "OkHttp3 Client"),
-    (r"\borg\.apache\.http\.client\b", "Outbound HTTP Client", "Apache HttpClient"),
-    (r"\brequests\b", "Outbound HTTP Client", "Python Requests HTTP Client"),
-    (r"\bhttpx\b", "Outbound HTTP Client", "Python HTTPX Client"),
-    (r"\baxios\b", "Outbound HTTP Client", "Axios HTTP Client"),
-    
-    # Message Queue Producers
-    (r"\borg\.springframework\.kafka\.core\.KafkaTemplate\b", "Message Queue Producer", "Kafka Event Producer"),
-    (r"\borg\.springframework\.amqp\.rabbit\.core\.RabbitTemplate\b", "Message Queue Producer", "RabbitMQ Event Publisher"),
-    (r"\borg\.springframework\.jms\.core\.JmsTemplate\b", "Message Queue Producer", "JMS Message Producer"),
-    
-    # Temporal Activities & Remote Tasks
-    (r"\bio\.temporal\.activity\.ActivityMethod\b", "Temporal Activity Worker", "Temporal Distributed Activity Sink"),
-    (r"\bio\.temporal\.activity\.ActivityInterface\b", "Temporal Activity Contract", "Temporal Distributed Activity Contract"),
-    (r"\bio\.temporal\.activity\b", "Temporal Activity Task", "Temporal Activity Worker"),
-]
+    if len(data[boundary]) < initial_len:
+        save_sdk_registry(data)
+        print(f"✓ Successfully removed SDK '{sdk_id}' from {boundary.upper()}")
+    else:
+        print(f"⚠️  SDK ID '{sdk_id}' not found in {boundary.upper()}")
 
 def scan_file_imports(file_path: Path) -> list:
-    """Scans all import statements in a file."""
+    """Scans all import / using statements in a source file."""
     imports = []
     try:
         content = file_path.read_text(encoding="utf-8", errors="ignore")
         for line in content.splitlines():
             line = line.strip()
-            # Java, TypeScript, C#
             if line.startswith("import ") or line.startswith("using "):
                 clean = re.sub(r"^(import static |import |using )", "", line).rstrip(";")
                 imports.append(clean)
-            # Python
             elif line.startswith("from ") or line.startswith("import "):
                 imports.append(line)
     except Exception:
         pass
     return imports
 
-def analyze_packages(project_path: str):
+def analyze_project(project_path: str):
+    """Performs boundary analysis on a project using the SDK registry."""
     abs_project = Path(project_path).resolve()
     db_path = abs_project / ".gitnexus" / "lbug"
     
@@ -115,77 +133,77 @@ def analyze_packages(project_path: str):
         print(f"   Run 'npm run analyze -- {project_path}' first.")
         sys.exit(1)
         
+    registry = load_sdk_registry()
+    ingress_rules = registry.get("ingress", [])
+    egress_rules = registry.get("egress", [])
+    
     db = ladybug.Database(str(db_path), read_only=True)
     conn = ladybug.Connection(db)
     
-    print("\n" + "=" * 78)
-    print("📦 PACKAGE-DRIVEN INGRESS & EGRESS BOUNDARY ANALYZER")
-    print(f"   Target: {abs_project}")
+    print("\n" + "=" * 80)
+    print("📦 SDK-DRIVEN INGRESS & EGRESS BOUNDARY ANALYZER")
+    print(f"   Target Repository: {abs_project}")
     print(f"   Database: {db_path}")
-    print("=" * 78)
+    print(f"   Active SDK Rules: {len(ingress_rules)} Ingress | {len(egress_rules)} Egress")
+    print("=" * 80)
     
-    # 1. Scan all source files in the project for package imports
+    # 1. Scan source files for imports
     file_imports_map = {}
     for p in abs_project.rglob("*"):
-        if p.is_file() and p.suffix in [".java", ".py", ".ts", ".tsx", ".cs", ".cpp", ".go"]:
+        if p.is_file() and p.suffix in [".java", ".py", ".ts", ".tsx", ".cs", ".cpp", ".go", ".cbl", ".cob"]:
             rel = str(p.relative_to(abs_project))
             if not rel.startswith(".") and "node_modules" not in rel and "target" not in rel:
                 imps = scan_file_imports(p)
                 if imps:
                     file_imports_map[rel] = imps
                     
-    # 2. Identify Ingress & Egress Files via Package Imports
+    # 2. Match Ingress & Egress Rules
     ingress_findings = []
     egress_findings = []
     
     for rel_file, imps in file_imports_map.items():
-        # Check Ingress Signatures
         for imp in imps:
-            for pattern, cat, desc in INGRESS_PACKAGE_SIGNATURES:
-                if re.search(pattern, imp):
+            for rule in ingress_rules:
+                if re.search(rule["pattern"], imp):
                     ingress_findings.append({
-                        "category": cat,
+                        "category": rule["category"],
                         "package": imp,
-                        "description": desc,
+                        "description": rule["description"],
                         "file": rel_file,
                     })
                     break
-                    
-        # Check Egress Signatures
-        for imp in imps:
-            for pattern, cat, desc in EGRESS_PACKAGE_SIGNATURES:
-                if re.search(pattern, imp):
+            for rule in egress_rules:
+                if re.search(rule["pattern"], imp):
                     egress_findings.append({
-                        "category": cat,
+                        "category": rule["category"],
                         "package": imp,
-                        "description": desc,
+                        "description": rule["description"],
                         "file": rel_file,
                     })
                     break
 
-    # 3. Cross-reference with LadybugDB Routes
+    # 3. Incorporate exposed routes from LadybugDB
     route_res = conn.execute("MATCH (r:Route) RETURN r.name, r.method, r.filePath;")
     while route_res.has_next():
         row = route_res.get_next()
         ingress_findings.append({
             "category": "HTTP / REST Route",
             "package": f"{row[1]} {row[0]}",
-            "description": "Exposed REST API Route",
+            "description": "Exposed REST API Endpoint",
             "file": row[2],
         })
 
-    # Deduplicate findings
     dedup_ingress = {(f["category"], f["package"], f["file"]): f for f in ingress_findings}.values()
     dedup_egress = {(f["category"], f["package"], f["file"]): f for f in egress_findings}.values()
 
     # Print Ingress
-    print("\n🚪 1. INGRESS BOUNDARIES (Identified by Inbound Packages & Routing SDKs):")
+    print("\n🚪 1. INGRESS BOUNDARIES (Tracked via SDK Registry):")
     ingress_table = [[f["category"], f["package"], f["file"], f["description"]] for f in dedup_ingress]
     print(tabulate(ingress_table, headers=["Boundary Type", "Package / Route Signature", "Source File", "Description"], tablefmt="github"))
     print(f"Total Detected Ingress Boundaries: {len(dedup_ingress)}\n")
 
     # Print Egress
-    print("🚪 2. EGRESS BOUNDARIES (Identified by Persistence, Client & Producer SDKs):")
+    print("🚪 2. EGRESS BOUNDARIES (Tracked via SDK Registry):")
     egress_table = [[f["category"], f["package"], f["file"], f["description"]] for f in dedup_egress]
     print(tabulate(egress_table, headers=["Boundary Type", "Package / Target Signature", "Source File", "Description"], tablefmt="github"))
     print(f"Total Detected Egress Boundaries: {len(dedup_egress)}\n")
@@ -203,8 +221,45 @@ def analyze_packages(project_path: str):
             exit_name = fl[3].split(":")[-1]
             print(f"   [{idx}] \033[32m[INGRESS: {entry_name}]\033[0m ──({fl[4]} hops)──► \033[31m[EGRESS: {exit_name}]\033[0m")
             print(f"       Process Flow: {fl[1]} (ID: {fl[0]})")
-    print("\n" + "=" * 78 + "\n")
+    print("\n" + "=" * 80 + "\n")
+
+def main():
+    parser = argparse.ArgumentParser(description="SDK-Driven Ingress & Egress Analyzer & SDK Registry CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    # Subcommand: list-sdks
+    list_p = subparsers.add_parser("list-sdks", help="List all tracked Ingress and Egress SDK signatures")
+    list_p.add_argument("--boundary", choices=["ingress", "egress"], help="Filter by boundary type")
+    list_p.add_argument("--lang", help="Filter by language (e.g. java, python, typescript, csharp)")
+
+    # Subcommand: add-sdk
+    add_p = subparsers.add_parser("add-sdk", help="Add or update an SDK signature in the registry")
+    add_p.add_argument("--boundary", required=True, choices=["ingress", "egress"], help="Boundary type")
+    add_p.add_argument("--id", required=True, help="Unique identifier for the SDK rule (e.g. spring_web_rest)")
+    add_p.add_argument("--lang", default="all", help="Target language (e.g. java, python, typescript)")
+    add_p.add_argument("--category", required=True, help="Category (e.g. 'HTTP / REST API', 'Database / JPA')")
+    add_p.add_argument("--pattern", required=True, help="Regex pattern matching import statements")
+    add_p.add_argument("--desc", default="", help="Description of the SDK signature")
+
+    # Subcommand: remove-sdk
+    rm_p = subparsers.add_parser("remove-sdk", help="Remove an SDK signature from the registry")
+    rm_p.add_argument("--boundary", required=True, choices=["ingress", "egress"], help="Boundary type")
+    rm_p.add_argument("--id", required=True, help="Unique ID of the SDK rule to remove")
+
+    # Default / Positional project path
+    parser.add_argument("project", nargs="?", default=None, help="Target project path to analyze")
+
+    args = parser.parse_args()
+
+    if args.command == "list-sdks":
+        list_sdks(args.boundary, args.lang)
+    elif args.command == "add-sdk":
+        add_sdk(args.boundary, args.id, args.lang, args.category, args.pattern, args.desc)
+    elif args.command == "remove-sdk":
+        remove_sdk(args.boundary, args.id)
+    else:
+        target_project = args.project or "sample_projects/spring-boot-demo"
+        analyze_project(target_project)
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "sample_projects/spring-boot-demo"
-    analyze_packages(target)
+    main()
