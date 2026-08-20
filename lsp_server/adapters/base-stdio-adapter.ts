@@ -1,14 +1,15 @@
 /**
- * Base Stdio LSP Adapter.
+ * Base Stdio LSP Adapter powered by official Microsoft `vscode-jsonrpc`.
  *
- * Provides a robust, reusable implementation of `ILspAdapter` over standard I/O JSON-RPC
- * for any language server (Pyright, Clangd, Rust-Analyzer, TypeScript, CSharp, COBOL, Gopls).
+ * Uses `vscode-jsonrpc` and `vscode-languageserver-protocol` to provide
+ * enterprise-grade JSON-RPC 2.0 connection management for any Language Server.
  */
 
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
+import * as rpc from 'vscode-jsonrpc/node';
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import {
   CallHierarchyItem,
@@ -18,24 +19,13 @@ import {
   LspImplementationResult,
 } from '../contracts/lsp-types.js';
 
-export interface StdioAdapterConfig {
-  id: string;
-  language: string;
-  command: string;
-  args: string[];
-  initOptions?: Record<string, any>;
-  extraCapabilities?: Record<string, any>;
-}
-
 export abstract class BaseStdioLspAdapter implements ILspAdapter {
   public abstract readonly id: string;
   public abstract readonly language: string;
 
   protected process: ChildProcess | null = null;
+  protected connection: rpc.MessageConnection | null = null;
   protected openedDocuments = new Set<string>();
-  protected nextRequestId = 1;
-  protected pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: any) => void }>();
-  protected incomingBuffer = '';
 
   public static findBinary(name: string): string | null {
     const searchPaths = [
@@ -69,10 +59,17 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       shell: process.platform === 'win32',
     });
 
-    this.process.stdout?.on('data', (chunk: Buffer) => this.handleData(chunk));
-    this.process.stderr?.on('data', () => {
-      // Diagnostic logging ignored
-    });
+    if (!this.process.stdout || !this.process.stdin) {
+      throw new Error(`Failed to create stdio streams for ${this.id}`);
+    }
+
+    // Official Microsoft JSON-RPC message connection
+    this.connection = rpc.createMessageConnection(
+      new rpc.StreamMessageReader(this.process.stdout),
+      new rpc.StreamMessageWriter(this.process.stdin)
+    );
+
+    this.connection.listen();
 
     const rootUri = pathToFileURL(path.resolve(workspacePath)).toString();
     const initParams = {
@@ -91,8 +88,8 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       initializationOptions: launchConfig.initOptions ?? {},
     };
 
-    await this.sendRequest('initialize', initParams);
-    this.sendNotification('initialized', {});
+    await this.connection.sendRequest('initialize', initParams);
+    this.connection.sendNotification('initialized', {});
   }
 
   public async openDocument(filePath: string): Promise<void> {
@@ -103,7 +100,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     const content = fs.readFileSync(absPath, 'utf8');
     const uri = pathToFileURL(absPath).toString();
 
-    this.sendNotification('textDocument/didOpen', {
+    this.connection?.sendNotification('textDocument/didOpen', {
       textDocument: {
         uri,
         languageId: this.language,
@@ -113,7 +110,6 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     });
 
     this.openedDocuments.add(absPath);
-    // Allow brief time for server to index the document
     await new Promise((r) => setTimeout(r, 150));
   }
 
@@ -124,7 +120,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   ): Promise<CallHierarchyItem[]> {
     await this.openDocument(filePath);
     const uri = pathToFileURL(path.resolve(filePath)).toString();
-    const res = await this.sendRequest('textDocument/prepareCallHierarchy', {
+    const res = await this.connection?.sendRequest('textDocument/prepareCallHierarchy', {
       textDocument: { uri },
       position: { line, character },
     });
@@ -132,12 +128,12 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   public async getOutgoingCalls(item: CallHierarchyItem): Promise<CallHierarchyOutgoingCall[]> {
-    const res = await this.sendRequest('callHierarchy/outgoingCalls', { item });
+    const res = await this.connection?.sendRequest('callHierarchy/outgoingCalls', { item });
     return (res as CallHierarchyOutgoingCall[]) || [];
   }
 
   public async getIncomingCalls(item: CallHierarchyItem): Promise<CallHierarchyIncomingCall[]> {
-    const res = await this.sendRequest('callHierarchy/incomingCalls', { item });
+    const res = await this.connection?.sendRequest('callHierarchy/incomingCalls', { item });
     return (res as CallHierarchyIncomingCall[]) || [];
   }
 
@@ -148,7 +144,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   ): Promise<LspImplementationResult[]> {
     await this.openDocument(filePath);
     const uri = pathToFileURL(path.resolve(filePath)).toString();
-    const res = await this.sendRequest('textDocument/implementation', {
+    const res: any = await this.connection?.sendRequest('textDocument/implementation', {
       textDocument: { uri },
       position: { line, character },
     });
@@ -168,7 +164,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   ): Promise<LspHoverResult | null> {
     await this.openDocument(filePath);
     const uri = pathToFileURL(path.resolve(filePath)).toString();
-    const res: any = await this.sendRequest('textDocument/hover', {
+    const res: any = await this.connection?.sendRequest('textDocument/hover', {
       textDocument: { uri },
       position: { line, character },
     });
@@ -187,80 +183,21 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   public async shutdown(): Promise<void> {
-    if (!this.process) return;
-    try {
-      await this.sendRequest('shutdown', {});
-      this.sendNotification('exit', {});
-    } catch {
-      // Ignore errors during shutdown
-    }
-    this.process.kill('SIGTERM');
-    this.process = null;
-    this.openedDocuments.clear();
-  }
-
-  protected sendRequest(method: string, params: any): Promise<any> {
-    return new Promise((resolve, reject) => {
-      const id = this.nextRequestId++;
-      this.pendingRequests.set(id, { resolve, reject });
-
-      const msg = JSON.stringify({ jsonrpc: '2.0', id, method, params });
-      this.writeMessage(msg);
-
-      // Timeout request after 15 seconds to prevent hangs
-      setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id);
-          resolve(null);
-        }
-      }, 15000);
-    });
-  }
-
-  protected sendNotification(method: string, params: any): void {
-    const msg = JSON.stringify({ jsonrpc: '2.0', method, params });
-    this.writeMessage(msg);
-  }
-
-  private writeMessage(body: string): void {
-    if (!this.process?.stdin?.writable) return;
-    const header = `Content-Length: ${Buffer.byteLength(body, 'utf8')}\r\n\r\n`;
-    this.process.stdin.write(header + body);
-  }
-
-  private handleData(chunk: Buffer): void {
-    this.incomingBuffer += chunk.toString('utf8');
-
-    while (true) {
-      const headerEnd = this.incomingBuffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) break;
-
-      const header = this.incomingBuffer.slice(0, headerEnd);
-      const match = header.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        this.incomingBuffer = this.incomingBuffer.slice(headerEnd + 4);
-        continue;
-      }
-
-      const length = parseInt(match[1], 10);
-      const bodyStart = headerEnd + 4;
-      if (this.incomingBuffer.length < bodyStart + length) {
-        break; // Wait for full body
-      }
-
-      const bodyStr = this.incomingBuffer.slice(bodyStart, bodyStart + length);
-      this.incomingBuffer = this.incomingBuffer.slice(bodyStart + length);
-
+    if (this.connection) {
       try {
-        const message = JSON.parse(bodyStr);
-        if (message.id !== undefined && this.pendingRequests.has(message.id)) {
-          const { resolve } = this.pendingRequests.get(message.id)!;
-          this.pendingRequests.delete(message.id);
-          resolve(message.result);
-        }
+        await this.connection.sendRequest('shutdown', {});
+        this.connection.sendNotification('exit', {});
       } catch {
-        // Ignore unparseable frames
+        // Ignore shutdown errors
       }
+      this.connection.dispose();
+      this.connection = null;
     }
+
+    if (this.process) {
+      this.process.kill('SIGTERM');
+      this.process = null;
+    }
+    this.openedDocuments.clear();
   }
 }

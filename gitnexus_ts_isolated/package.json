@@ -35,7 +35,10 @@
     "tree-sitter-rust": "0.23.1",
     "tree-sitter-typescript": "^0.23.2",
     "typescript-language-server": "^5.3.0",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "vscode-jsonrpc": "^9.0.1",
+    "vscode-languageserver-protocol": "^3.18.2",
+    "vscode-languageserver-types": "^3.18.0"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
