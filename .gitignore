@@ -5,10 +5,11 @@ __pycache__/
 *.pyo
 
 # Node.js & Builds
+node_modules/
 dist/
 build/
 .npm/
-.npm_cache/_logs/
+.npm_cache/
 
 # GitNexus & Local Databases
 .gitnexus/

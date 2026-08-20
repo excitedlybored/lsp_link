@@ -2,43 +2,48 @@
 set -e
 
 echo "=================================================="
-echo "🚀 LSP-Link Automated Environment & Dependency Setup"
+echo "🚀 LSP-Link Fast & Offline Dependency Installer"
 echo "=================================================="
 
-# 1. Ensure binary execution permissions
-echo "🔧 [1/4] Setting execution permissions..."
-chmod +x node_modules/.bin/* 2>/dev/null || true
-chmod +x lsp_server/node_modules/.bin/* 2>/dev/null || true
-chmod +x gitnexus_ts_isolated/node_modules/.bin/* 2>/dev/null || true
-chmod +x lsp_server/start_server.sh 2>/dev/null || true
-
-# 2. Re-link workspaces and offline npm packages
-echo "📦 [2/4] Initializing Node.js dependencies..."
-if command -v npm >/dev/null 2>&1; then
-  # Try offline install from committed .npm_cache or tarballs
-  npm install --offline --prefer-offline 2>/dev/null || npm install 2>/dev/null || true
+# 1. Initialize Node.js dependencies from vendor/npm/
+echo "📦 [1/3] Installing Node.js packages from vendor/npm/..."
+if [ -d "vendor/npm" ]; then
+  # Seed local cache from vendor tarballs
+  mkdir -p .npm_cache
+  for tgz in vendor/npm/*.tgz; do
+    npm cache add "$tgz" --cache=.npm_cache 2>/dev/null || true
+  done
+  npm install --cache=.npm_cache --prefer-offline
+else
+  npm install
 fi
 
-# 3. Initialize Python virtual environment with uv
-echo "🐍 [3/4] Initializing Python virtual environment (.venv)..."
+# 2. Initialize Python virtual environment (.venv) from vendor/python/
+echo "🐍 [2/3] Initializing Python .venv from vendor/python/..."
 if command -v uv >/dev/null 2>&1; then
   if [ ! -d ".venv" ]; then
     uv venv .venv
   fi
-  uv pip install -r custom_tools/requirements.txt
+  if [ -d "vendor/python" ]; then
+    uv pip install --find-links vendor/python -r custom_tools/requirements.lock.txt
+  else
+    uv pip install -r custom_tools/requirements.txt
+  fi
 else
-  echo "⚠️ 'uv' not found. Installing uv or using python3 venv..."
-  if command -v python3 >/dev/null 2>&1; then
-    python3 -m venv .venv || true
-    .venv/bin/python -m pip install -r custom_tools/requirements.txt || true
+  echo "⚠️ 'uv' not found. Bootstrapping with python3 venv..."
+  python3 -m venv .venv
+  if [ -d "vendor/python" ]; then
+    .venv/bin/python -m pip install --find-links vendor/python -r custom_tools/requirements.lock.txt
+  else
+    .venv/bin/python -m pip install -r custom_tools/requirements.txt
   fi
 fi
 
-# 4. Verify installation by running boundaries test
-echo "🧪 [4/4] Verifying setup with test analysis..."
+# 3. Verify installation with sample test
+echo "🧪 [3/3] Running boundary analysis test..."
 npm run test:examples
 
 echo ""
 echo "=================================================="
-echo "✅ LSP-Link Setup Complete and Verified!"
+echo "✅ LSP-Link Ready for Immediate Use!"
 echo "=================================================="
