@@ -17,6 +17,11 @@
     "build": "npm --workspaces run build --if-present",
     "test": "npm --workspaces run test --if-present"
   },
+  "dependencies": {
+    "graphology": "^0.26.0",
+    "graphology-indices": "^0.17.0",
+    "graphology-utils": "^2.3.0"
+  },
   "devDependencies": {
     "@types/node": "^26.0.0",
     "tsx": "^4.0.0",
