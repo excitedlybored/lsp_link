@@ -43,6 +43,7 @@ import {
   diPhase,
   communitiesPhase,
   processesPhase,
+  lspEnrichmentPhase,
   PhaseRegistry,
   type ScopeResolutionOutput,
   type PipelinePhase,
@@ -51,6 +52,8 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Enable Language Server Protocol (JDT.LS / LSP) precision enrichment */
+  lsp?: boolean;
   /**
    * Skip MRO, community detection, and process extraction for faster test runs.
    * The `pruneLocalSymbols` phase still runs — it is graph construction (it cleans
@@ -294,6 +297,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(markdownPhase)
       .register(cobolPhase)
       .register(parsePhase)
+      .register(lspEnrichmentPhase, { enabledWhen: (o) => o.lsp === true })
       .register(routesPhase)
       .register(toolsPhase)
       .register(ormPhase)

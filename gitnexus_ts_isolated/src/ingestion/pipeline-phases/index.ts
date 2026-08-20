@@ -38,6 +38,7 @@ export { mroPhase, type MROOutput } from './mro.js';
 export { diPhase, type DIOutput } from './di.js';
 export { communitiesPhase, type CommunitiesOutput } from './communities.js';
 export { processesPhase, type ProcessesOutput } from './processes.js';
+export { lspEnrichmentPhase, type LspEnrichmentOutput } from './lsp-enrichment.js';
 
 // ── Infrastructure ─────────────────────────────────────────────────────────
 
