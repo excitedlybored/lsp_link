@@ -1,9 +1,11 @@
 /**
- * Polyglot LSP Graph Enricher with Automatic Fallback and Active Conflict Resolution.
+ * Polyglot LSP Graph Enricher with High-Throughput Concurrent Batching,
+ * Automatic Fallback, and Active Conflict Resolution.
  *
- * Traverses KnowledgeGraph nodes (Method, Function, Class, Interface, Trait) and enriches
- * them with compiler-verified CALLS and IMPLEMENTS edges from their respective Language Servers
- * (Java/JDT.LS, Python/Pyright, C++/Clangd, Rust/Rust-Analyzer, TypeScript, C#, COBOL).
+ * Performance Optimizations:
+ * - Pre-opens all documents in parallel upfront.
+ * - Concurrently dispatches call hierarchy & implementation queries across a worker pool.
+ * - Zero artificial sleep delays.
  */
 
 import * as path from 'path';
@@ -15,6 +17,29 @@ export interface EnricherStats {
   enrichedCalls: number;
   enrichedImplementations: number;
   conflictsResolved: number;
+}
+
+/**
+ * Executes async tasks with a maximum concurrency limit.
+ */
+async function runConcurrent<T>(
+  items: T[],
+  fn: (item: T) => Promise<void>,
+  concurrency = 10
+): Promise<void> {
+  const executing = new Set<Promise<void>>();
+
+  for (const item of items) {
+    const p: Promise<void> = Promise.resolve().then(() => fn(item));
+    executing.add(p);
+    p.finally(() => executing.delete(p));
+
+    if (executing.size >= concurrency) {
+      await Promise.race(executing);
+    }
+  }
+
+  await Promise.all(executing);
 }
 
 export class LspGraphEnricher {
@@ -73,128 +98,142 @@ export class LspGraphEnricher {
 
         onProgress?.(`⚡ Enriching ${lang.toUpperCase()} symbols via ${adapter.id}...`);
 
-        // A. Enrich IMPLEMENTS for this language
+        // A. Pre-open all files in parallel upfront
+        const absFilePaths = Array.from(files).map((f) => path.resolve(repoPath, f));
+        await runConcurrent(absFilePaths, async (absPath) => {
+          await adapter!.openDocument(absPath);
+        }, 12);
+
+        // B. Enrich IMPLEMENTS concurrently
         const langInterfaces = interfaceNodes.filter((n) =>
           files.has(n.properties?.filePath)
         );
 
-        for (const ifaceNode of langInterfaces) {
-          const filePath = path.resolve(repoPath, ifaceNode.properties.filePath);
-          const line = (ifaceNode.properties.startLine ?? 1) - 1;
-          const char = 10;
+        await runConcurrent(
+          langInterfaces,
+          async (ifaceNode) => {
+            const filePath = path.resolve(repoPath, ifaceNode.properties.filePath);
+            const line = (ifaceNode.properties.startLine ?? 1) - 1;
+            const char = 10;
 
-          try {
-            const implementations = await adapter.findImplementations(filePath, line, char);
-            for (const impl of implementations) {
-              const implFile = impl.uri.startsWith('file://')
-                ? path.relative(repoPath, fileURLToPath(impl.uri))
-                : impl.uri;
+            try {
+              const implementations = await adapter!.findImplementations(filePath, line, char);
+              for (const impl of implementations) {
+                const implFile = impl.uri.startsWith('file://')
+                  ? path.relative(repoPath, fileURLToPath(impl.uri))
+                  : impl.uri;
 
-              for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
-                if (
-                  (node.label === 'Class' || node.label === 'Struct') &&
-                  node.properties?.filePath === implFile
-                ) {
-                  const relId = `rel:lsp_impl:${node.id}->${ifaceNode.id}`;
-                  graph.addRelationship({
-                    id: relId,
-                    sourceId: node.id,
-                    targetId: ifaceNode.id,
-                    type: 'IMPLEMENTS',
-                    confidence: 1.0,
-                    reason: `LSP: ${adapter.id} textDocument/implementation`,
-                  });
-                  stats.enrichedImplementations += 1;
+                for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
+                  if (
+                    (node.label === 'Class' || node.label === 'Struct') &&
+                    node.properties?.filePath === implFile
+                  ) {
+                    const relId = `rel:lsp_impl:${node.id}->${ifaceNode.id}`;
+                    graph.addRelationship({
+                      id: relId,
+                      sourceId: node.id,
+                      targetId: ifaceNode.id,
+                      type: 'IMPLEMENTS',
+                      confidence: 1.0,
+                      reason: `LSP: ${adapter!.id} textDocument/implementation`,
+                    });
+                    stats.enrichedImplementations += 1;
+                  }
                 }
               }
+            } catch {
+              // Ignore individual interface lookup errors
             }
-          } catch {
-            // Ignore individual interface lookup errors
-          }
-        }
+          },
+          8
+        );
 
-        // B. Enrich CALLS for this language
+        // C. Enrich CALLS concurrently with conflict resolution
         const langCallables = callableNodes.filter((n) =>
           files.has(n.properties?.filePath)
         );
 
-        for (const callableNode of langCallables) {
-          const filePath = path.resolve(repoPath, callableNode.properties.filePath);
-          const line = (callableNode.properties.startLine ?? 1) - 1;
-          const char = 15;
+        await runConcurrent(
+          langCallables,
+          async (callableNode) => {
+            const filePath = path.resolve(repoPath, callableNode.properties.filePath);
+            const line = (callableNode.properties.startLine ?? 1) - 1;
+            const char = 15;
 
-          try {
-            const items = await adapter.prepareCallHierarchy(filePath, line, char);
-            if (items && items.length > 0) {
-              const outgoing = await adapter.getOutgoingCalls(items[0]);
-              for (const call of outgoing) {
-                const targetUri = call.to.uri;
-                const targetFile = targetUri.startsWith('file://')
-                  ? path.relative(repoPath, fileURLToPath(targetUri))
-                  : targetUri;
-                const rawTargetName = call.to.name;
-                const simpleTargetName = rawTargetName.split('(')[0].trim();
+            try {
+              const items = await adapter!.prepareCallHierarchy(filePath, line, char);
+              if (items && items.length > 0) {
+                const outgoing = await adapter!.getOutgoingCalls(items[0]);
+                for (const call of outgoing) {
+                  const targetUri = call.to.uri;
+                  const targetFile = targetUri.startsWith('file://')
+                    ? path.relative(repoPath, fileURLToPath(targetUri))
+                    : targetUri;
+                  const rawTargetName = call.to.name;
+                  const simpleTargetName = rawTargetName.split('(')[0].trim();
 
-                // Find matching method, function, struct, or class node in graph
-                let targetNodeId: string | null = null;
-                for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
-                  if (node.properties?.filePath === targetFile) {
-                    if (
-                      (node.label === 'Method' || node.label === 'Function') &&
-                      (node.properties?.name === simpleTargetName || rawTargetName.startsWith(node.properties?.name + '('))
-                    ) {
-                      targetNodeId = node.id;
-                      break;
-                    } else if (
-                      (node.label === 'Class' || node.label === 'Struct') &&
-                      node.properties?.name === simpleTargetName
-                    ) {
-                      targetNodeId = node.id;
-                      break;
-                    }
-                  }
-                }
-
-                if (targetNodeId && targetNodeId !== callableNode.id) {
-                  // Conflict Resolution: Prune conflicting heuristic AST edges from same caller
-                  if (graph.iterRelationships) {
-                    for (const existingRel of graph.iterRelationships()) {
+                  // Find matching method, function, struct, or class node in graph
+                  let targetNodeId: string | null = null;
+                  for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
+                    if (node.properties?.filePath === targetFile) {
                       if (
-                        existingRel.sourceId === callableNode.id &&
-                        existingRel.type === 'CALLS' &&
-                        existingRel.confidence < 1.0
+                        (node.label === 'Method' || node.label === 'Function') &&
+                        (node.properties?.name === simpleTargetName || rawTargetName.startsWith(node.properties?.name + '('))
                       ) {
-                        const existingTarget = graph.getNode(existingRel.targetId);
-                        if (
-                          existingTarget &&
-                          existingTarget.properties?.filePath === targetFile &&
-                          existingTarget.id !== targetNodeId
-                        ) {
-                          graph.removeRelationship(existingRel.id);
-                          stats.conflictsResolved += 1;
-                        }
+                        targetNodeId = node.id;
+                        break;
+                      } else if (
+                        (node.label === 'Class' || node.label === 'Struct') &&
+                        node.properties?.name === simpleTargetName
+                      ) {
+                        targetNodeId = node.id;
+                        break;
                       }
                     }
                   }
 
-                  // Injected Compiler-Verified Edge
-                  const relId = `rel:lsp_call:${callableNode.id}->${targetNodeId}`;
-                  graph.addRelationship({
-                    id: relId,
-                    sourceId: callableNode.id,
-                    targetId: targetNodeId,
-                    type: 'CALLS',
-                    confidence: 1.0,
-                    reason: `LSP: ${adapter.id} Call Hierarchy (${rawTargetName})`,
-                  });
-                  stats.enrichedCalls += 1;
+                  if (targetNodeId && targetNodeId !== callableNode.id) {
+                    // Conflict Resolution: Prune conflicting heuristic AST edges from same caller
+                    if (graph.iterRelationships) {
+                      for (const existingRel of graph.iterRelationships()) {
+                        if (
+                          existingRel.sourceId === callableNode.id &&
+                          existingRel.type === 'CALLS' &&
+                          existingRel.confidence < 1.0
+                        ) {
+                          const existingTarget = graph.getNode(existingRel.targetId);
+                          if (
+                            existingTarget &&
+                            existingTarget.properties?.filePath === targetFile &&
+                            existingTarget.id !== targetNodeId
+                          ) {
+                            graph.removeRelationship(existingRel.id);
+                            stats.conflictsResolved += 1;
+                          }
+                        }
+                      }
+                    }
+
+                    // Injected Compiler-Verified Edge
+                    const relId = `rel:lsp_call:${callableNode.id}->${targetNodeId}`;
+                    graph.addRelationship({
+                      id: relId,
+                      sourceId: callableNode.id,
+                      targetId: targetNodeId,
+                      type: 'CALLS',
+                      confidence: 1.0,
+                      reason: `LSP: ${adapter!.id} Call Hierarchy (${rawTargetName})`,
+                    });
+                    stats.enrichedCalls += 1;
+                  }
                 }
               }
+            } catch {
+              // Ignore individual callable lookup errors
             }
-          } catch {
-            // Ignore individual callable lookup errors
-          }
-        }
+          },
+          12
+        );
       }
     } finally {
       await this.registry.shutdownAll();

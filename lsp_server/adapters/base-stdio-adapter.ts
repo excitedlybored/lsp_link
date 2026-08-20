@@ -110,7 +110,6 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     });
 
     this.openedDocuments.add(absPath);
-    await new Promise((r) => setTimeout(r, 150));
   }
 
   public async prepareCallHierarchy(

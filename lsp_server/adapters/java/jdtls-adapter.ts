@@ -131,8 +131,6 @@ export class JavaJdtlsAdapter implements ILspAdapter {
     });
 
     this.openedDocuments.add(absPath);
-    // Allow JDT.LS to process document
-    await new Promise((resolve) => setTimeout(resolve, 150));
   }
 
   public async prepareCallHierarchy(
