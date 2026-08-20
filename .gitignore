@@ -1,0 +1,35 @@
+# Virtual Environment & Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node.js & Builds
+node_modules/
+dist/
+build/
+.npm/
+
+# GitNexus & Local Databases
+.gitnexus/
+*.lbug
+*.db
+*.sqlite3
+
+# Eclipse & JDT.LS Workspace Artifacts
+.metadata/
+.settings/
+bin/
+target/
+.classpath
+.project
+
+# Gradle & IDEs
+.gradle/
+.idea/
+.vscode/
+*.iml
+
+# Visualizer Outputs
+call_tree.html
+call_tree.md
