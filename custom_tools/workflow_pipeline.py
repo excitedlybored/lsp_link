@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Architectural Ingress & Egress Dependency Call Graph Exporter.
+Business Workflow Diagram & Pipeline Generator.
 
-Sequential 3-Stage Transformation Pipeline:
-  Stage 1: LadybugDB / Knowledge Graph ──► workflow.json (Explicit Ingress & Egress Boundaries + Call Trees)
-  Stage 2: workflow.json               ──► workflow.mmd  (Layered Ingress ──► Service ──► Egress Diagram)
-  Stage 3: workflow.mmd                ──► workflow.svg  (Multi-Layer Topology Vector Graphic)
+Generates true end-to-end business transaction workflows:
+  Stage 1: Knowledge Graph ──► workflow.json (Structured Business Workflows)
+  Stage 2: workflow.json   ──► workflow.mmd  (Themed Mermaid Workflow Subgraphs)
+  Stage 3: workflow.mmd    ──► workflow.svg  (Crisp Horizontal Card-Based SVG Workflow)
 """
 
 import sys
@@ -25,48 +25,31 @@ def load_sdk_registry() -> Dict[str, Any]:
             return json.load(f)
     return {"ingress": [], "egress": []}
 
-def classify_node_boundary(node: Dict[str, Any], file_content_map: Dict[str, str], sdk_rules: Dict[str, Any]) -> str:
-    """Classify a node into Ingress, Egress, Controller, or Service based on SDK rules and file context."""
-    label = node.get("label", "")
-    props = node.get("properties", {})
-    f_path = props.get("filePath", props.get("path", ""))
-    p_lower = f_path.lower()
-    name = props.get("name", "")
-
-    # 1. Direct Route Label is Ingress
-    if label == "Route":
+def classify_role(node_name: str, file_path: str, label: str) -> str:
+    """Classify a node into Ingress, Egress, Controller, or Service."""
+    p_lower = file_path.lower()
+    if label == "Route" or "ingress" in p_lower or "listener" in p_lower or "consumer" in p_lower:
         return "Ingress"
-
-    # 2. Check File Path Conventions
-    if "ingress" in p_lower or "controller" in p_lower or "listener" in p_lower or "consumer" in p_lower:
-        if "controller" in p_lower:
-            return "Controller"
-        return "Ingress"
-
-    if "egress" in p_lower or "client" in p_lower or "producer" in p_lower or "repository" in p_lower or "store" in p_lower:
+    if "egress" in p_lower or "client" in p_lower or "producer" in p_lower or "repo" in p_lower or "store" in p_lower:
         return "Egress"
-
-    if "workflow" in p_lower:
+    if "workflow" in p_lower or "controller" in p_lower:
         return "Controller"
+    return "Service"
 
-    # 3. Check File Content against SDK Registry
-    content = file_content_map.get(f_path, "")
-    if content:
-        for rule in sdk_rules.get("egress", []):
-            if re.search(rule["pattern"], content):
-                return "Egress"
-        for rule in sdk_rules.get("ingress", []):
-            if re.search(rule["pattern"], content):
-                return "Ingress"
-
-    return "Domain_Service"
+def format_clean_name(name: str) -> str:
+    """Clean up method/route names for clean workflow presentation."""
+    if not name:
+        return "Process"
+    # Remove method overload markers like #1
+    name = re.sub(r'#\d+$', '', name)
+    return name
 
 # ============================================================================
-# STAGE 1: Extract Knowledge Graph ──► workflow.json (Ingress & Egress Call Graph)
+# STAGE 1: Extract Knowledge Graph ──► workflow.json (Business Workflows)
 # ============================================================================
 
 def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str, Any]:
-    """Stage 1: Extract true Ingress-to-Egress call graph from LadybugDB/graph.json."""
+    """Stage 1: Discover distinct business workflows from Ingress entry points to Egress sinks."""
     gitnexus_dir = project_dir / ".gitnexus"
     graph_file = gitnexus_dir / "graph.json"
 
@@ -78,131 +61,112 @@ def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str
 
     all_nodes = {n["id"]: n for n in graph_data.get("nodes", [])}
     raw_relationships = graph_data.get("relationships", [])
-    sdk_rules = load_sdk_registry()
 
-    # Pre-cache source file contents for SDK detection
-    file_content_map = {}
-    for n in all_nodes.values():
-        fp = n.get("properties", {}).get("filePath", "")
-        if fp and fp not in file_content_map:
-            full_p = project_dir / fp
-            if full_p.exists() and full_p.is_file():
-                try:
-                    with open(full_p, "r", encoding="utf-8", errors="ignore") as src_f:
-                        file_content_map[fp] = src_f.read()
-                except Exception:
-                    file_content_map[fp] = ""
-
-    # Filter relevant call & route handling relationships
-    call_rels = []
-    active_node_ids = set()
-
+    # Build Call Graph Adjacency
+    call_adjacency: Dict[str, List[str]] = {}
     for r in raw_relationships:
-        r_type = r.get("type", "")
-        if r_type in ["CALLS", "HANDLES_ROUTE", "STEP_IN_PROCESS"]:
-            s_id = r.get("sourceId")
-            t_id = r.get("targetId")
-            if s_id in all_nodes and t_id in all_nodes:
-                call_rels.append({
-                    "source": s_id,
-                    "target": t_id,
-                    "type": r_type,
-                    "confidence": float(r.get("confidence", 1.0)),
-                    "reason": r.get("reason", "")
-                })
-                active_node_ids.add(s_id)
-                active_node_ids.add(t_id)
+        if r.get("type") in ["CALLS", "HANDLES_ROUTE"]:
+            src = r.get("sourceId")
+            tgt = r.get("targetId")
+            if src in all_nodes and tgt in all_nodes:
+                call_adjacency.setdefault(src, []).append(tgt)
 
-    # Deduplicate call relationships
-    seen_edges = set()
-    deduped_edges = []
-    for edge in call_rels:
-        key = (edge["source"], edge["target"], edge["type"])
-        if key not in seen_edges:
-            seen_edges.add(key)
-            deduped_edges.append(edge)
-
-    # Format active nodes with Ingress/Egress boundary classification
-    graph_nodes = []
-    ingress_points = []
-    egress_points = []
-
-    for n_id in active_node_ids:
-        n = all_nodes[n_id]
+    # Find Root Ingress Triggers
+    ingress_nodes = []
+    for n in all_nodes.values():
         props = n.get("properties", {})
         f_path = props.get("filePath", props.get("path", ""))
-        layer = classify_node_boundary(n, file_content_map, sdk_rules)
+        role = classify_role(props.get("name", ""), f_path, n.get("label", ""))
+        if role == "Ingress" or n.get("label") == "Route":
+            ingress_nodes.append(n)
 
-        node_item = {
-            "id": n_id,
-            "name": props.get("name", n_id.split(":")[-1]),
-            "label": n.get("label", "CodeElement"),
-            "layer": layer,
-            "filePath": f_path,
-            "startLine": props.get("startLine", 1),
-            "endLine": props.get("endLine", 1),
-        }
-        graph_nodes.append(node_item)
+    # If no explicit Ingress nodes found, pick top entry methods
+    if not ingress_nodes:
+        called_nodes = {tgt for tgts in call_adjacency.values() for tgt in tgts}
+        for n in all_nodes.values():
+            if n.get("label") in ["Method", "Function"] and n["id"] not in called_nodes:
+                ingress_nodes.append(n)
 
-        if layer == "Ingress":
-            ingress_points.append(node_item)
-        elif layer == "Egress":
-            egress_points.append(node_item)
+    workflows = []
+    seen_workflow_keys = set()
 
-    # Build Adjacency Graph
-    adjacency: Dict[str, List[str]] = {}
-    for e in deduped_edges:
-        if e["type"] in ["CALLS", "HANDLES_ROUTE"]:
-            adjacency.setdefault(e["source"], []).append(e["target"])
-
-    # Trace End-to-End Ingress ──► Egress Execution Paths
-    egress_ids = {e["id"] for e in egress_points}
-    ingress_to_egress_flows = []
-
-    for root in ingress_points:
+    for idx, root in enumerate(ingress_nodes, 1):
         root_id = root["id"]
-        def trace_paths(curr_id, curr_path, visited, depth=0):
-            if depth > 6 or curr_id in visited:
-                return []
-            if curr_id in egress_ids and len(curr_path) > 1:
-                return [curr_path]
-            next_nodes = adjacency.get(curr_id, [])
-            flows = []
-            for nxt in next_nodes:
-                flows.extend(trace_paths(nxt, curr_path + [nxt], visited | {curr_id}, depth + 1))
-            return flows
+        root_props = root.get("properties", {})
+        root_name = format_clean_name(root_props.get("name", root_id.split(":")[-1]))
+        root_file = root_props.get("filePath", root_props.get("path", ""))
+        root_method = root_props.get("method", "ROUTE" if root.get("label") == "Route" else "EVENT")
 
-        found_flows = trace_paths(root_id, [root_id], set())
-        for fl in found_flows:
-            ingress_to_egress_flows.append({
-                "ingress": root["name"],
-                "ingressId": root_id,
-                "egress": all_nodes.get(fl[-1], {}).get("properties", {}).get("name", fl[-1].split(":")[-1]),
-                "egressId": fl[-1],
-                "hops": len(fl) - 1,
-                "path": [
-                    {
-                        "id": nid,
-                        "name": all_nodes.get(nid, {}).get("properties", {}).get("name", nid.split(":")[-1]),
-                        "layer": classify_node_boundary(all_nodes.get(nid, {}), file_content_map, sdk_rules),
-                        "filePath": all_nodes.get(nid, {}).get("properties", {}).get("filePath", "")
-                    }
-                    for nid in fl
-                ]
-            })
+        # Trace reachable downstream services & egress sinks via BFS/DFS
+        visited = set()
+        queue = [(root_id, 0)]
+        workflow_services = []
+        workflow_egress = []
+        workflow_steps = []
+
+        while queue:
+            curr_id, depth = queue.pop(0)
+            if curr_id in visited or depth > 4:
+                continue
+            visited.add(curr_id)
+
+            curr_node = all_nodes.get(curr_id)
+            if not curr_node:
+                continue
+
+            curr_props = curr_node.get("properties", {})
+            curr_name = format_clean_name(curr_props.get("name", curr_id.split(":")[-1]))
+            curr_file = curr_props.get("filePath", curr_props.get("path", ""))
+            curr_role = classify_role(curr_name, curr_file, curr_node.get("label", ""))
+
+            node_summary = {
+                "id": curr_id,
+                "name": curr_name,
+                "role": curr_role,
+                "filePath": curr_file,
+                "type": curr_node.get("label", "Method")
+            }
+
+            if curr_id != root_id:
+                workflow_steps.append(node_summary)
+                if curr_role == "Egress":
+                    workflow_egress.append(node_summary)
+                else:
+                    workflow_services.append(node_summary)
+
+            for nxt in call_adjacency.get(curr_id, []):
+                if nxt not in visited:
+                    queue.append((nxt, depth + 1))
+
+        if not workflow_steps and root.get("label") != "Route":
+            continue
+
+        wf_title = f"{root_method}: {root_name}" if root.get("label") == "Route" else f"Flow: {root_name}"
+        wf_key = (root_name, tuple(s["name"] for s in workflow_steps[:3]))
+        if wf_key in seen_workflow_keys:
+            continue
+        seen_workflow_keys.add(wf_key)
+
+        workflows.append({
+            "id": f"wf_{idx}_{re.sub(r'[^a-zA-Z0-9]', '_', root_name).lower()}",
+            "title": wf_title,
+            "ingress": {
+                "id": root_id,
+                "name": root_name,
+                "type": root.get("label", "Route"),
+                "method": root_method,
+                "filePath": root_file
+            },
+            "services": workflow_services,
+            "egressSinks": workflow_egress,
+            "totalSteps": len(workflow_steps) + 1,
+            "steps": workflow_steps
+        })
 
     result = {
         "project": str(project_dir),
-        "totalNodes": len(graph_nodes),
-        "totalEdges": len(deduped_edges),
-        "totalIngressPoints": len(ingress_points),
-        "totalEgressPoints": len(egress_points),
-        "totalIngressToEgressFlows": len(ingress_to_egress_flows),
-        "ingressPoints": ingress_points,
-        "egressPoints": egress_points,
-        "nodes": graph_nodes,
-        "edges": deduped_edges,
-        "ingressToEgressFlows": ingress_to_egress_flows
+        "totalWorkflows": len(workflows),
+        "workflows": workflows
     }
 
     with open(output_json_path, "w", encoding="utf-8") as f:
@@ -211,37 +175,21 @@ def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str
     return result
 
 # ============================================================================
-# STAGE 2: workflow.json ──► workflow.mmd (Ingress ──► Service ──► Egress Diagram)
+# STAGE 2: workflow.json ──► workflow.mmd (Themed Mermaid Workflow Subgraphs)
 # ============================================================================
 
 def sanitize_id(node_id: str) -> str:
-    """Generate safe Mermaid node identifiers."""
     return re.sub(r'[^a-zA-Z0-9_]', '_', node_id)
 
 def convert_json_to_mmd(workflow_json_path: Path, output_mmd_path: Path) -> str:
-    """Stage 2: Convert call graph JSON into an Ingress & Egress boundary Mermaid diagram."""
+    """Stage 2: Convert business workflows into clean, horizontal Mermaid flowcharts."""
     with open(workflow_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    nodes = data.get("nodes", [])
-    edges = data.get("edges", [])
-
-    layers = {
-        "Ingress": [],
-        "Controller": [],
-        "Domain_Service": [],
-        "Egress": []
-    }
-
-    for n in nodes:
-        layer = n.get("layer", "Domain_Service")
-        if layer not in layers:
-            layer = "Domain_Service"
-        layers[layer].append(n)
-
+    workflows = data.get("workflows", [])
     mmd = [
         "%%{init: {'theme': 'dark', 'themeVariables': { 'darkMode': true, 'primaryColor': '#1e293b', 'edgeLabelBackground':'#0f172a'}}}%%",
-        "flowchart LR",
+        "flowchart TD",
         "    classDef ingress fill:#065f46,stroke:#10b981,stroke-width:2.5px,color:#ecfdf5,font-weight:bold;",
         "    classDef controller fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#eff6ff;",
         "    classDef service fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f0f9ff;",
@@ -249,36 +197,42 @@ def convert_json_to_mmd(workflow_json_path: Path, output_mmd_path: Path) -> str:
         ""
     ]
 
-    layer_titles = {
-        "Ingress": "🟢 INGRESS BOUNDARIES (REST Endpoints & Consumers)",
-        "Controller": "🎮 CONTROLLERS & WORKFLOWS",
-        "Domain_Service": "⚙️ DOMAIN SERVICES & BUSINESS LOGIC",
-        "Egress": "🔴 EGRESS BOUNDARIES (Databases, HTTP Clients & Publishers)"
-    }
+    for w_idx, wf in enumerate(workflows, 1):
+        wf_id = sanitize_id(wf["id"])
+        wf_title = html.escape(wf["title"])
+        mmd.append(f"    subgraph {wf_id} [\"⚡ {wf_title}\"]")
+        mmd.append("        direction LR")
 
-    for l_key, l_title in layer_titles.items():
-        l_nodes = layers.get(l_key, [])
-        if not l_nodes:
-            continue
-        mmd.append(f"    subgraph {l_key} [\"{l_title}\"]")
-        for n in l_nodes:
-            s_id = sanitize_id(n["id"])
-            name = n["name"]
-            f_name = Path(n.get("filePath", "")).name
-            cls = "ingress" if l_key == "Ingress" else ("egress" if l_key == "Egress" else ("controller" if l_key == "Controller" else "service"))
-            icon = "🟢 " if l_key == "Ingress" else ("🔴 " if l_key == "Egress" else ("🎮 " if l_key == "Controller" else "⚙️ "))
-            mmd.append(f"        {s_id}[\"{icon}{name}<br/><small>{f_name}</small>\"]:::{cls}")
+        ing = wf["ingress"]
+        ing_id = f"{wf_id}_IN"
+        ing_file = Path(ing.get("filePath", "")).name
+        mmd.append(f"        {ing_id}[\"🟢 INGRESS: {ing['name']}<br/><small>{ing_file}</small>\"]:::ingress")
+
+        prev_id = ing_id
+        services = wf.get("services", [])
+        egress_sinks = wf.get("egressSinks", [])
+
+        # Add Core Services
+        for s_idx, svc in enumerate(services[:2]):
+            s_node_id = f"{wf_id}_SVC_{s_idx}"
+            s_file = Path(svc.get("filePath", "")).name
+            mmd.append(f"        {s_node_id}[\"⚙️ SERVICE: {svc['name']}<br/><small>{s_file}</small>\"]:::service")
+            mmd.append(f"        {prev_id} --> {s_node_id}")
+            prev_id = s_node_id
+
+        # Add Egress Sinks (fan-out)
+        if egress_sinks:
+            for e_idx, eg in enumerate(egress_sinks[:3]):
+                e_node_id = f"{wf_id}_EG_{e_idx}"
+                e_file = Path(eg.get("filePath", "")).name
+                mmd.append(f"        {e_node_id}[\"🔴 EGRESS: {eg['name']}<br/><small>{e_file}</small>\"]:::egress")
+                mmd.append(f"        {prev_id} --> {e_node_id}")
+        elif not services:
+            # Fallback direct sink
+            pass
+
         mmd.append("    end")
         mmd.append("")
-
-    # Add Dependency Call Arrows
-    mmd.append("    %% Ingress to Egress Call Connections")
-    for e in edges:
-        if e.get("type") in ["CALLS", "HANDLES_ROUTE"]:
-            src_safe = sanitize_id(e["source"])
-            tgt_safe = sanitize_id(e["target"])
-            label = "calls" if e["type"] == "CALLS" else "handles"
-            mmd.append(f"    {src_safe} -->|{label}| {tgt_safe}")
 
     mmd_content = "\n".join(mmd)
     with open(output_mmd_path, "w", encoding="utf-8") as f:
@@ -287,18 +241,16 @@ def convert_json_to_mmd(workflow_json_path: Path, output_mmd_path: Path) -> str:
     return mmd_content
 
 # ============================================================================
-# STAGE 3: workflow.mmd ──► workflow.svg (Ingress & Egress Topology Graphic)
+# STAGE 3: workflow.mmd ──► workflow.svg (Card-Based Horizontal Workflow Graphic)
 # ============================================================================
 
 def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
-    """Stage 3: Render Ingress & Egress boundary topology directly to crisp SVG."""
+    """Stage 3: Render Mermaid workflow subgraphs as horizontal visual transaction cards."""
     with open(workflow_mmd_path, "r", encoding="utf-8") as f:
         mmd_text = f.read()
 
     subgraphs = []
     current_subgraph = None
-    all_nodes_dict = {}
-    edges_list = []
 
     for line in mmd_text.splitlines():
         line = line.strip()
@@ -308,7 +260,8 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
                 current_subgraph = {
                     "id": m.group(1),
                     "title": m.group(2),
-                    "nodes": []
+                    "nodes": [],
+                    "edges": []
                 }
                 subgraphs.append(current_subgraph)
         elif line.startswith("end") and current_subgraph:
@@ -321,47 +274,25 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
                 cls = node_match.group(3) or "service"
 
                 parts = raw_label.split("<br/><small>")
-                name = parts[0].replace("🟢 ", "").replace("🔴 ", "").replace("🎮 ", "").replace("⚙️ ", "")
-                sub = parts[1].replace("</small>", "") if len(parts) > 1 else ""
+                title_part = parts[0].replace("🟢 ", "").replace("🔴 ", "").replace("⚙️ ", "")
+                sub_part = parts[1].replace("</small>", "") if len(parts) > 1 else ""
 
-                node_obj = {
+                current_subgraph["nodes"].append({
                     "id": n_id,
-                    "name": name,
-                    "sub": sub,
-                    "class": cls,
-                    "layer": current_subgraph["id"]
-                }
-                current_subgraph["nodes"].append(node_obj)
-                all_nodes_dict[n_id] = node_obj
-        elif "-->" in line and not line.startswith("%%"):
-            edge_match = re.search(r'(\w+)\s+-->(\|.+?\|)?\s+(\w+)', line)
-            if edge_match:
-                edges_list.append((edge_match.group(1), edge_match.group(3)))
+                    "title": title_part,
+                    "sub": sub_part,
+                    "class": cls
+                })
+            elif "-->" in line and not line.startswith("%%"):
+                e_match = re.search(r'(\w+)\s+-->\s+(\w+)', line)
+                if e_match:
+                    current_subgraph["edges"].append((e_match.group(1), e_match.group(2)))
 
-    num_cols = max(1, len(subgraphs))
-    col_width = 260
-    col_gap = 70
-    svg_width = max(1150, num_cols * (col_width + col_gap) + 80)
-    
-    max_nodes_in_col = max((len(sg["nodes"]) for sg in subgraphs), default=1)
-    svg_height = max(520, max_nodes_in_col * 85 + 180)
-
-    node_positions = {}
-    for col_idx, sg in enumerate(subgraphs):
-        x = 40 + col_idx * (col_width + col_gap)
-        for row_idx, nd in enumerate(sg["nodes"]):
-            y = 140 + row_idx * 80
-            node_positions[nd["id"]] = {
-                "x": x + 15,
-                "y": y,
-                "w": col_width - 30,
-                "h": 62,
-                "cx": x + 15 + (col_width - 30) // 2,
-                "cy": y + 31,
-                "right_x": x + 15 + (col_width - 30),
-                "left_x": x + 15,
-                "node": nd
-            }
+    # Layout Parameters
+    svg_width = 1050
+    card_height = 145
+    card_gap = 25
+    svg_height = max(400, len(subgraphs) * (card_height + card_gap) + 120)
 
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {svg_width} {svg_height}" width="{svg_width}" height="{svg_height}">',
@@ -370,58 +301,68 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
         '      <stop offset="0%" stop-color="#0b1120"/>',
         '      <stop offset="100%" stop-color="#1e293b"/>',
         '    </linearGradient>',
-        '    <marker id="callArrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">',
+        '    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">',
         '      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>',
         '    </marker>',
         '  </defs>',
         f'  <rect width="{svg_width}" height="{svg_height}" fill="url(#bgGrad)"/>',
-        f'  <text x="40" y="45" fill="#38bdf8" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold">⚡ LSP-Link Ingress ──► Egress Boundary Topology</text>',
-        f'  <text x="40" y="70" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="12">Rendered from workflow.mmd | Layers: {num_cols} | Boundary Points &amp; Nodes: {len(all_nodes_dict)} | Dependencies: {len(edges_list)}</text>',
+        f'  <text x="35" y="45" fill="#38bdf8" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold">⚡ LSP-Link End-to-End Business Transaction Workflows</text>',
+        f'  <text x="35" y="70" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="12">Rendered from workflow.mmd | Discovered Workflows: {len(subgraphs)}</text>',
     ]
 
-    for col_idx, sg in enumerate(subgraphs):
-        x = 40 + col_idx * (col_width + col_gap)
-        col_h = max_nodes_in_col * 80 + 35
-        header_col = "#10b981" if sg["id"] == "Ingress" else ("#ef4444" if sg["id"] == "Egress" else "#f59e0b")
-        svg.append(f'  <!-- Layer Column: {sg["id"]} -->')
-        svg.append(f'  <rect x="{x}" y="100" width="{col_width}" height="{col_h}" rx="8" fill="#1e293b" fill-opacity="0.5" stroke="#334155" stroke-dasharray="4"/>')
-        svg.append(f'  <text x="{x+15}" y="125" fill="{header_col}" font-family="system-ui, sans-serif" font-size="11" font-weight="bold">{html.escape(sg["title"])}</text>')
-
-    svg.append('  <!-- Call Dependency Arrows -->')
-    for src_id, tgt_id in edges_list:
-        if src_id in node_positions and tgt_id in node_positions:
-            p1 = node_positions[src_id]
-            p2 = node_positions[tgt_id]
-            x1, y1 = p1["right_x"], p1["cy"]
-            x2, y2 = p2["left_x"], p2["cy"]
-            dx = max(30, abs(x2 - x1) * 0.4)
-            svg.append(f'  <path d="M {x1} {y1} C {x1+dx} {y1}, {x2-dx} {y2}, {x2} {y2}" fill="none" stroke="#38bdf8" stroke-width="1.8" stroke-opacity="0.85" marker-end="url(#callArrow)"/>')
-
-    svg.append('  <!-- Boundary Nodes -->')
-    for n_id, pos in node_positions.items():
-        nd = pos["node"]
-        cls = nd["class"]
-        x, y, w, h = pos["x"], pos["y"], pos["w"], pos["h"]
-
-        fill_col = "#065f46" if cls == "ingress" else ("#7f1d1d" if cls == "egress" else ("#1e3a8a" if cls == "controller" else "#0f172a"))
-        border_col = "#10b981" if cls == "ingress" else ("#ef4444" if cls == "egress" else ("#3b82f6" if cls == "controller" else "#38bdf8"))
-        badge_txt = "INGRESS POINT" if cls == "ingress" else ("EGRESS SINK" if cls == "egress" else ("CONTROLLER" if cls == "controller" else "SERVICE"))
-
-        svg.append(f'  <g>')
-        svg.append(f'    <rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" fill="{fill_col}" stroke="{border_col}" stroke-width="1.8"/>')
-        svg.append(f'    <rect x="{x+8}" y="{y+7}" width="75" height="13" rx="3" fill="{border_col}" fill-opacity="0.25"/>')
-        svg.append(f'    <text x="{x+12}" y="{y+17}" fill="{border_col}" font-family="system-ui, sans-serif" font-size="8" font-weight="bold">{badge_txt}</text>')
+    y_offset = 95
+    for sg_idx, sg in enumerate(subgraphs, 1):
+        nodes_list = sg["nodes"]
+        num_nodes = len(nodes_list)
         
-        safe_name = html.escape(nd["name"])
-        if len(safe_name) > 20:
-            safe_name = safe_name[:18] + "…"
-        svg.append(f'    <text x="{x+8}" y="{y+36}" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="11" font-weight="600">{safe_name}</text>')
-        
-        safe_sub = html.escape(nd["sub"])
-        if len(safe_sub) > 24:
-            safe_sub = safe_sub[:22] + "…"
-        svg.append(f'    <text x="{x+8}" y="{y+50}" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="9">{safe_sub}</text>')
-        svg.append(f'  </g>')
+        svg.append(f'  <!-- Workflow Card {sg_idx}: {sg["id"]} -->')
+        svg.append(f'  <g transform="translate(35, {y_offset})">')
+        svg.append(f'    <rect width="980" height="{card_height}" rx="10" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>')
+        svg.append(f'    <text x="20" y="26" fill="#f59e0b" font-family="system-ui, sans-serif" font-size="13" font-weight="bold">{html.escape(sg["title"])}</text>')
+
+        if num_nodes > 0:
+            box_width = min(220, (920 - (num_nodes - 1) * 35) // max(1, num_nodes))
+            node_coords = {}
+
+            for n_idx, nd in enumerate(nodes_list):
+                x_pos = 20 + n_idx * (box_width + 35)
+                y_box = 45
+                box_h = 75
+
+                cls = nd["class"]
+                fill_col = "#065f46" if cls == "ingress" else ("#7f1d1d" if cls == "egress" else "#0f172a")
+                border_col = "#10b981" if cls == "ingress" else ("#ef4444" if cls == "egress" else "#38bdf8")
+                badge_txt = "INGRESS" if cls == "ingress" else ("EGRESS SINK" if cls == "egress" else "SERVICE")
+
+                svg.append(f'    <!-- Step Node {n_idx} -->')
+                svg.append(f'    <rect x="{x_pos}" y="{y_box}" width="{box_width}" height="{box_h}" rx="6" fill="{fill_col}" stroke="{border_col}" stroke-width="1.8"/>')
+                svg.append(f'    <rect x="{x_pos+8}" y="{y_box+8}" width="65" height="14" rx="3" fill="{border_col}" fill-opacity="0.25"/>')
+                svg.append(f'    <text x="{x_pos+12}" y="{y_box+19}" fill="{border_col}" font-family="system-ui, sans-serif" font-size="8.5" font-weight="bold">{badge_txt}</text>')
+                
+                safe_title = html.escape(nd["title"])
+                if len(safe_title) > 20:
+                    safe_title = safe_title[:18] + "…"
+                svg.append(f'    <text x="{x_pos+8}" y="{y_box+43}" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="11.5" font-weight="600">{safe_title}</text>')
+                
+                safe_sub = html.escape(nd["sub"])
+                if len(safe_sub) > 24:
+                    safe_sub = safe_sub[:22] + "…"
+                svg.append(f'    <text x="{x_pos+8}" y="{y_box+61}" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="10">{safe_sub}</text>')
+
+                node_coords[nd["id"]] = (x_pos, y_box, box_width, box_h)
+
+            # Draw Connecting Arrows
+            for src_id, tgt_id in sg["edges"]:
+                if src_id in node_coords and tgt_id in node_coords:
+                    x1, y1, w1, h1 = node_coords[src_id]
+                    x2, y2, w2, h2 = node_coords[tgt_id]
+                    start_x = x1 + w1
+                    end_x = x2
+                    mid_y = y1 + h1 // 2
+                    svg.append(f'    <line x1="{start_x}" y1="{mid_y}" x2="{end_x}" y2="{mid_y}" stroke="#38bdf8" stroke-width="2" marker-end="url(#arrow)"/>')
+
+        svg.append('  </g>')
+        y_offset += (card_height + card_gap)
 
     svg.append('</svg>')
     svg_content = "\n".join(svg)
@@ -445,31 +386,31 @@ def run_workflow_pipeline(project_dir: str, output_dir: str = None):
     svg_file = out_path / "workflow.svg"
 
     print("==================================================")
-    print("🔄 INGRESS & EGRESS DEPENDENCY CALL GRAPH PIPELINE")
+    print("🔄 BUSINESS WORKFLOW PIPELINE (Ingress ──► Egress)")
     print(f"   Target:  {proj_path}")
     print(f"   Outputs: {out_path}")
     print("==================================================")
 
     # Stage 1: Graph -> workflow.json
-    print("⚙️  [1/3] Extracting Ingress & Egress boundaries ──► workflow.json...")
+    print("⚙️  [1/3] Extracting business workflows ──► workflow.json...")
     res = extract_workflow_json(proj_path, json_file)
-    print(f"   ✓ {json_file.name} ({res['totalIngressPoints']} Ingress, {res['totalEgressPoints']} Egress, {res['totalIngressToEgressFlows']} End-to-End Flows)")
+    print(f"   ✓ {json_file.name} ({res['totalWorkflows']} Business Workflows)")
 
     # Stage 2: workflow.json -> workflow.mmd
-    print("📊 [2/3] Generating Ingress ──► Egress diagram ──► workflow.mmd...")
+    print("📊 [2/3] Generating Mermaid flowcharts ──► workflow.mmd...")
     convert_json_to_mmd(json_file, mmd_file)
     print(f"   ✓ {mmd_file.name} ({mmd_file.stat().st_size} bytes)")
 
     # Stage 3: workflow.mmd -> workflow.svg
-    print("🖼️  [3/3] Rendering multi-layer vector topology ──► workflow.svg...")
+    print("🖼️  [3/3] Rendering horizontal workflow cards ──► workflow.svg...")
     convert_mmd_to_svg(mmd_file, svg_file)
     print(f"   ✓ {svg_file.name} ({svg_file.stat().st_size} bytes)")
 
     print("==================================================")
-    print("✅ Ingress & Egress Boundary Pipeline Completed!")
+    print("✅ Workflow Pipeline Completed Successfully!")
     print("==================================================")
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "sample_projects/spring-boot-demo"
+    target = sys.argv[1] if len(sys.argv) > 1 else "examples/01_spring_boot_banking"
     out = sys.argv[2] if len(sys.argv) > 2 else None
     run_workflow_pipeline(target, out)
