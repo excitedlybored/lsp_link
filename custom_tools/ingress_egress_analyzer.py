@@ -278,6 +278,14 @@ def analyze_project(project_path: str):
     print("\n" + "=" * 80 + "\n")
 
 def main():
+    raw_args = sys.argv[1:]
+    
+    # If first arg is a project path (not a subcommand or flag)
+    if raw_args and not raw_args[0].startswith("-") and raw_args[0] not in ["list-sdks", "links", "add-sdk", "remove-sdk"]:
+        target_project = raw_args[0]
+        analyze_project(target_project)
+        return
+
     parser = argparse.ArgumentParser(description="SDK-Driven Ingress & Egress Analyzer & SDK Registry CLI")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -288,7 +296,7 @@ def main():
 
     # Subcommand: links
     links_p = subparsers.add_parser("links", help="Display GitNexus graph node links connecting Ingress to Egress")
-    links_p.add_argument("project", nargs="?", default=None, help="Target project path")
+    links_p.add_argument("project", nargs="?", default="sample_projects/spring-boot-demo", help="Target project path")
 
     # Subcommand: add-sdk
     add_p = subparsers.add_parser("add-sdk", help="Add or update an SDK signature in the registry")
@@ -304,21 +312,18 @@ def main():
     rm_p.add_argument("--boundary", required=True, choices=["ingress", "egress"], help="Boundary type")
     rm_p.add_argument("--id", required=True, help="Unique ID of the SDK rule to remove")
 
-    parser.add_argument("project", nargs="?", default=None, help="Target project path to analyze")
-
     args = parser.parse_args()
 
     if args.command == "list-sdks":
         list_sdks(args.boundary, args.lang)
     elif args.command == "links":
-        trace_ingress_nodes(args.project or "sample_projects/spring-boot-demo")
+        trace_ingress_nodes(args.project)
     elif args.command == "add-sdk":
         add_sdk(args.boundary, args.id, args.lang, args.category, args.pattern, args.desc)
     elif args.command == "remove-sdk":
         remove_sdk(args.boundary, args.id)
     else:
-        target_project = args.project or "sample_projects/spring-boot-demo"
-        analyze_project(target_project)
+        analyze_project("sample_projects/spring-boot-demo")
 
 if __name__ == "__main__":
     main()
