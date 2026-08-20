@@ -20,7 +20,9 @@
   "dependencies": {
     "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
-    "graphology-utils": "^2.3.0"
+    "graphology-utils": "^2.3.0",
+    "mnemonist": "^0.40.3",
+    "pandemonium": "^2.4.0"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
