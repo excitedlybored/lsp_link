@@ -11,7 +11,6 @@ ide_link/
 ├── lsp_server/                        # [Set 1] Standalone Eclipse JDT.LS Language Server Daemon
 ├── gitnexus_ts_isolated/              # [Set 2] Isolated GitNexus LSP-Enriched Indexer & Pipeline
 ├── gitnexus/                          # Full Upstream GitNexus Engine & Web App
-├── lsp_runner/                        # Diagnostic Python CLI & Call Tree Visualizer
 ├── 01_language_server_protocol/
 │   ├── eclipse.jdt.ls/                # Eclipse Java Language Server (JDT.LS backend for VS Code)
 │   └── lsp4j/                         # LSP Java implementation & JSON-RPC communication
@@ -121,43 +120,6 @@ For full technical specifications, see **[`docs/LBUG_DATA_STRUCTURE.md`](file://
    │   └── wal.kuzu         # Write-Ahead Log
    └── gitnexus.json        # Graph manifest & cluster summaries
    ```
-
----
-
-## ⚡ Real IDE Engine & LSP Server Runner (`lsp_runner/`)
-
-All AST parsing, symbol tables, hovers, type hierarchies, and definitions are driven **100% natively by the live Eclipse JDT Language Server (`eclipse.jdt.ls`)** running OpenJDK 21 over JSON-RPC.
-
-### 1. Run 100% Pure JDT.LS LSP Queries (Symbols, AST, Hovers, Implementations)
-```bash
-.venv/bin/python -m lsp_runner.pure_lsp_indexer sample_projects/samples-java/springboot
-```
-- Spawns real Eclipse JDT.LS over OpenJDK 21
-- Waits for Gradle `ServiceReady` compilation
-- Executes real JSON-RPC queries: `workspace/symbol`, `textDocument/documentSymbol`, `textDocument/hover`, and `textDocument/implementation`.
-
-### 2. Run Interactive IDE Simulation Workflow
-```bash
-.venv/bin/python -m lsp_runner.ide_simulator sample_projects/samples-java/springboot
-```
-
-### 3. Retrieve Live Dependency Call Trees (Incoming & Outgoing)
-```bash
-# Trace Outgoing Call Tree (What this method calls)
-.venv/bin/python -m lsp_runner.call_tree sample_projects/samples-java/springboot \
-  --file src/main/java/io/temporal/samples/springboot/SamplesController.java \
-  --line 40 --char 15 --direction outgoing
-
-# Trace Incoming Call Tree (Who calls this method)
-.venv/bin/python -m lsp_runner.call_tree sample_projects/samples-java/springboot \
-  --file src/main/java/io/temporal/samples/springboot/hello/HelloWorkflow.java \
-  --line 9 --char 12 --direction incoming
-```
-
-### 4. Launch Standalone JDT.LS Server over stdio (For Neovim / Emacs / Custom Clients)
-```bash
-./lsp_runner/launch_server.sh sample_projects/samples-java/springboot
-```
 
 ---
 
