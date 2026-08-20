@@ -156,10 +156,13 @@ ide_link/
 │   ├── src/lbug/                      # LadybugDB columnar graph database
 │   └── src/cli/                       # Core analyze CLI tool
 │
-├── custom_tools/                      # 🛠️ Custom Graph Analytics & Specialized Tools
-│   ├── flows_inspector.ts             # Business flows, entry points & exit points inspector
-│   ├── graph_comparator.ts            # Side-by-side AST vs LSP benchmark tool
-│   └── README.md                      # Custom tool developer guide
+├── custom_tools/                      # 🛠️ Python Custom Graph Analytics & Boundary Tools
+│   ├── ingress_egress_analyzer.py     # Ingress/Egress boundary detector & SDK manager
+│   ├── flows_inspector.py             # Business flows, entry points & exit sinks inspector
+│   ├── graph_comparator.py            # LadybugDB precision benchmark tool
+│   ├── query_db.py                    # Direct LadybugDB OpenCypher query CLI
+│   ├── sdk_registry.json              # Declarative Ingress/Egress SDK registry
+│   └── README.md                      # Python custom tool developer guide
 │
 ├── language_specs/                    # 📚 Upstream Language & Framework Reference Layers
 │   ├── 01_language_server_protocol/   # Eclipse JDT.LS & LSP4J
@@ -168,10 +171,13 @@ ide_link/
 │   └── 04_rpc_dynamic_proxy_temporal/ # Temporal Java SDK & Dynamic Proxy Stubs
 │
 ├── sample_projects/                   # 🧪 Benchmark & Sample Repositories
-│   ├── spring-boot-demo/              # Enterprise pattern testbed (421 nodes, 694 edges)
+│   ├── spring-boot-demo/              # Enterprise pattern testbed (467 nodes, 785 edges)
 │   └── temporal-pause-resume-compensate/
 │
 ├── docs/                              # 📖 Architecture Documentation
+│   ├── boundary_analysis/             # 🌐 Ingress & Egress Boundary Specifications
+│   │   ├── INGRESS_EGRESS_SPECIFICATION.md # Boundary architecture & LadybugDB graph linking
+│   │   └── GENERALISABILITY_ANALYSIS.md    # Polyglot generalisability & enterprise assessment
 │   ├── LSP_SERVER_ARCHITECTURE.md     # LSP Server daemon lifecycle & multi-adapter specs
 │   └── LBUG_DATA_STRUCTURE.md         # LadybugDB hybrid graph schema & Cypher specs
 │
