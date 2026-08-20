@@ -17,6 +17,7 @@
     "boundaries:links": "uv run python custom_tools/ingress_egress_analyzer.py links",
     "sdks:list": "uv run python custom_tools/ingress_egress_analyzer.py list-sdks",
     "lbug:read": "uv run python custom_tools/lbug_client.py",
+    "visualize": "uv run python visualizer/server.py",
     "test:examples": "npm run boundaries -- examples/01_spring_boot_banking && npm run boundaries -- examples/02_python_fastapi_quant && npm run boundaries -- examples/03_typescript_express_gateway",
     "graph:summary": "uv run python custom_tools/query_db.py",
     "query": "tsx lsp_server/query.ts",

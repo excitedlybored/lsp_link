@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LSP-Link Knowledge Graph Visualizer</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background: #0f172a; color: #f8fafc; display: flex; height: 100vh; overflow: hidden; }
+    
+    #sidebar {
+      width: 340px; background: #1e293b; border-right: 1px solid #334155;
+      display: flex; flex-direction: column; padding: 20px; gap: 16px; z-index: 10;
+    }
+    
+    h1 { font-size: 18px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 8px; }
+    .subtitle { font-size: 12px; color: #94a3b8; margin-top: -8px; }
+    
+    .section { display: flex; flex-direction: column; gap: 8px; }
+    label { font-size: 12px; font-weight: 600; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.5px; }
+    
+    input[type="text"], select {
+      background: #0f172a; border: 1px solid #334155; color: #f8fafc;
+      padding: 8px 12px; border-radius: 6px; font-size: 13px; outline: none;
+    }
+    input[type="text"]:focus, select:focus { border-color: #38bdf8; }
+    
+    .stats-card {
+      background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 12px;
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px;
+    }
+    .stat-val { font-size: 16px; font-weight: 700; color: #38bdf8; }
+    
+    .filter-group { display: flex; flex-wrap: wrap; gap: 6px; }
+    .filter-btn {
+      background: #334155; border: none; color: #cbd5e1; padding: 4px 8px;
+      border-radius: 4px; font-size: 11px; cursor: pointer; transition: all 0.2s;
+    }
+    .filter-btn.active { background: #38bdf8; color: #0f172a; font-weight: 600; }
+    
+    #info-panel {
+      flex: 1; background: #0f172a; border: 1px solid #334155; border-radius: 6px;
+      padding: 12px; overflow-y: auto; font-size: 12px;
+    }
+    .info-title { font-size: 14px; font-weight: 600; color: #38bdf8; margin-bottom: 6px; }
+    .info-prop { margin-bottom: 4px; }
+    .info-prop strong { color: #94a3b8; }
+    
+    #cy-container { flex: 1; height: 100%; position: relative; }
+    #cy { width: 100%; height: 100%; }
+
+    .legend {
+      position: absolute; bottom: 20px; right: 20px; background: rgba(30, 41, 59, 0.9);
+      border: 1px solid #334155; border-radius: 6px; padding: 12px; font-size: 11px;
+      display: flex; flex-direction: column; gap: 6px; backdrop-filter: blur(4px);
+    }
+    .legend-item { display: flex; align-items: center; gap: 8px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; }
+  </style>
+</head>
+<body>
+
+  <div id="sidebar">
+    <div>
+      <h1>⚡ LSP-Link Visualizer</h1>
+      <p class="subtitle">Interactive Compiler-Verified Graph</p>
+    </div>
+
+    <div class="stats-card">
+      <div>Nodes: <span id="stat-nodes" class="stat-val">0</span></div>
+      <div>Edges: <span id="stat-edges" class="stat-val">0</span></div>
+      <div>Ingress: <span id="stat-ingress" class="stat-val">0</span></div>
+      <div>Egress: <span id="stat-egress" class="stat-val">0</span></div>
+    </div>
+
+    <div class="section">
+      <label>Search Symbols</label>
+      <input type="text" id="search-input" placeholder="Search classes, methods...">
+    </div>
+
+    <div class="section">
+      <label>Filter Entity Types</label>
+      <div class="filter-group">
+        <button class="filter-btn active" data-type="Route">Routes</button>
+        <button class="filter-btn active" data-type="Class">Classes</button>
+        <button class="filter-btn active" data-type="Method">Methods</button>
+        <button class="filter-btn active" data-type="Interface">Interfaces</button>
+        <button class="filter-btn active" data-type="Process">Processes</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <label>Selected Entity Details</label>
+      <div id="info-panel">
+        <p style="color: #64748b; font-style: italic;">Click any node to view details</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="cy-container">
+    <div id="cy"></div>
+
+    <div class="legend">
+      <div class="legend-item"><div class="dot" style="background: #10b981;"></div> Route (Ingress)</div>
+      <div class="legend-item"><div class="dot" style="background: #38bdf8;"></div> Class / Interface</div>
+      <div class="legend-item"><div class="dot" style="background: #818cf8;"></div> Method / Function</div>
+      <div class="legend-item"><div class="dot" style="background: #f59e0b;"></div> Process Flow</div>
+      <div class="legend-item"><div class="dot" style="background: #ef4444;"></div> Egress Sink</div>
+    </div>
+  </div>
+
+  <script>
+    async function initGraph() {
+      let graphData;
+      try {
+        const res = await fetch('/api/graph');
+        graphData = await res.json();
+      } catch(e) {
+        // Fallback demo graph
+        graphData = { nodes: [], relationships: [] };
+      }
+
+      document.getElementById('stat-nodes').textContent = graphData.nodes?.length || 0;
+      document.getElementById('stat-edges').textContent = graphData.relationships?.length || 0;
+
+      const elements = [];
+      const nodeColorMap = {
+        'Route': '#10b981',
+        'Class': '#38bdf8',
+        'Interface': '#06b6d4',
+        'Method': '#818cf8',
+        'Function': '#a78bfa',
+        'Process': '#f59e0b',
+        'Community': '#ec4899',
+        'File': '#64748b'
+      };
+
+      (graphData.nodes || []).forEach(n => {
+        const label = n.label || 'Node';
+        elements.push({
+          data: {
+            id: n.id,
+            name: n.properties?.name || n.id.split(':').pop(),
+            type: label,
+            filePath: n.properties?.filePath || '',
+            color: nodeColorMap[label] || '#94a3b8'
+          }
+        });
+      });
+
+      (graphData.relationships || []).forEach((r, idx) => {
+        elements.push({
+          data: {
+            id: 'edge_' + idx,
+            source: r.sourceId,
+            target: r.targetId,
+            label: r.type || 'CALLS',
+            confidence: r.confidence || 1.0
+          }
+        });
+      });
+
+      const cy = cytoscape({
+        container: document.getElementById('cy'),
+        elements: elements,
+        style: [
+          {
+            selector: 'node',
+            style: {
+              'background-color': 'data(color)',
+              'label': 'data(name)',
+              'color': '#f8fafc',
+              'font-size': '10px',
+              'text-valign': 'bottom',
+              'text-margin-y': 4,
+              'width': 22,
+              'height': 22
+            }
+          },
+          {
+            selector: 'node[type="Route"]',
+            style: { 'shape': 'diamond', 'width': 28, 'height': 28 }
+          },
+          {
+            selector: 'node[type="Process"]',
+            style: { 'shape': 'hexagon', 'width': 30, 'height': 30 }
+          },
+          {
+            selector: 'edge',
+            style: {
+              'width': 1.5,
+              'line-color': '#475569',
+              'target-arrow-color': '#475569',
+              'target-arrow-shape': 'triangle',
+              'curve-style': 'bezier',
+              'arrow-scale': 0.8
+            }
+          },
+          {
+            selector: 'edge[label="CALLS"]',
+            style: { 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8' }
+          },
+          {
+            selector: ':selected',
+            style: {
+              'border-width': 3,
+              'border-color': '#f59e0b',
+              'line-color': '#f59e0b',
+              'target-arrow-color': '#f59e0b'
+            }
+          }
+        ],
+        layout: {
+          name: 'cose',
+          animate: false,
+          nodeOverlap: 20,
+          idealEdgeLength: 60
+        }
+      });
+
+      cy.on('tap', 'node', function(evt){
+        const node = evt.target;
+        const d = node.data();
+        const panel = document.getElementById('info-panel');
+        panel.innerHTML = `
+          <div class="info-title">${d.name}</div>
+          <div class="info-prop"><strong>Type:</strong> ${d.type}</div>
+          <div class="info-prop"><strong>ID:</strong> <span style="word-break: break-all;">${d.id}</span></div>
+          <div class="info-prop"><strong>File:</strong> ${d.filePath || 'N/A'}</div>
+        `;
+      });
+
+      // Search filter
+      document.getElementById('search-input').addEventListener('input', (e) => {
+        const query = e.target.value.toLowerCase();
+        if (!query) {
+          cy.elements().removeClass('hidden');
+          return;
+        }
+        cy.nodes().forEach(n => {
+          if (n.data('name').toLowerCase().includes(query)) {
+            n.removeClass('hidden');
+          } else {
+            n.addClass('hidden');
+          }
+        });
+      });
+    }
+
+    window.onload = initGraph;
+  </script>
+</body>
+</html>
