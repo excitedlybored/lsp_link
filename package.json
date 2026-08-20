@@ -13,6 +13,7 @@
     "analyze:no-lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts --no-lsp",
     "compare": "uv run python custom_tools/graph_comparator.py",
     "flows": "uv run python custom_tools/flows_inspector.py",
+    "boundaries": "uv run python custom_tools/ingress_egress_analyzer.py",
     "graph:summary": "uv run python custom_tools/query_db.py",
     "query": "tsx lsp_server/query.ts",
     "server": "tsx lsp_server/server_launcher.ts",

@@ -31,7 +31,21 @@ npm run flows -- sample_projects/spring-boot-demo
 
 ---
 
-### 2. Knowledge Graph Precision Benchmark ([`graph_comparator.py`](file:///Users/zijie-machine/code_ai/ide_link/custom_tools/graph_comparator.py))
+### 2. Ingress & Egress Boundary Analyzer ([`ingress_egress_analyzer.py`](file:///Users/zijie-machine/code_ai/ide_link/custom_tools/ingress_egress_analyzer.py))
+Queries LadybugDB to discover and classify all service boundary ingress & egress points:
+- **🚪 Ingress Boundaries**: REST routes (`@GetMapping`, `@PostMapping`), Kafka consumers, Temporal `@WorkflowMethod` entry points.
+- **🚪 Egress Boundaries**: Database repositories (`CrudRepository`), Temporal activities (`@ActivityMethod`), message producers.
+- **🔄 End-to-End Boundary Traces**: Forward paths connecting Ingress requests to Egress sinks.
+
+```bash
+uv run python custom_tools/ingress_egress_analyzer.py sample_projects/spring-boot-demo
+# Or via npm shortcut:
+npm run boundaries -- sample_projects/spring-boot-demo
+```
+
+---
+
+### 3. Knowledge Graph Precision Benchmark ([`graph_comparator.py`](file:///Users/zijie-machine/code_ai/ide_link/custom_tools/graph_comparator.py))
 Reads the database to benchmark compiler-verified edges (`confidence = 1.0`) vs AST structural edges.
 
 ```bash
