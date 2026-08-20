@@ -16,6 +16,7 @@
     "boundaries": "uv run python custom_tools/ingress_egress_analyzer.py",
     "boundaries:links": "uv run python custom_tools/ingress_egress_analyzer.py links",
     "sdks:list": "uv run python custom_tools/ingress_egress_analyzer.py list-sdks",
+    "egress": "uv run python custom_tools/egress_inspector.py",
     "lbug:read": "uv run python custom_tools/lbug_client.py",
     "workflow:export": "uv run python custom_tools/workflow_pipeline.py",
     "visualize": "uv run python visualizer/server.py",
