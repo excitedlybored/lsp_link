@@ -1,8 +1,13 @@
 /**
- * LSP Graph Enricher.
+ * LSP Graph Enricher with Explicit Conflict Resolution.
  *
  * Traverses KnowledgeGraph nodes (Method, Class, Interface) and enriches them
  * with compiler-verified CALLS and IMPLEMENTS edges from LSP.
+ *
+ * Conflict Resolution Rule:
+ * When LSP verifies an exact call target with 100% compiler precision,
+ * any conflicting lower-confidence heuristic AST edges from the same call site
+ * are pruned/overridden by the compiler ground truth.
  */
 
 import * as path from 'path';
@@ -12,7 +17,7 @@ import { LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
 export interface EnricherStats {
   enrichedCalls: number;
   enrichedImplementations: number;
-  enrichedTypes: number;
+  conflictsResolved: number;
 }
 
 export class LspGraphEnricher {
@@ -26,7 +31,7 @@ export class LspGraphEnricher {
     const stats: EnricherStats = {
       enrichedCalls: 0,
       enrichedImplementations: 0,
-      enrichedTypes: 0,
+      conflictsResolved: 0,
     };
 
     const javaAdapter = await this.registry.getOrStartAdapter('java', repoPath);
@@ -80,7 +85,7 @@ export class LspGraphEnricher {
         }
       }
 
-      // 2. Enrich CALLS from Method declarations
+      // 2. Enrich CALLS from Method declarations & Resolve Conflicts
       const methodNodes: any[] = [];
       for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
         if (node.label === 'Method' && node.properties?.filePath?.endsWith('.java')) {
@@ -104,10 +109,10 @@ export class LspGraphEnricher {
               const targetFile = targetUri.startsWith('file://')
                 ? path.relative(repoPath, fileURLToPath(targetUri))
                 : targetUri;
-              const rawTargetName = call.to.name; // e.g. "log(Order) : void" or "save(Order) : Order" or "StripePaymentGateway"
+              const rawTargetName = call.to.name; // e.g. "log(Order) : void"
               const simpleTargetName = rawTargetName.split('(')[0].trim();
 
-              // Find matching method or class node in graph
+              // Find exact matching method or class node in graph
               let targetNodeId: string | null = null;
               for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
                 if (node.properties?.filePath === targetFile) {
@@ -128,6 +133,29 @@ export class LspGraphEnricher {
               }
 
               if (targetNodeId && targetNodeId !== methodNode.id) {
+                // Conflict Resolution: Prune conflicting heuristic AST edges from same caller
+                if (graph.iterRelationships) {
+                  for (const existingRel of graph.iterRelationships()) {
+                    if (
+                      existingRel.sourceId === methodNode.id &&
+                      existingRel.type === 'CALLS' &&
+                      existingRel.confidence < 1.0
+                    ) {
+                      const existingTarget = graph.getNode(existingRel.targetId);
+                      // If AST previously guessed a different method in the same file/class, prune it
+                      if (
+                        existingTarget &&
+                        existingTarget.properties?.filePath === targetFile &&
+                        existingTarget.id !== targetNodeId
+                      ) {
+                        graph.removeRelationship(existingRel.id);
+                        stats.conflictsResolved += 1;
+                      }
+                    }
+                  }
+                }
+
+                // Injected Compiler-Verified Edge
                 const relId = `rel:lsp_call:${methodNode.id}->${targetNodeId}`;
                 graph.addRelationship({
                   id: relId,
