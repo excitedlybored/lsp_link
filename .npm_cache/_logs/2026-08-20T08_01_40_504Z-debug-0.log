@@ -1,0 +1,21 @@
+0 verbose cli /Users/zijie-machine/.local/share/fnm/node-versions/v23.11.0/installation/bin/node /Users/zijie-machine/.local/state/fnm_multishells/91178_1787027249906/bin/npm
+1 info using npm@10.9.2
+2 info using node@v23.11.0
+3 silly config load:file:/Users/zijie-machine/.local/share/fnm/node-versions/v23.11.0/installation/lib/node_modules/npm/npmrc
+4 silly config load:file:/Users/zijie-machine/code_ai/ide_link/.npmrc
+5 silly config load:file:/Users/zijie-machine/.npmrc
+6 silly config load:file:/Users/zijie-machine/.local/share/fnm/node-versions/v23.11.0/installation/etc/npmrc
+7 verbose title npm cache add vendor/npm_tarballs/typescript-language-server-5.3.0.tgz
+8 verbose argv "cache" "add" "vendor/npm_tarballs/typescript-language-server-5.3.0.tgz" "--cache" ".npm_cache"
+9 verbose logfile logs-max:10 dir:/Users/zijie-machine/code_ai/ide_link/.npm_cache/_logs/2026-08-20T08_01_40_504Z-
+10 verbose logfile /Users/zijie-machine/code_ai/ide_link/.npm_cache/_logs/2026-08-20T08_01_40_504Z-debug-0.log
+11 silly logfile start cleaning logs, removing 1 files
+12 silly cache add args [ 'vendor/npm_tarballs/typescript-language-server-5.3.0.tgz' ]
+13 silly cache add spec vendor/npm_tarballs/typescript-language-server-5.3.0.tgz
+14 silly logfile done cleaning log files
+15 verbose cwd /Users/zijie-machine/code_ai/ide_link
+16 verbose os Darwin 27.0.0
+17 verbose node v23.11.0
+18 verbose npm  v10.9.2
+19 verbose exit 0
+20 info ok
