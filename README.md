@@ -8,9 +8,10 @@ This workspace contains the source code repositories and reference implementatio
 
 ```
 ide_link/
-├── gitnexus_ts_isolated/              # Isolated GitNexus Core in Pure TypeScript (Schema, Pipeline & 15+ Tree-sitter Parsers)
+├── lsp_server/                        # [Set 1] Standalone Eclipse JDT.LS Language Server Daemon
+├── gitnexus_ts_isolated/              # [Set 2] Isolated GitNexus LSP-Enriched Indexer & Pipeline
 ├── gitnexus/                          # Full Upstream GitNexus Engine & Web App
-├── lsp_runner/                        # Standalone Eclipse JDT.LS IDE Runner & LSP JSON-RPC Client
+├── lsp_runner/                        # Diagnostic Python CLI & Call Tree Visualizer
 ├── 01_language_server_protocol/
 │   ├── eclipse.jdt.ls/                # Eclipse Java Language Server (JDT.LS backend for VS Code)
 │   └── lsp4j/                         # LSP Java implementation & JSON-RPC communication
@@ -26,6 +27,34 @@ ide_link/
     ├── spring-petclinic/              # Canonical Spring Boot MVC + JPA reference application
     ├── gs-rest-service/               # Official Spring Boot RESTful Web Service guide
     └── samples-java/                  # Temporal Java samples (includes springboot & springboot-basic)
+```
+
+---
+
+## 🚀 The Two Sets of Code
+
+### Set 1: Standalone LSP Server Daemon ([`lsp_server/`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server))
+Runs Eclipse JDT.LS as a standalone, persistent Language Server over OpenJDK 21 via JSON-RPC stdio:
+```bash
+# Launch via Shell
+./lsp_server/start_server.sh sample_projects/spring-boot-demo
+
+# Or launch via TypeScript
+npx tsx lsp_server/server_launcher.ts sample_projects/spring-boot-demo
+```
+
+### Set 2: Isolated GitNexus LSP-Enriched Indexer ([`gitnexus_ts_isolated/`](file:///Users/zijie-machine/code_ai/ide_link/gitnexus_ts_isolated))
+Runs the complete 17-phase GitNexus pipeline + live LSP enrichment phase, calling Set 1 to produce compiler-verified `.gitnexus/` knowledge graphs:
+```bash
+cd gitnexus_ts_isolated
+
+# 1. Run Complete Analyze with LSP Integration:
+npx tsx src/cli/analyze_with_lsp.ts ../sample_projects/spring-boot-demo
+
+# 2. Run Standardized LSP Retrieval Queries:
+npx tsx src/lsp/query.ts calls ../sample_projects/spring-boot-demo --symbol showExecutionHistory
+npx tsx src/lsp/query.ts impl ../sample_projects/spring-boot-demo --symbol DemoWorkflow
+npx tsx src/lsp/query.ts context ../sample_projects/spring-boot-demo --symbol DemoWorkflow
 ```
 
 ---

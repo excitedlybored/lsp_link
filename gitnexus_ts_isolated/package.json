@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "analyze": "tsx src/cli/analyze_with_lsp.ts",
     "lsp:test": "tsx src/lsp/runner.ts",
     "lsp:query": "tsx src/lsp/query.ts"
   },
