@@ -338,26 +338,26 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
             if edge_match:
                 edges_list.append((edge_match.group(1), edge_match.group(3)))
 
-    num_cols = len(subgraphs)
-    col_width = 250
-    col_gap = 60
-    svg_width = max(1100, num_cols * (col_width + col_gap) + 80)
+    num_cols = max(1, len(subgraphs))
+    col_width = 260
+    col_gap = 70
+    svg_width = max(1150, num_cols * (col_width + col_gap) + 80)
     
     max_nodes_in_col = max((len(sg["nodes"]) for sg in subgraphs), default=1)
-    svg_height = max(520, max_nodes_in_col * 90 + 160)
+    svg_height = max(520, max_nodes_in_col * 85 + 180)
 
     node_positions = {}
     for col_idx, sg in enumerate(subgraphs):
         x = 40 + col_idx * (col_width + col_gap)
         for row_idx, nd in enumerate(sg["nodes"]):
-            y = 130 + row_idx * 85
+            y = 140 + row_idx * 80
             node_positions[nd["id"]] = {
                 "x": x + 15,
                 "y": y,
                 "w": col_width - 30,
-                "h": 65,
+                "h": 62,
                 "cx": x + 15 + (col_width - 30) // 2,
-                "cy": y + 32,
+                "cy": y + 31,
                 "right_x": x + 15 + (col_width - 30),
                 "left_x": x + 15,
                 "node": nd
@@ -376,16 +376,16 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
         '  </defs>',
         f'  <rect width="{svg_width}" height="{svg_height}" fill="url(#bgGrad)"/>',
         f'  <text x="40" y="45" fill="#38bdf8" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold">⚡ LSP-Link Ingress ──► Egress Boundary Topology</text>',
-        f'  <text x="40" y="70" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="12">Rendered from workflow.mmd | Layers: {num_cols} | Boundary Points & Nodes: {len(all_nodes_dict)} | Dependencies: {len(edges_list)}</text>',
+        f'  <text x="40" y="70" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="12">Rendered from workflow.mmd | Layers: {num_cols} | Boundary Points &amp; Nodes: {len(all_nodes_dict)} | Dependencies: {len(edges_list)}</text>',
     ]
 
     for col_idx, sg in enumerate(subgraphs):
         x = 40 + col_idx * (col_width + col_gap)
-        col_h = max_nodes_in_col * 85 + 40
+        col_h = max_nodes_in_col * 80 + 35
         header_col = "#10b981" if sg["id"] == "Ingress" else ("#ef4444" if sg["id"] == "Egress" else "#f59e0b")
         svg.append(f'  <!-- Layer Column: {sg["id"]} -->')
-        svg.append(f'  <rect x="{x}" y="95" width="{col_width}" height="{col_h}" rx="8" fill="#1e293b" fill-opacity="0.5" stroke="#334155" stroke-dasharray="4"/>')
-        svg.append(f'  <text x="{x+15}" y="118" fill="{header_col}" font-family="system-ui, sans-serif" font-size="11" font-weight="bold">{html.escape(sg["title"])}</text>')
+        svg.append(f'  <rect x="{x}" y="100" width="{col_width}" height="{col_h}" rx="8" fill="#1e293b" fill-opacity="0.5" stroke="#334155" stroke-dasharray="4"/>')
+        svg.append(f'  <text x="{x+15}" y="125" fill="{header_col}" font-family="system-ui, sans-serif" font-size="11" font-weight="bold">{html.escape(sg["title"])}</text>')
 
     svg.append('  <!-- Call Dependency Arrows -->')
     for src_id, tgt_id in edges_list:
@@ -409,7 +409,7 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
 
         svg.append(f'  <g>')
         svg.append(f'    <rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" fill="{fill_col}" stroke="{border_col}" stroke-width="1.8"/>')
-        svg.append(f'    <rect x="{x+8}" y="{y+7}" width="72" height="13" rx="3" fill="{border_col}" fill-opacity="0.25"/>')
+        svg.append(f'    <rect x="{x+8}" y="{y+7}" width="75" height="13" rx="3" fill="{border_col}" fill-opacity="0.25"/>')
         svg.append(f'    <text x="{x+12}" y="{y+17}" fill="{border_col}" font-family="system-ui, sans-serif" font-size="8" font-weight="bold">{badge_txt}</text>')
         
         safe_name = html.escape(nd["name"])
@@ -420,7 +420,7 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
         safe_sub = html.escape(nd["sub"])
         if len(safe_sub) > 24:
             safe_sub = safe_sub[:22] + "…"
-        svg.append(f'    <text x="{x+8}" y="{y+52}" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="9.5">{safe_sub}</text>')
+        svg.append(f'    <text x="{x+8}" y="{y+50}" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="9">{safe_sub}</text>')
         svg.append(f'  </g>')
 
     svg.append('</svg>')
