@@ -14,6 +14,7 @@
     "compare": "uv run python custom_tools/graph_comparator.py",
     "flows": "uv run python custom_tools/flows_inspector.py",
     "boundaries": "uv run python custom_tools/ingress_egress_analyzer.py",
+    "boundaries:links": "uv run python custom_tools/ingress_egress_analyzer.py links",
     "sdks:list": "uv run python custom_tools/ingress_egress_analyzer.py list-sdks",
     "graph:summary": "uv run python custom_tools/query_db.py",
     "query": "tsx lsp_server/query.ts",

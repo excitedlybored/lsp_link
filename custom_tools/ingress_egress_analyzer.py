@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-SDK-Driven Ingress & Egress Boundary Analyzer and SDK Registry Manager.
+SDK-Driven Ingress & Egress Boundary Analyzer and Node Linker (Python + LadybugDB).
 
 Features:
 1. Boundary Analysis:
    - Reads tracked SDK definitions from `custom_tools/sdk_registry.json`
    - Scans project source files for Ingress & Egress package imports
    - Queries LadybugDB (.gitnexus/lbug) to construct End-to-End Traces
-2. SDK Registry Management:
+2. GitNexus Node Linking & Path Tracing:
+   - Shows how GitNexus nodes (Route -> Method -> Class -> Calls -> Sinks) are linked
+   - Trace full call paths from Ingress endpoints to Egress sinks
+3. SDK Registry Management:
    - List tracked SDKs: `uv run python custom_tools/ingress_egress_analyzer.py list-sdks`
    - Add/Edit SDK: `uv run python custom_tools/ingress_egress_analyzer.py add-sdk ...`
    - Remove SDK: `uv run python custom_tools/ingress_egress_analyzer.py remove-sdk ...`
@@ -70,7 +73,6 @@ def add_sdk(boundary: str, sdk_id: str, lang: str, category: str, pattern: str, 
         sys.exit(1)
         
     entry_list = data.setdefault(boundary, [])
-    # Check if ID already exists (update) or add new
     existing = next((item for item in entry_list if item["id"] == sdk_id), None)
     if existing:
         existing["language"] = lang
@@ -122,6 +124,58 @@ def scan_file_imports(file_path: Path) -> list:
     except Exception:
         pass
     return imports
+
+def trace_ingress_nodes(project_path: str):
+    """Demonstrates how GitNexus graph nodes link Ingress points to downstream callees and sinks."""
+    abs_project = Path(project_path).resolve()
+    db_path = abs_project / ".gitnexus" / "lbug"
+    
+    if not db_path.exists():
+        print(f"❌ Error: LadybugDB database not found at '{db_path}'")
+        sys.exit(1)
+        
+    db = ladybug.Database(str(db_path), read_only=True)
+    conn = ladybug.Connection(db)
+
+    print("\n" + "=" * 80)
+    print("🔗 GITNEXUS NODE LINKING (Route ──► Method ──► Outgoing Calls ──► Egress)")
+    print(f"   Database: {db_path}")
+    print("=" * 80)
+
+    # 1. Ingress Routes linked to Methods and Classes
+    ingress_query = """
+        MATCH (r:Route)
+        MATCH (m:Method) WHERE m.id = r.handlerSymbolId
+        MATCH (c:Class)-[hm:CodeRelation]->(m) WHERE hm.type = 'HAS_METHOD'
+        RETURN r.method, r.name, m.name, c.name, m.filePath, m.id;
+    """
+    res = conn.execute(ingress_query)
+    routes = []
+    while res.has_next():
+        routes.append(res.get_next())
+
+    print(f"\n🚪 Ingress Route Nodes ({len(routes)} routes bound to Graph Methods):")
+    for r in routes[:6]:
+        r_method, r_path, m_name, c_name, f_path, m_id = r
+        print(f"   • \033[36m(Route: {r_method} {r_path})\033[0m")
+        print(f"       └──[:HANDLES_ROUTE]──► \033[32m(Method: {c_name}.{m_name})\033[0m")
+        print(f"       └──[:DEFINED_IN]──► \033[90m(File: {f_path})\033[0m")
+
+        # Query outgoing calls from this ingress handler
+        calls_query = f"""
+            MATCH (src:Method)-[rel:CodeRelation]->(tgt)
+            WHERE src.id = '{m_id}' AND rel.type = 'CALLS'
+            RETURN tgt.name, rel.confidence, rel.reason
+            LIMIT 4;
+        """
+        call_res = conn.execute(calls_query)
+        while call_res.has_next():
+            c_row = call_res.get_next()
+            conf_tag = "\033[32m[LSP Verified 1.0]\033[0m" if c_row[1] >= 1.0 else "\033[90m[AST 0.85]\033[0m"
+            print(f"            └──[:CALLS]──► {conf_tag} \033[33m{c_row[0]}\033[0m ({c_row[2]})")
+        print("")
+
+    print("=" * 80 + "\n")
 
 def analyze_project(project_path: str):
     """Performs boundary analysis on a project using the SDK registry."""
@@ -232,27 +286,32 @@ def main():
     list_p.add_argument("--boundary", choices=["ingress", "egress"], help="Filter by boundary type")
     list_p.add_argument("--lang", help="Filter by language (e.g. java, python, typescript, csharp)")
 
+    # Subcommand: links
+    links_p = subparsers.add_parser("links", help="Display GitNexus graph node links connecting Ingress to Egress")
+    links_p.add_argument("project", nargs="?", default=None, help="Target project path")
+
     # Subcommand: add-sdk
     add_p = subparsers.add_parser("add-sdk", help="Add or update an SDK signature in the registry")
     add_p.add_argument("--boundary", required=True, choices=["ingress", "egress"], help="Boundary type")
-    add_p.add_argument("--id", required=True, help="Unique identifier for the SDK rule (e.g. spring_web_rest)")
-    add_p.add_argument("--lang", default="all", help="Target language (e.g. java, python, typescript)")
-    add_p.add_argument("--category", required=True, help="Category (e.g. 'HTTP / REST API', 'Database / JPA')")
-    add_p.add_argument("--pattern", required=True, help="Regex pattern matching import statements")
-    add_p.add_argument("--desc", default="", help="Description of the SDK signature")
+    add_p.add_argument("--id", required=True, help="Unique identifier for the SDK rule")
+    add_p.add_argument("--lang", default="all", help="Target language")
+    add_p.add_argument("--category", required=True, help="Category")
+    add_p.add_argument("--pattern", required=True, help="Regex pattern")
+    add_p.add_argument("--desc", default="", help="Description")
 
     # Subcommand: remove-sdk
     rm_p = subparsers.add_parser("remove-sdk", help="Remove an SDK signature from the registry")
     rm_p.add_argument("--boundary", required=True, choices=["ingress", "egress"], help="Boundary type")
     rm_p.add_argument("--id", required=True, help="Unique ID of the SDK rule to remove")
 
-    # Default / Positional project path
     parser.add_argument("project", nargs="?", default=None, help="Target project path to analyze")
 
     args = parser.parse_args()
 
     if args.command == "list-sdks":
         list_sdks(args.boundary, args.lang)
+    elif args.command == "links":
+        trace_ingress_nodes(args.project or "sample_projects/spring-boot-demo")
     elif args.command == "add-sdk":
         add_sdk(args.boundary, args.id, args.lang, args.category, args.pattern, args.desc)
     elif args.command == "remove-sdk":
