@@ -167,6 +167,7 @@ ide_link/
 │   └── temporal-pause-resume-compensate/
 │
 ├── docs/                              # 📖 Architecture Documentation
+│   ├── LSP_SERVER_ARCHITECTURE.md     # LSP Server daemon lifecycle & multi-adapter specs
 │   └── LBUG_DATA_STRUCTURE.md         # LadybugDB hybrid graph schema & Cypher specs
 │
 ├── .github/workflows/ci.yml           # GitHub Actions CI Workflow
