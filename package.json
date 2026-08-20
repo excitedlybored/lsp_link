@@ -13,6 +13,7 @@
     "analyze:no-lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts --no-lsp",
     "compare": "tsx gitnexus_ts_isolated/src/cli/compare_graphs.ts",
     "query": "tsx lsp_server/query.ts",
+    "flows": "tsx gitnexus_ts_isolated/src/cli/flows.ts",
     "server": "tsx lsp_server/server_launcher.ts",
     "build": "npm --workspaces run build --if-present",
     "test": "npm --workspaces run test --if-present"
