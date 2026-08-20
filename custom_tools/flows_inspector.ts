@@ -1,21 +1,21 @@
 /**
- * Business Flow, Entry Point & Exit Point Inspector.
+ * Custom Business Flows & Entry/Exit Points Inspector.
  *
- * Inspects the knowledge graph to extract all:
- * - Entry Points (HTTP Controllers, CLI handlers, Main methods, Workflow entry points)
- * - Exit Points / Terminal Sinks (Database repositories, Kafka producers, Activity calls)
- * - Step-by-step Execution Traces
+ * Traverses the compiler-verified Knowledge Graph and extracts:
+ * - Entry Points (REST Controllers, API Handlers, CLI Handlers, Main entry points)
+ * - Exit Points / Terminal Sinks (Database Repositories, Kafka Producers, External Calls)
+ * - Full Step-by-Step Execution Traces
  */
 
 import * as path from 'path';
-import { runPipelineFromRepo } from '../ingestion/pipeline.js';
+import { runPipelineFromRepo } from '../gitnexus_ts_isolated/src/ingestion/pipeline.js';
 
 async function main() {
   const targetProject = process.argv[2] || 'sample_projects/spring-boot-demo';
   const resolvedRepoPath = path.resolve(process.cwd(), targetProject);
 
   console.log(`\n========================================================================`);
-  console.log(`📍 BUSINESS FLOWS, ENTRY POINTS & EXIT POINTS`);
+  console.log(`📍 CUSTOM BUSINESS FLOWS, ENTRY POINTS & EXIT POINTS INSPECTOR`);
   console.log(`   Target: ${resolvedRepoPath}`);
   console.log(`========================================================================\n`);
 
@@ -26,8 +26,6 @@ async function main() {
 
   const graph = result.graph;
   const processNodes: any[] = [];
-  const entryPointNodes = new Map<string, any>();
-  const terminalNodes = new Map<string, any>();
 
   for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
     if (node.label === 'Process') {
@@ -37,14 +35,10 @@ async function main() {
 
   // Map relationships to find entry point and step relationships
   const entryRels = new Map<string, string>(); // processId -> entryPointId
-  const stepNodesByProcess = new Map<string, string[]>();
 
   for (const rel of graph.iterRelationships ? graph.iterRelationships() : graph.relationships) {
     if (rel.type === 'ENTRY_POINT_OF') {
       entryRels.set(rel.targetId, rel.sourceId);
-    } else if (rel.type === 'STEP_IN') {
-      if (!stepNodesByProcess.has(rel.targetId)) stepNodesByProcess.set(rel.targetId, []);
-      stepNodesByProcess.get(rel.targetId)!.push(rel.sourceId);
     }
   }
 

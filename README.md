@@ -154,7 +154,12 @@ ide_link/
 │   ├── src/lsp/                       # Live LSP enricher & adapter registry
 │   ├── src/ingestion/                 # 17-Phase pipeline with automatic fallback
 │   ├── src/lbug/                      # LadybugDB columnar graph database
-│   └── src/cli/                       # analyze & compare_graphs CLI tools
+│   └── src/cli/                       # Core analyze CLI tool
+│
+├── custom_tools/                      # 🛠️ Custom Graph Analytics & Specialized Tools
+│   ├── flows_inspector.ts             # Business flows, entry points & exit points inspector
+│   ├── graph_comparator.ts            # Side-by-side AST vs LSP benchmark tool
+│   └── README.md                      # Custom tool developer guide
 │
 ├── language_specs/                    # 📚 Upstream Language & Framework Reference Layers
 │   ├── 01_language_server_protocol/   # Eclipse JDT.LS & LSP4J
