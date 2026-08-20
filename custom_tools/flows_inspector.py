@@ -33,7 +33,7 @@ def inspect_flows(project_path: str):
     # 1. Query all Process nodes
     process_query = """
         MATCH (p:Process)
-        RETURN p.id, p.label, p.processType, p.stepCount, p.entryPointId, p.terminalId;
+        RETURN p.id, p.label, p.stepCount, p.entryPointId, p.terminalId;
     """
     proc_result = conn.execute(process_query)
     processes = []
@@ -42,10 +42,9 @@ def inspect_flows(project_path: str):
         processes.append({
             "id": row[0],
             "label": row[1],
-            "processType": row[2],
-            "stepCount": row[3],
-            "entryPointId": row[4],
-            "terminalId": row[5],
+            "stepCount": row[2],
+            "entryPointId": row[3],
+            "terminalId": row[4],
         })
         
     if not processes:
@@ -83,7 +82,7 @@ def inspect_flows(project_path: str):
         
         print("━" * 74)
         print(f"⚡ Flow #{idx}: \033[1;36m{proc['label']}\033[0m")
-        print(f"   ID: {proc['id']} | Type: {proc['processType']} | Steps: {proc['stepCount']}")
+        print(f"   ID: {proc['id']} | Steps: {proc['stepCount']}")
         print(f"\n   🏁 \033[32mENTRY POINT:\033[0m {entry_name}")
         print(f"      Node ID: {entry_id}")
         print(f"\n   🛑 \033[31mEXIT POINT / TERMINAL SINK:\033[0m {terminal_name}")

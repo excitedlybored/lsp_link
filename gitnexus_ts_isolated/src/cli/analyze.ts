@@ -132,6 +132,21 @@ export function createAnalyzeCommand(): Command {
           JSON.stringify(manifest, null, 2),
           'utf-8'
         );
+
+        // Compile .gitnexus/lbug/ and meta.json using LadybugDB generator
+        try {
+          const { execSync } = await import('child_process');
+          const rootDir = path.resolve(process.cwd());
+          const buildLbugScript = path.join(rootDir, 'custom_tools', 'build_lbug.py');
+          if (fs.existsSync(buildLbugScript)) {
+            execSync(`uv run python "${buildLbugScript}" "${resolvedRepoPath}"`, {
+              cwd: rootDir,
+              stdio: 'pipe',
+            });
+          }
+        } catch (lbugErr: any) {
+          // Fallback gracefully
+        }
       } catch (err: any) {
         console.error(`\n  Analysis failed:`, err.message || err);
         process.exit(1);
