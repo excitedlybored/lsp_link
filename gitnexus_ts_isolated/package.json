@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "analyze": "tsx src/cli/analyze.ts",
-    "lsp:test": "tsx src/lsp/runner.ts"
+    "analyze:no-lsp": "tsx src/cli/analyze.ts --no-lsp",
+    "compare": "tsx src/cli/compare_graphs.ts"
   },
   "dependencies": {
     "commander": "^15.0.0",

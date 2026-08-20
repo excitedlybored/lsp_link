@@ -1,0 +1,45 @@
+{
+  "name": "ide-link",
+  "version": "1.0.0",
+  "description": "Polyglot Language Server Protocol (LSP) Engine & Compiler-Verified Knowledge Graph for Enterprise Banking and Modern IDEs",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "lsp_server",
+    "gitnexus_ts_isolated"
+  ],
+  "scripts": {
+    "analyze": "tsx gitnexus_ts_isolated/src/cli/analyze.ts",
+    "analyze:no-lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts --no-lsp",
+    "compare": "tsx gitnexus_ts_isolated/src/cli/compare_graphs.ts",
+    "query": "tsx lsp_server/query.ts",
+    "server": "tsx lsp_server/server_launcher.ts",
+    "build": "npm --workspaces run build --if-present",
+    "test": "npm --workspaces run test --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.4.5"
+  },
+  "keywords": [
+    "lsp",
+    "language-server-protocol",
+    "knowledge-graph",
+    "polyglot",
+    "banking",
+    "java",
+    "python",
+    "cobol",
+    "cpp",
+    "rust",
+    "typescript",
+    "csharp",
+    "jdtls",
+    "pyright",
+    "clangd",
+    "rust-analyzer"
+  ],
+  "author": "Antigravity Engineering",
+  "license": "MIT"
+}
