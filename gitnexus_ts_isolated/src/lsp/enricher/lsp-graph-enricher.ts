@@ -149,9 +149,23 @@ export class LspGraphEnricher {
         );
 
         // C. Enrich CALLS concurrently with conflict resolution
-        const langCallables = callableNodes.filter((n) =>
-          files.has(n.properties?.filePath)
-        );
+        const nameCounts = new Map<string, number>();
+        for (const n of callableNodes) {
+          const name = n.properties?.name || '';
+          nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+        }
+
+        const langCallables = callableNodes.filter((n) => {
+          if (!files.has(n.properties?.filePath)) return false;
+          const name = n.properties?.name || '';
+          const startLine = n.properties?.startLine ?? 1;
+          const endLine = n.properties?.endLine ?? startLine;
+          // Skip trivial 1-line getters / setters unless overloaded
+          if (endLine - startLine <= 1 && (nameCounts.get(name) || 0) <= 1 && (name.startsWith('get') || name.startsWith('set'))) {
+            return false;
+          }
+          return true;
+        });
 
         await runConcurrent(
           langCallables,

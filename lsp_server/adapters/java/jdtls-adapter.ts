@@ -37,15 +37,23 @@ export class JavaJdtlsAdapter implements ILspAdapter {
 
   public async start(workspacePath: string): Promise<void> {
     const { javaBin, launcherJar, configDir } = resolveJdtlsConfig();
-    const dataDir = path.join('/tmp', `jdtls_gitnexus_${Date.now()}_${process.pid}`);
+    const hash = Buffer.from(path.resolve(workspacePath)).toString('base64url').slice(0, 16);
+    const dataDir = path.join('/tmp', `gitnexus_jdtls_${hash}`);
     fs.mkdirSync(dataDir, { recursive: true });
+
+    const hasPom = fs.existsSync(path.join(workspacePath, 'pom.xml'));
+    const hasGradle =
+      fs.existsSync(path.join(workspacePath, 'build.gradle')) ||
+      fs.existsSync(path.join(workspacePath, 'build.gradle.kts'));
 
     const args = [
       '-Declipse.application=org.eclipse.jdt.ls.core.id1',
       '-Dosgi.bundles.defaultStartLevel=4',
       '-Declipse.product=org.eclipse.jdt.ls.core.product',
-      '-Dlog.level=ALL',
+      '-Dlog.level=WARNING',
       '-noverify',
+      '-XX:TieredStopAtLevel=1',
+      '-Xms512M',
       '-Xmx2G',
       '-XX:+UseG1GC',
       '-XX:+UseStringDeduplication',
@@ -92,7 +100,10 @@ export class JavaJdtlsAdapter implements ILspAdapter {
         settings: {
           java: {
             autobuild: { enabled: true },
-            import: { gradle: { enabled: true }, maven: { enabled: true } },
+            import: {
+              gradle: { enabled: hasGradle },
+              maven: { enabled: hasPom },
+            },
           },
         },
       },
@@ -101,7 +112,7 @@ export class JavaJdtlsAdapter implements ILspAdapter {
     await this.channel.sendRequest('initialize', initParams, 45000);
     this.channel.sendNotification('initialized', {});
 
-    // Wait up to 45 seconds for ServiceReady compilation
+    // Wait for ServiceReady compilation
     await Promise.race([
       readyPromise,
       new Promise((resolve) => setTimeout(resolve, 35000)),
