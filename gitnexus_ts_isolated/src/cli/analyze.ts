@@ -144,6 +144,14 @@ export function createAnalyzeCommand(): Command {
               stdio: 'pipe',
             });
           }
+
+          const workflowScript = path.join(rootDir, 'custom_tools', 'workflow_pipeline.py');
+          if (fs.existsSync(workflowScript)) {
+            execSync(`uv run python "${workflowScript}" "${resolvedRepoPath}"`, {
+              cwd: rootDir,
+              stdio: 'pipe',
+            });
+          }
         } catch (lbugErr: any) {
           // Fallback gracefully
         }
