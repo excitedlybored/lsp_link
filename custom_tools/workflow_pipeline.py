@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Architectural Dependency Call Graph & Workflow Exporter.
+Architectural Ingress & Egress Dependency Call Graph Exporter.
 
 Sequential 3-Stage Transformation Pipeline:
-  Stage 1: LadybugDB / Knowledge Graph ──► workflow.json (Nodes, Call Edges, Ingress-to-Egress Trees)
-  Stage 2: workflow.json               ──► workflow.mmd  (Layered Dependency Call Graph Diagram)
+  Stage 1: LadybugDB / Knowledge Graph ──► workflow.json (Explicit Ingress & Egress Boundaries + Call Trees)
+  Stage 2: workflow.json               ──► workflow.mmd  (Layered Ingress ──► Service ──► Egress Diagram)
   Stage 3: workflow.mmd                ──► workflow.svg  (Multi-Layer Topology Vector Graphic)
 """
 
@@ -16,27 +16,57 @@ import html
 from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple
 
-# ============================================================================
-# STAGE 1: Extract Knowledge Graph ──► workflow.json (True Call Graph)
-# ============================================================================
+# Load SDK Registry for Ingress & Egress Classification
+REGISTRY_PATH = Path(__file__).parent / "sdk_registry.json"
 
-def classify_layer(node: Dict[str, Any], path_str: str) -> str:
-    """Classify a node into an architectural layer based on path, type, and annotations."""
+def load_sdk_registry() -> Dict[str, Any]:
+    if REGISTRY_PATH.exists():
+        with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"ingress": [], "egress": []}
+
+def classify_node_boundary(node: Dict[str, Any], file_content_map: Dict[str, str], sdk_rules: Dict[str, Any]) -> str:
+    """Classify a node into Ingress, Egress, Controller, or Service based on SDK rules and file context."""
     label = node.get("label", "")
-    p_lower = path_str.lower()
-    name = node.get("properties", {}).get("name", "")
+    props = node.get("properties", {})
+    f_path = props.get("filePath", props.get("path", ""))
+    p_lower = f_path.lower()
+    name = props.get("name", "")
 
-    if label == "Route" or "ingress" in p_lower or "listener" in p_lower or "consumer" in p_lower:
+    # 1. Direct Route Label is Ingress
+    if label == "Route":
         return "Ingress"
-    elif "egress" in p_lower or "client" in p_lower or "producer" in p_lower or "repository" in p_lower or "store" in p_lower:
+
+    # 2. Check File Path Conventions
+    if "ingress" in p_lower or "controller" in p_lower or "listener" in p_lower or "consumer" in p_lower:
+        if "controller" in p_lower:
+            return "Controller"
+        return "Ingress"
+
+    if "egress" in p_lower or "client" in p_lower or "producer" in p_lower or "repository" in p_lower or "store" in p_lower:
         return "Egress"
-    elif "controller" in p_lower or "workflow" in p_lower:
-        return "Controller_Workflow"
-    else:
-        return "Domain_Service"
+
+    if "workflow" in p_lower:
+        return "Controller"
+
+    # 3. Check File Content against SDK Registry
+    content = file_content_map.get(f_path, "")
+    if content:
+        for rule in sdk_rules.get("egress", []):
+            if re.search(rule["pattern"], content):
+                return "Egress"
+        for rule in sdk_rules.get("ingress", []):
+            if re.search(rule["pattern"], content):
+                return "Ingress"
+
+    return "Domain_Service"
+
+# ============================================================================
+# STAGE 1: Extract Knowledge Graph ──► workflow.json (Ingress & Egress Call Graph)
+# ============================================================================
 
 def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str, Any]:
-    """Stage 1: Extract true dependency call graph from LadybugDB/graph.json."""
+    """Stage 1: Extract true Ingress-to-Egress call graph from LadybugDB/graph.json."""
     gitnexus_dir = project_dir / ".gitnexus"
     graph_file = gitnexus_dir / "graph.json"
 
@@ -48,6 +78,20 @@ def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str
 
     all_nodes = {n["id"]: n for n in graph_data.get("nodes", [])}
     raw_relationships = graph_data.get("relationships", [])
+    sdk_rules = load_sdk_registry()
+
+    # Pre-cache source file contents for SDK detection
+    file_content_map = {}
+    for n in all_nodes.values():
+        fp = n.get("properties", {}).get("filePath", "")
+        if fp and fp not in file_content_map:
+            full_p = project_dir / fp
+            if full_p.exists() and full_p.is_file():
+                try:
+                    with open(full_p, "r", encoding="utf-8", errors="ignore") as src_f:
+                        file_content_map[fp] = src_f.read()
+                except Exception:
+                    file_content_map[fp] = ""
 
     # Filter relevant call & route handling relationships
     call_rels = []
@@ -78,15 +122,18 @@ def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str
             seen_edges.add(key)
             deduped_edges.append(edge)
 
-    # Format active nodes with architectural layers
+    # Format active nodes with Ingress/Egress boundary classification
     graph_nodes = []
+    ingress_points = []
+    egress_points = []
+
     for n_id in active_node_ids:
         n = all_nodes[n_id]
         props = n.get("properties", {})
         f_path = props.get("filePath", props.get("path", ""))
-        layer = classify_layer(n, f_path)
+        layer = classify_node_boundary(n, file_content_map, sdk_rules)
 
-        graph_nodes.append({
+        node_item = {
             "id": n_id,
             "name": props.get("name", n_id.split(":")[-1]),
             "label": n.get("label", "CodeElement"),
@@ -94,62 +141,68 @@ def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str
             "filePath": f_path,
             "startLine": props.get("startLine", 1),
             "endLine": props.get("endLine", 1),
-        })
+        }
+        graph_nodes.append(node_item)
 
-    # Find Root Ingress Nodes (In-degree = 0 or Ingress layer)
-    targets = {e["target"] for e in deduped_edges if e["type"] in ["CALLS", "HANDLES_ROUTE"]}
-    ingress_roots = [
-        n for n in graph_nodes 
-        if n["layer"] == "Ingress" or (n["id"] not in targets and n["label"] in ["Route", "Method", "Function"])
-    ]
+        if layer == "Ingress":
+            ingress_points.append(node_item)
+        elif layer == "Egress":
+            egress_points.append(node_item)
 
-    # Build Call Trees / Reachability from Roots to Egress Sinks
+    # Build Adjacency Graph
     adjacency: Dict[str, List[str]] = {}
     for e in deduped_edges:
         if e["type"] in ["CALLS", "HANDLES_ROUTE"]:
             adjacency.setdefault(e["source"], []).append(e["target"])
 
-    call_chains = []
-    for root in ingress_roots:
-        root_id = root["id"]
-        # DFS traversal up to depth 5
-        def get_paths(curr_id, current_path, visited, depth=0):
-            if depth > 5 or curr_id in visited:
-                return [current_path]
-            next_nodes = adjacency.get(curr_id, [])
-            if not next_nodes:
-                return [current_path]
-            paths = []
-            for nxt in next_nodes:
-                paths.extend(get_paths(nxt, current_path + [nxt], visited | {curr_id}, depth + 1))
-            return paths
+    # Trace End-to-End Ingress ──► Egress Execution Paths
+    egress_ids = {e["id"] for e in egress_points}
+    ingress_to_egress_flows = []
 
-        all_paths = get_paths(root_id, [root_id], set())
-        for p in all_paths:
-            if len(p) > 1:
-                call_chains.append({
-                    "root": root["name"],
-                    "rootId": root_id,
-                    "depth": len(p),
-                    "path": [
-                        {
-                            "id": nid,
-                            "name": all_nodes.get(nid, {}).get("properties", {}).get("name", nid.split(":")[-1]),
-                            "layer": classify_layer(all_nodes.get(nid, {}), all_nodes.get(nid, {}).get("properties", {}).get("filePath", "")),
-                            "filePath": all_nodes.get(nid, {}).get("properties", {}).get("filePath", "")
-                        }
-                        for nid in p
-                    ]
-                })
+    for root in ingress_points:
+        root_id = root["id"]
+        def trace_paths(curr_id, curr_path, visited, depth=0):
+            if depth > 6 or curr_id in visited:
+                return []
+            if curr_id in egress_ids and len(curr_path) > 1:
+                return [curr_path]
+            next_nodes = adjacency.get(curr_id, [])
+            flows = []
+            for nxt in next_nodes:
+                flows.extend(trace_paths(nxt, curr_path + [nxt], visited | {curr_id}, depth + 1))
+            return flows
+
+        found_flows = trace_paths(root_id, [root_id], set())
+        for fl in found_flows:
+            ingress_to_egress_flows.append({
+                "ingress": root["name"],
+                "ingressId": root_id,
+                "egress": all_nodes.get(fl[-1], {}).get("properties", {}).get("name", fl[-1].split(":")[-1]),
+                "egressId": fl[-1],
+                "hops": len(fl) - 1,
+                "path": [
+                    {
+                        "id": nid,
+                        "name": all_nodes.get(nid, {}).get("properties", {}).get("name", nid.split(":")[-1]),
+                        "layer": classify_node_boundary(all_nodes.get(nid, {}), file_content_map, sdk_rules),
+                        "filePath": all_nodes.get(nid, {}).get("properties", {}).get("filePath", "")
+                    }
+                    for nid in fl
+                ]
+            })
 
     result = {
         "project": str(project_dir),
         "totalNodes": len(graph_nodes),
         "totalEdges": len(deduped_edges),
-        "totalCallChains": len(call_chains),
+        "totalIngressPoints": len(ingress_points),
+        "totalEgressPoints": len(egress_points),
+        "totalIngressToEgressFlows": len(ingress_to_egress_flows),
+        "ingressPoints": ingress_points,
+        "egressPoints": egress_points,
         "nodes": graph_nodes,
         "edges": deduped_edges,
-        "callChains": call_chains
+        "ingressToEgressFlows": ingress_to_egress_flows
     }
 
     with open(output_json_path, "w", encoding="utf-8") as f:
@@ -158,7 +211,7 @@ def extract_workflow_json(project_dir: Path, output_json_path: Path) -> Dict[str
     return result
 
 # ============================================================================
-# STAGE 2: workflow.json ──► workflow.mmd (Layered Dependency Call Graph)
+# STAGE 2: workflow.json ──► workflow.mmd (Ingress ──► Service ──► Egress Diagram)
 # ============================================================================
 
 def sanitize_id(node_id: str) -> str:
@@ -166,44 +219,41 @@ def sanitize_id(node_id: str) -> str:
     return re.sub(r'[^a-zA-Z0-9_]', '_', node_id)
 
 def convert_json_to_mmd(workflow_json_path: Path, output_mmd_path: Path) -> str:
-    """Stage 2: Convert call graph JSON into an architectural layered Mermaid diagram."""
+    """Stage 2: Convert call graph JSON into an Ingress & Egress boundary Mermaid diagram."""
     with open(workflow_json_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
 
-    # Group nodes by architectural layer
     layers = {
         "Ingress": [],
-        "Controller_Workflow": [],
+        "Controller": [],
         "Domain_Service": [],
         "Egress": []
     }
 
-    node_map = {}
     for n in nodes:
         layer = n.get("layer", "Domain_Service")
         if layer not in layers:
             layer = "Domain_Service"
         layers[layer].append(n)
-        node_map[n["id"]] = n
 
     mmd = [
         "%%{init: {'theme': 'dark', 'themeVariables': { 'darkMode': true, 'primaryColor': '#1e293b', 'edgeLabelBackground':'#0f172a'}}}%%",
         "flowchart LR",
-        "    classDef ingress fill:#065f46,stroke:#10b981,stroke-width:2px,color:#ecfdf5;",
+        "    classDef ingress fill:#065f46,stroke:#10b981,stroke-width:2.5px,color:#ecfdf5,font-weight:bold;",
         "    classDef controller fill:#1e3a8a,stroke:#3b82f6,stroke-width:2px,color:#eff6ff;",
         "    classDef service fill:#1e293b,stroke:#38bdf8,stroke-width:2px,color:#f0f9ff;",
-        "    classDef egress fill:#7f1d1d,stroke:#ef4444,stroke-width:2px,color:#fef2f2;",
+        "    classDef egress fill:#7f1d1d,stroke:#ef4444,stroke-width:2.5px,color:#fef2f2,font-weight:bold;",
         ""
     ]
 
     layer_titles = {
-        "Ingress": "🚪 Ingress Layer (Routes & Consumers)",
-        "Controller_Workflow": "🎮 Controllers & Workflows",
-        "Domain_Service": "⚙️ Domain Services & Business Logic",
-        "Egress": "🛑 Egress Sinks (Databases, HTTP & Queues)"
+        "Ingress": "🟢 INGRESS BOUNDARIES (REST Endpoints & Consumers)",
+        "Controller": "🎮 CONTROLLERS & WORKFLOWS",
+        "Domain_Service": "⚙️ DOMAIN SERVICES & BUSINESS LOGIC",
+        "Egress": "🔴 EGRESS BOUNDARIES (Databases, HTTP Clients & Publishers)"
     }
 
     for l_key, l_title in layer_titles.items():
@@ -215,14 +265,14 @@ def convert_json_to_mmd(workflow_json_path: Path, output_mmd_path: Path) -> str:
             s_id = sanitize_id(n["id"])
             name = n["name"]
             f_name = Path(n.get("filePath", "")).name
-            cls = "ingress" if l_key == "Ingress" else ("egress" if l_key == "Egress" else ("controller" if l_key == "Controller_Workflow" else "service"))
-            icon = "🚪 " if l_key == "Ingress" else ("🛑 " if l_key == "Egress" else ("🎮 " if l_key == "Controller_Workflow" else "⚙️ "))
+            cls = "ingress" if l_key == "Ingress" else ("egress" if l_key == "Egress" else ("controller" if l_key == "Controller" else "service"))
+            icon = "🟢 " if l_key == "Ingress" else ("🔴 " if l_key == "Egress" else ("🎮 " if l_key == "Controller" else "⚙️ "))
             mmd.append(f"        {s_id}[\"{icon}{name}<br/><small>{f_name}</small>\"]:::{cls}")
         mmd.append("    end")
         mmd.append("")
 
     # Add Dependency Call Arrows
-    mmd.append("    %% Dependency Call Connections")
+    mmd.append("    %% Ingress to Egress Call Connections")
     for e in edges:
         if e.get("type") in ["CALLS", "HANDLES_ROUTE"]:
             src_safe = sanitize_id(e["source"])
@@ -237,15 +287,14 @@ def convert_json_to_mmd(workflow_json_path: Path, output_mmd_path: Path) -> str:
     return mmd_content
 
 # ============================================================================
-# STAGE 3: workflow.mmd ──► workflow.svg (Layered Topology Vector Graphic)
+# STAGE 3: workflow.mmd ──► workflow.svg (Ingress & Egress Topology Graphic)
 # ============================================================================
 
 def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
-    """Stage 3: Render layered dependency call graph directly to crisp SVG."""
+    """Stage 3: Render Ingress & Egress boundary topology directly to crisp SVG."""
     with open(workflow_mmd_path, "r", encoding="utf-8") as f:
         mmd_text = f.read()
 
-    # Parse subgraphs, nodes and edges
     subgraphs = []
     current_subgraph = None
     all_nodes_dict = {}
@@ -272,7 +321,7 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
                 cls = node_match.group(3) or "service"
 
                 parts = raw_label.split("<br/><small>")
-                name = parts[0].replace("🚪 ", "").replace("🛑 ", "").replace("🎮 ", "").replace("⚙️ ", "")
+                name = parts[0].replace("🟢 ", "").replace("🔴 ", "").replace("🎮 ", "").replace("⚙️ ", "")
                 sub = parts[1].replace("</small>", "") if len(parts) > 1 else ""
 
                 node_obj = {
@@ -289,16 +338,14 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
             if edge_match:
                 edges_list.append((edge_match.group(1), edge_match.group(3)))
 
-    # Calculate Layout Coordinates
     num_cols = len(subgraphs)
-    col_width = 240
+    col_width = 250
     col_gap = 60
-    svg_width = max(1000, num_cols * (col_width + col_gap) + 80)
+    svg_width = max(1100, num_cols * (col_width + col_gap) + 80)
     
     max_nodes_in_col = max((len(sg["nodes"]) for sg in subgraphs), default=1)
-    svg_height = max(500, max_nodes_in_col * 90 + 160)
+    svg_height = max(520, max_nodes_in_col * 90 + 160)
 
-    # Position each node
     node_positions = {}
     for col_idx, sg in enumerate(subgraphs):
         x = 40 + col_idx * (col_width + col_gap)
@@ -328,34 +375,29 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
         '    </marker>',
         '  </defs>',
         f'  <rect width="{svg_width}" height="{svg_height}" fill="url(#bgGrad)"/>',
-        f'  <text x="40" y="45" fill="#38bdf8" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold">⚡ LSP-Link Architectural Dependency Call Graph</text>',
-        f'  <text x="40" y="70" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="12">Rendered from workflow.mmd | Layers: {num_cols} | Active Nodes: {len(all_nodes_dict)} | Dependencies: {len(edges_list)}</text>',
+        f'  <text x="40" y="45" fill="#38bdf8" font-family="system-ui, -apple-system, sans-serif" font-size="20" font-weight="bold">⚡ LSP-Link Ingress ──► Egress Boundary Topology</text>',
+        f'  <text x="40" y="70" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="12">Rendered from workflow.mmd | Layers: {num_cols} | Boundary Points & Nodes: {len(all_nodes_dict)} | Dependencies: {len(edges_list)}</text>',
     ]
 
-    # Render Columns (Subgraphs)
     for col_idx, sg in enumerate(subgraphs):
         x = 40 + col_idx * (col_width + col_gap)
         col_h = max_nodes_in_col * 85 + 40
+        header_col = "#10b981" if sg["id"] == "Ingress" else ("#ef4444" if sg["id"] == "Egress" else "#f59e0b")
         svg.append(f'  <!-- Layer Column: {sg["id"]} -->')
         svg.append(f'  <rect x="{x}" y="95" width="{col_width}" height="{col_h}" rx="8" fill="#1e293b" fill-opacity="0.5" stroke="#334155" stroke-dasharray="4"/>')
-        svg.append(f'  <text x="{x+15}" y="118" fill="#f59e0b" font-family="system-ui, sans-serif" font-size="12" font-weight="bold">{html.escape(sg["title"])}</text>')
+        svg.append(f'  <text x="{x+15}" y="118" fill="{header_col}" font-family="system-ui, sans-serif" font-size="11" font-weight="bold">{html.escape(sg["title"])}</text>')
 
-    # Render Connecting Dependency Call Lines
     svg.append('  <!-- Call Dependency Arrows -->')
     for src_id, tgt_id in edges_list:
         if src_id in node_positions and tgt_id in node_positions:
             p1 = node_positions[src_id]
             p2 = node_positions[tgt_id]
-            
             x1, y1 = p1["right_x"], p1["cy"]
             x2, y2 = p2["left_x"], p2["cy"]
-            
-            # Draw curved bezier connection
             dx = max(30, abs(x2 - x1) * 0.4)
             svg.append(f'  <path d="M {x1} {y1} C {x1+dx} {y1}, {x2-dx} {y2}, {x2} {y2}" fill="none" stroke="#38bdf8" stroke-width="1.8" stroke-opacity="0.85" marker-end="url(#callArrow)"/>')
 
-    # Render Nodes
-    svg.append('  <!-- Graph Nodes -->')
+    svg.append('  <!-- Boundary Nodes -->')
     for n_id, pos in node_positions.items():
         nd = pos["node"]
         cls = nd["class"]
@@ -363,12 +405,12 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
 
         fill_col = "#065f46" if cls == "ingress" else ("#7f1d1d" if cls == "egress" else ("#1e3a8a" if cls == "controller" else "#0f172a"))
         border_col = "#10b981" if cls == "ingress" else ("#ef4444" if cls == "egress" else ("#3b82f6" if cls == "controller" else "#38bdf8"))
-        badge_txt = "INGRESS" if cls == "ingress" else ("EGRESS" if cls == "egress" else ("CONTROLLER" if cls == "controller" else "SERVICE"))
+        badge_txt = "INGRESS POINT" if cls == "ingress" else ("EGRESS SINK" if cls == "egress" else ("CONTROLLER" if cls == "controller" else "SERVICE"))
 
         svg.append(f'  <g>')
-        svg.append(f'    <rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" fill="{fill_col}" stroke="{border_col}" stroke-width="1.5"/>')
-        svg.append(f'    <rect x="{x+8}" y="{y+7}" width="55" height="13" rx="3" fill="{border_col}" fill-opacity="0.25"/>')
-        svg.append(f'    <text x="{x+12}" y="{y+17}" fill="{border_col}" font-family="system-ui, sans-serif" font-size="8.5" font-weight="bold">{badge_txt}</text>')
+        svg.append(f'    <rect x="{x}" y="{y}" width="{w}" height="{h}" rx="6" fill="{fill_col}" stroke="{border_col}" stroke-width="1.8"/>')
+        svg.append(f'    <rect x="{x+8}" y="{y+7}" width="72" height="13" rx="3" fill="{border_col}" fill-opacity="0.25"/>')
+        svg.append(f'    <text x="{x+12}" y="{y+17}" fill="{border_col}" font-family="system-ui, sans-serif" font-size="8" font-weight="bold">{badge_txt}</text>')
         
         safe_name = html.escape(nd["name"])
         if len(safe_name) > 20:
@@ -376,8 +418,8 @@ def convert_mmd_to_svg(workflow_mmd_path: Path, output_svg_path: Path) -> str:
         svg.append(f'    <text x="{x+8}" y="{y+36}" fill="#f8fafc" font-family="system-ui, sans-serif" font-size="11" font-weight="600">{safe_name}</text>')
         
         safe_sub = html.escape(nd["sub"])
-        if len(safe_sub) > 22:
-            safe_sub = safe_sub[:20] + "…"
+        if len(safe_sub) > 24:
+            safe_sub = safe_sub[:22] + "…"
         svg.append(f'    <text x="{x+8}" y="{y+52}" fill="#94a3b8" font-family="system-ui, sans-serif" font-size="9.5">{safe_sub}</text>')
         svg.append(f'  </g>')
 
@@ -403,18 +445,18 @@ def run_workflow_pipeline(project_dir: str, output_dir: str = None):
     svg_file = out_path / "workflow.svg"
 
     print("==================================================")
-    print("🔄 ARCHITECTURAL DEPENDENCY CALL GRAPH PIPELINE")
+    print("🔄 INGRESS & EGRESS DEPENDENCY CALL GRAPH PIPELINE")
     print(f"   Target:  {proj_path}")
     print(f"   Outputs: {out_path}")
     print("==================================================")
 
     # Stage 1: Graph -> workflow.json
-    print("⚙️  [1/3] Extracting dependency call graph ──► workflow.json...")
+    print("⚙️  [1/3] Extracting Ingress & Egress boundaries ──► workflow.json...")
     res = extract_workflow_json(proj_path, json_file)
-    print(f"   ✓ {json_file.name} ({len(res['nodes'])} nodes, {len(res['edges'])} call edges, {len(res['callChains'])} call chains)")
+    print(f"   ✓ {json_file.name} ({res['totalIngressPoints']} Ingress, {res['totalEgressPoints']} Egress, {res['totalIngressToEgressFlows']} End-to-End Flows)")
 
     # Stage 2: workflow.json -> workflow.mmd
-    print("📊 [2/3] Generating architectural call graph ──► workflow.mmd...")
+    print("📊 [2/3] Generating Ingress ──► Egress diagram ──► workflow.mmd...")
     convert_json_to_mmd(json_file, mmd_file)
     print(f"   ✓ {mmd_file.name} ({mmd_file.stat().st_size} bytes)")
 
@@ -424,7 +466,7 @@ def run_workflow_pipeline(project_dir: str, output_dir: str = None):
     print(f"   ✓ {svg_file.name} ({svg_file.stat().st_size} bytes)")
 
     print("==================================================")
-    print("✅ Dependency Call Graph Export Completed!")
+    print("✅ Ingress & Egress Boundary Pipeline Completed!")
     print("==================================================")
 
 if __name__ == "__main__":
