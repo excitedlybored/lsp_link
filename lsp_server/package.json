@@ -8,16 +8,16 @@
     "query": "tsx query.ts"
   },
   "dependencies": {
-    "glob": "^13.0.6",
-    "pyright": "^1.1.413",
-    "typescript": "^5.4.5",
-    "typescript-language-server": "^5.3.0",
-    "vscode-jsonrpc": "^9.0.1",
-    "vscode-languageserver-protocol": "^3.18.2",
-    "vscode-languageserver-types": "^3.18.0"
+    "glob": "file:./vendor/glob-13.0.6.tgz",
+    "pyright": "file:./vendor/pyright-1.1.413.tgz",
+    "typescript": "file:./vendor/typescript-5.9.3.tgz",
+    "typescript-language-server": "file:./vendor/typescript-language-server-5.3.0.tgz",
+    "vscode-jsonrpc": "file:./vendor/vscode-jsonrpc-9.0.1.tgz",
+    "vscode-languageserver-protocol": "file:./vendor/vscode-languageserver-protocol-3.18.2.tgz",
+    "vscode-languageserver-types": "file:./vendor/vscode-languageserver-types-3.18.0.tgz"
   },
   "devDependencies": {
-    "@types/node": "^26.0.0",
-    "tsx": "^4.0.0"
+    "@types/node": "file:./vendor/types-node-26.2.0.tgz",
+    "tsx": "file:./vendor/tsx-4.23.12.tgz"
   }
 }
