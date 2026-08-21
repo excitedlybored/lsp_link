@@ -63,6 +63,19 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       throw new Error(`Failed to create stdio streams for ${this.id}`);
     }
 
+    // Prevent an unhandled 'error' event on a dead pipe from crashing the process,
+    // and drop the connection reference once the server process is gone so later
+    // sendRequest/sendNotification calls short-circuit instead of writing to a
+    // destroyed stream.
+    this.process.stdin.on('error', () => {});
+    this.process.stdout.on('error', () => {});
+    this.process.on('exit', () => {
+      this.connection = null;
+    });
+    this.process.on('error', () => {
+      this.connection = null;
+    });
+
     // Official Microsoft JSON-RPC message connection
     this.connection = rpc.createMessageConnection(
       new rpc.StreamMessageReader(this.process.stdout),

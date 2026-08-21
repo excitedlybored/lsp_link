@@ -87,6 +87,11 @@ export class LspAdapterRegistry {
       return adapter;
     } catch (err: any) {
       console.warn(`[LSP Registry] Failed to start adapter for ${language}:`, err.message || err);
+      try {
+        await adapter.shutdown();
+      } catch {
+        // Ignore errors tearing down a partially-started adapter
+      }
       return null;
     }
   }

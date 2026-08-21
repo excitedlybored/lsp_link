@@ -101,7 +101,11 @@ export class LspGraphEnricher {
         // A. Pre-open all files in parallel upfront
         const absFilePaths = Array.from(files).map((f) => path.resolve(repoPath, f));
         await runConcurrent(absFilePaths, async (absPath) => {
-          await adapter!.openDocument(absPath);
+          try {
+            await adapter!.openDocument(absPath);
+          } catch {
+            // Graceful fallback if the adapter's connection died mid-run
+          }
         }, 12);
 
         // B. Enrich IMPLEMENTS concurrently
