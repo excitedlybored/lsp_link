@@ -8,8 +8,9 @@
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { runPipelineFromRepo } from '../ingestion/pipeline.js';
+import { runPipelineFromRepo, resolvePipelineStage, type PipelineStage } from '../ingestion/pipeline.js';
 import { PipelineProgress } from '../shared/pipeline.js';
+import { initLbug, loadGraphToLbug, wipeLbugDbFiles, closeLbug } from '../lbug/lbug-adapter.js';
 
 export function createAnalyzeCommand(): Command {
   const cmd = new Command('analyze');
@@ -25,12 +26,28 @@ export function createAnalyzeCommand(): Command {
     .option('--no-lsp', 'Disable Language Server Protocol precision enrichment (AST only)')
     .option('--lsp-language <lang>', 'Target language for LSP adapter (default: java)', 'java')
     .option('--lsp-depth <depth>', 'Maximum LSP call hierarchy recursion depth', parseInt, 3)
+    .option(
+      '--pipeline <stage>',
+      'Sub-pipeline: full (default, treesitter + lsp + analysis), treesitter, or lsp',
+      'full',
+    )
     .action(async (targetPath: string, options: any) => {
       const resolvedRepoPath = path.resolve(process.cwd(), targetPath);
 
+      const pipelineStage: PipelineStage = resolvePipelineStage(options.pipeline);
+      const isLspEnabled = pipelineStage === 'lsp' ? true : pipelineStage === 'treesitter' ? false : options.lsp !== false;
+
       console.log(`\n  GitNexus Analyzer (Isolated Engine)`);
-      const isLspEnabled = options.lsp !== false;
-      if (isLspEnabled) {
+      const stageLabel =
+        pipelineStage === 'treesitter'
+          ? 'treesitter (parse only)'
+          : pipelineStage === 'lsp'
+            ? 'lsp (enrich saved graph)'
+            : 'full (treesitter + lsp + analysis)';
+      console.log(`  Pipeline: ${stageLabel}`);
+      if (pipelineStage === 'treesitter') {
+        console.log(`  ⚡ LSP Precision Mode: skipped (treesitter pipeline)`);
+      } else if (isLspEnabled) {
         console.log(`  ⚡ LSP Precision Mode: ENABLED (Default) [Language: ${options.lspLanguage}]`);
       } else {
         console.log(`  ⚡ LSP Precision Mode: DISABLED (--no-lsp AST only)`);
@@ -51,6 +68,7 @@ export function createAnalyzeCommand(): Command {
 
       try {
         const result = await runPipelineFromRepo(resolvedRepoPath, onProgress, {
+          stage: pipelineStage,
           lsp: isLspEnabled,
           skipGraphPhases: options.skipGraphPhases === true,
           pdg: options.pdg === true,
@@ -74,7 +92,8 @@ export function createAnalyzeCommand(): Command {
         const manifest = {
           repoPath: resolvedRepoPath,
           indexedAt: new Date().toISOString(),
-          lspEnriched: options.lsp === true,
+          lspEnriched: isLspEnabled,
+          pipelineStage,
           stats: {
             files: result.totalFileCount,
             nodes: result.graph.nodeCount,
@@ -110,6 +129,7 @@ export function createAnalyzeCommand(): Command {
           repoPath: resolvedRepoPath,
           indexedAt: new Date().toISOString(),
           lspEnriched: isLspEnabled,
+          pipelineStage,
           stats: {
             files: result.totalFileCount,
             nodes: result.graph.nodeCount,
@@ -133,27 +153,58 @@ export function createAnalyzeCommand(): Command {
           'utf-8'
         );
 
-        // Compile .gitnexus/lbug/ and meta.json using LadybugDB generator
+        // Compile .gitnexus/lbug directly from the in-memory graph — no JSON
+        // round-trip. Mirrors the real GitNexus pipeline (run-analyze.ts):
+        // wipe -> init -> bulk-load via loadGraphToLbug -> close.
+        const lbugPath = path.join(gitnexusDir, 'lbug');
+        await wipeLbugDbFiles(lbugPath);
+        await initLbug(lbugPath);
         try {
-          const { execSync } = await import('child_process');
-          const rootDir = path.resolve(process.cwd());
-          const buildLbugScript = path.join(rootDir, 'custom_tools', 'build_lbug.py');
-          if (fs.existsSync(buildLbugScript)) {
-            execSync(`uv run python "${buildLbugScript}" "${resolvedRepoPath}"`, {
-              cwd: rootDir,
-              stdio: 'pipe',
-            });
-          }
+          await loadGraphToLbug(
+            result.graph,
+            resolvedRepoPath,
+            gitnexusDir,
+            (msg: string) => console.log(`  [lbug] ${msg}`),
+          );
+        } finally {
+          await closeLbug();
+        }
 
-          const workflowScript = path.join(rootDir, 'custom_tools', 'workflow_pipeline.py');
-          if (fs.existsSync(workflowScript)) {
-            execSync(`uv run python "${workflowScript}" "${resolvedRepoPath}"`, {
-              cwd: rootDir,
-              stdio: 'pipe',
-            });
+        fs.writeFileSync(
+          path.join(gitnexusDir, 'meta.json'),
+          JSON.stringify(
+            {
+              repoPath: resolvedRepoPath,
+              indexedAt: manifest.indexedAt,
+              lspEnriched: manifest.lspEnriched,
+              database: {
+                type: 'ladybug',
+                path: '.gitnexus/lbug',
+                schemaVersion: '1.0.0',
+              },
+              stats: manifest.stats,
+            },
+            null,
+            2,
+          ),
+          'utf-8',
+        );
+
+        // Workflow diagrams still consume the graph.json export.
+        if (pipelineStage === 'full') {
+          try {
+            const { execSync } = await import('child_process');
+            const rootDir = path.resolve(process.cwd());
+            const workflowScript = path.join(rootDir, 'custom_tools', 'workflow_pipeline.py');
+            if (fs.existsSync(workflowScript)) {
+              execSync(`uv run python "${workflowScript}" "${resolvedRepoPath}"`, {
+                cwd: rootDir,
+                stdio: 'pipe',
+              });
+            }
+          } catch (workflowErr: any) {
+            // Fallback gracefully
           }
-        } catch (lbugErr: any) {
-          // Fallback gracefully
         }
       } catch (err: any) {
         console.error(`\n  Analysis failed:`, err.message || err);
@@ -169,9 +220,9 @@ if (process.argv[1] && process.argv[1].endsWith('analyze.ts')) {
   program.name('gitnexus').description('GitNexus Isolated CLI');
   program.addCommand(createAnalyzeCommand());
 
-  // Default to analyze if first arg is not a command
+  // Default to the analyze command unless the user named one explicitly.
   const rawArgs = process.argv.slice(2);
-  if (rawArgs.length === 0 || (!rawArgs[0].startsWith('-') && rawArgs[0] !== 'analyze')) {
+  if (rawArgs[0] !== 'analyze' && rawArgs[0] !== 'help') {
     process.argv.splice(2, 0, 'analyze');
   }
 

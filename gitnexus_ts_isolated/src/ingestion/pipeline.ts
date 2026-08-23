@@ -16,6 +16,7 @@
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { knowledgeGraphFromJsonDocument, readGraphJson } from '../graph/graph-json.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
@@ -51,7 +52,35 @@ import {
   type ProcessesOutput,
 } from './pipeline-phases/index.js';
 
+/**
+ * Which sub-pipeline to run.
+ *
+ * - `full` (default): Tree-sitter parse, then LSP enrichment, then graph analysis
+ * - `treesitter`: scan → parse only (no LSP, no post-parse analysis)
+ * - `lsp`: load `.gitnexus/graph.json` from a prior treesitter/full run and enrich only
+ */
+export type PipelineStage = 'full' | 'treesitter' | 'lsp';
+
+export const PIPELINE_STAGES: readonly PipelineStage[] = ['full', 'treesitter', 'lsp'];
+
+export function resolvePipelineStage(stage?: string): PipelineStage {
+  const resolved = (stage ?? 'full') as PipelineStage;
+  if (!PIPELINE_STAGES.includes(resolved)) {
+    throw new Error(`Invalid pipeline stage '${stage}'. Use: ${PIPELINE_STAGES.join(', ')}`);
+  }
+  return resolved;
+}
+
+function isFullAnalyze(o: PipelineOptions): boolean {
+  return resolvePipelineStage(o.stage) === 'full';
+}
+
 export interface PipelineOptions {
+  /**
+   * Sub-pipeline to run. Default `full` composes treesitter + LSP + analysis.
+   * Isolated `treesitter` / `lsp` stages skip the other parser.
+   */
+  stage?: PipelineStage;
   /** Enable Language Server Protocol (JDT.LS / LSP) precision enrichment */
   lsp?: boolean;
   /**
@@ -274,7 +303,9 @@ export interface PipelineOptions {
  *
  * Phase dependency graph:
  *
- *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
+ *   treesitter: scan → structure → [springConfig, markdown, cobol] → parse
+ *   lsp:        (load graph.json) → lspEnrichment
+ *   full:       treesitter → lspEnrichment → [routes, tools, orm]
  *     → crossFile → scopeResolution → [springAutoConfiguration, springAop] → pruneLocalSymbols
  *     → mro → springAopInheritance → di → communities → processes
  *
@@ -284,9 +315,9 @@ export interface PipelineOptions {
  * the legacy `if (!skipGraphPhases)` guard is now expressed that way on the
  * three graph phases, with no change in behaviour.
  *
- * Exported for the parity test (`pipeline-phase-registry.test.ts`), which
- * asserts the produced list is byte-identical to the legacy array for every
- * options combination.
+ * Default options (`{}` / `stage: 'full'`) keep the historical phase list
+ * (parity test `pipeline-phase-registry.test.ts`). Isolated stages drop
+ * the other parser and, for `treesitter`, the post-parse analysis phases.
  */
 export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
   return (
@@ -297,25 +328,29 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(markdownPhase)
       .register(cobolPhase)
       .register(parsePhase)
-      .register(lspEnrichmentPhase, { enabledWhen: (o) => o.lsp !== false })
-      .register(routesPhase)
-      .register(toolsPhase)
-      .register(ormPhase)
-      .register(crossFilePhase)
-      .register(scopeResolutionPhase)
-      .register(springAutoConfigurationPhase)
-      .register(springAopPhase)
-      .register(pruneLocalSymbolsPhase)
+      .register(lspEnrichmentPhase, {
+        enabledWhen: (o) => o.lsp !== false && isFullAnalyze(o),
+      })
+      .register(routesPhase, { enabledWhen: isFullAnalyze })
+      .register(toolsPhase, { enabledWhen: isFullAnalyze })
+      .register(ormPhase, { enabledWhen: isFullAnalyze })
+      .register(crossFilePhase, { enabledWhen: isFullAnalyze })
+      .register(scopeResolutionPhase, { enabledWhen: isFullAnalyze })
+      .register(springAutoConfigurationPhase, { enabledWhen: isFullAnalyze })
+      .register(springAopPhase, { enabledWhen: isFullAnalyze })
+      .register(pruneLocalSymbolsPhase, { enabledWhen: isFullAnalyze })
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
       // phase depends on it (a filtered-out dep would throw in getPhaseOutput).
-      .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
-      .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
-      .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(springAopInheritancePhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true && isFullAnalyze(o) })
+      .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true && isFullAnalyze(o) })
+      .register(mroPhase, { enabledWhen: (o) => isFullAnalyze(o) && !o.skipGraphPhases })
+      .register(springAopInheritancePhase, {
+        enabledWhen: (o) => isFullAnalyze(o) && !o.skipGraphPhases,
+      })
+      .register(diPhase, { enabledWhen: (o) => isFullAnalyze(o) && !o.skipGraphPhases })
+      .register(communitiesPhase, { enabledWhen: (o) => isFullAnalyze(o) && !o.skipGraphPhases })
+      .register(processesPhase, { enabledWhen: (o) => isFullAnalyze(o) && !o.skipGraphPhases })
       // Normalize a missing options object once here so phase predicates above
       // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
       .build(options ?? {})
@@ -324,13 +359,103 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 
 // ── Pipeline orchestrator ─────────────────────────────────────────────────
 
+/**
+ * Tree-sitter sub-pipeline: scan through parse. Isolated — no LSP, no
+ * post-parse analysis. Persist `.gitnexus/graph.json` so `runLspParsePipeline`
+ * can resume.
+ */
+export const runTreesitterParsePipeline = async (
+  repoPath: string,
+  onProgress: (progress: PipelineProgress) => void,
+  options?: Omit<PipelineOptions, 'stage' | 'lsp'>,
+): Promise<PipelineResult> => {
+  return runPipelineFromRepo(repoPath, onProgress, { ...options, stage: 'treesitter', lsp: false });
+};
+
+/**
+ * LSP sub-pipeline: load a prior Tree-sitter graph and enrich CALLS/IMPLEMENTS.
+ * Isolated — does not re-parse source.
+ */
+export const runLspParsePipeline = async (
+  repoPath: string,
+  onProgress: (progress: PipelineProgress) => void,
+  options?: Omit<PipelineOptions, 'stage' | 'lsp'>,
+): Promise<PipelineResult> => {
+  return runPipelineFromRepo(repoPath, onProgress, { ...options, stage: 'lsp', lsp: true });
+};
+
+/**
+ * Full analyze: Tree-sitter parse, then LSP enrichment, then graph analysis.
+ */
+export const runAnalyzePipeline = async (
+  repoPath: string,
+  onProgress: (progress: PipelineProgress) => void,
+  options?: Omit<PipelineOptions, 'stage'>,
+): Promise<PipelineResult> => {
+  return runPipelineFromRepo(repoPath, onProgress, { ...options, stage: 'full' });
+};
+
+async function runLspParseFromSavedGraph(
+  repoPath: string,
+  onProgress: (progress: PipelineProgress) => void,
+  options?: PipelineOptions,
+): Promise<PipelineResult> {
+  const pipelineStart = Date.now();
+  const saved = readGraphJson(repoPath);
+  const graph = knowledgeGraphFromJsonDocument(saved);
+
+  onProgress({
+    phase: 'enriching',
+    percent: 5,
+    message: `Loaded ${saved.nodes.length} nodes / ${saved.relationships.length} edges from .gitnexus/graph.json`,
+  });
+
+  await lspEnrichmentPhase.execute(
+    { repoPath, graph, onProgress, options, pipelineStart },
+    new Map(),
+  );
+
+  onProgress({
+    phase: 'complete',
+    percent: 100,
+    message: 'LSP enrichment complete.',
+    stats: {
+      filesProcessed: saved.stats.files,
+      totalFiles: saved.stats.files,
+      nodesCreated: graph.nodeCount,
+    },
+  });
+
+  return {
+    graph,
+    repoPath,
+    totalFileCount: saved.stats.files,
+    resolutionOutcomes: [],
+    usedWorkerPool: false,
+  };
+}
+
 export const runPipelineFromRepo = async (
   repoPath: string,
   onProgress: (progress: PipelineProgress) => void,
   options?: PipelineOptions,
 ): Promise<PipelineResult> => {
+  const stage = resolvePipelineStage(options?.stage);
+
+  if (stage === 'lsp') {
+    if (options?.lsp === false) {
+      throw new Error('The lsp pipeline requires Language Server enrichment. Do not pass --no-lsp.');
+    }
+    return runLspParseFromSavedGraph(repoPath, onProgress, { ...options, stage: 'lsp', lsp: true });
+  }
+
   const graph = createKnowledgeGraph();
   const pipelineStart = Date.now();
+  const pipelineOptions: PipelineOptions = {
+    ...options,
+    stage,
+    ...(stage === 'treesitter' ? { lsp: false } : {}),
+  };
 
   // Streamed structural emit (#2680). The sink is a write-routing façade over
   // `graph`; it streams nothing until `beginStreaming()` fires at the parse
@@ -343,18 +468,18 @@ export const runPipelineFromRepo = async (
   // loudly instead — the whole point of the surrounding work is that a degraded
   // outcome must never look like a clean one.
   let graphEmitSink: GraphEmitSink | undefined;
-  if (options?.streamGraphEmit === true) {
-    if (options.graphEmitCsvDir === undefined) {
+  if (pipelineOptions.streamGraphEmit === true) {
+    if (pipelineOptions.graphEmitCsvDir === undefined) {
       throw new Error(
         'streamGraphEmit was requested but graphEmitCsvDir is missing. The caller owns ' +
           'storage-path resolution (see resolveNativeSafeStorageDir in run-analyze.ts); ' +
           'pass the directory, or leave streamGraphEmit unset to run without streaming.',
       );
     }
-    graphEmitSink = new GraphEmitSink(graph, options.graphEmitCsvDir);
+    graphEmitSink = new GraphEmitSink(graph, pipelineOptions.graphEmitCsvDir);
   }
 
-  const phases = buildPhaseList(options);
+  const phases = buildPhaseList(pipelineOptions);
 
   let graphEmitManifest: GraphEmitManifest | undefined;
   let results;
@@ -363,7 +488,7 @@ export const runPipelineFromRepo = async (
       repoPath,
       graph: graphEmitSink ?? graph,
       onProgress,
-      options,
+      options: pipelineOptions,
       pipelineStart,
       graphEmit: graphEmitSink,
     });
@@ -381,18 +506,19 @@ export const runPipelineFromRepo = async (
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
-  const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
-  const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
-  const undecidedSatisfaction = scopeResolutionOutput.undecidedSatisfaction;
-  // Streamed PDG-emit manifest (#2202): present only when streaming was on.
-  const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
-  const propertyInference = scopeResolutionOutput.propertyInference;
+  let resolutionOutcomes: PipelineResult['resolutionOutcomes'] = [];
+  let undecidedSatisfaction: PipelineResult['undecidedSatisfaction'];
+  let pdgEmitManifest: PipelineResult['pdgEmitManifest'];
+  let propertyInference: PipelineResult['propertyInference'];
 
-  // Presence check, not `!skipGraphPhases`: phases can now be filtered out by
-  // any `enabledWhen` predicate (streamGraphEmit disables communities/processes
-  // too), and `getPhaseOutput` THROWS on a phase that was never resolved. Keying
-  // off the options flag alone made every filtered-out combination crash here
-  // rather than return undefined results.
+  if (results.has('scopeResolution')) {
+    const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
+    resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
+    undecidedSatisfaction = scopeResolutionOutput.undecidedSatisfaction;
+    pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
+    propertyInference = scopeResolutionOutput.propertyInference;
+  }
+
   if (results.has('communities') && results.has('processes')) {
     communityResult = getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult;
     processResult = getPhaseOutput<ProcessesOutput>(results, 'processes').processResult;
@@ -402,9 +528,11 @@ export const runPipelineFromRepo = async (
     phase: 'complete',
     percent: 100,
     message:
-      communityResult && processResult
-        ? `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes detected.`
-        : 'Graph complete! (graph phases skipped)',
+      stage === 'treesitter'
+        ? 'Tree-sitter parse complete.'
+        : communityResult && processResult
+          ? `Graph complete! ${communityResult.stats.totalCommunities} communities, ${processResult.stats.totalProcesses} processes detected.`
+          : 'Graph complete! (graph phases skipped)',
     stats: {
       filesProcessed: totalFiles,
       totalFiles,
@@ -413,12 +541,6 @@ export const runPipelineFromRepo = async (
   });
 
   return {
-    // The RAW graph, deliberately — NOT `graphEmitSink`. Phases above received
-    // the sink so their reads are complete, but `loadGraphToLbug` feeds this to
-    // `streamAllCSVsToDisk`, and the sink's complete iterator would then emit
-    // every streamed edge a SECOND time on top of the per-pair CSVs the sink
-    // already wrote and the manifest already COPYs. Returning the sink here
-    // silently doubles every streamed relationship in the persisted graph.
     graph,
     repoPath,
     totalFileCount: totalFiles,

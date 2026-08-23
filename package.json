@@ -10,7 +10,9 @@
   ],
   "scripts": {
     "analyze": "tsx gitnexus_ts_isolated/src/cli/analyze.ts",
-    "analyze:no-lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts --no-lsp",
+    "analyze:no-lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts analyze --no-lsp",
+    "analyze:treesitter": "tsx gitnexus_ts_isolated/src/cli/analyze.ts analyze --pipeline treesitter",
+    "analyze:lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts analyze --pipeline lsp",
     "compare": "uv run python custom_tools/graph_comparator.py",
     "flows": "uv run python custom_tools/flows_inspector.py",
     "boundaries": "uv run python custom_tools/ingress_egress_analyzer.py",
