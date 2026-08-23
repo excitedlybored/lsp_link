@@ -29,6 +29,9 @@ export interface ILspAdapter {
   /** Ensures target document is opened in the language server */
   openDocument(filePath: string): Promise<void>;
 
+  /** Releases a previously opened document so the compiler working set stays bounded */
+  closeDocument?(filePath: string): Promise<void>;
+
   /** Prepares call hierarchy items at target position */
   prepareCallHierarchy(filePath: string, line: number, character: number): Promise<CallHierarchyItem[]>;
 

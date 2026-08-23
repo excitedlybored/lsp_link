@@ -1,30 +1,26 @@
 /**
  * Eclipse JDT.LS Adapter implementing ILspAdapter.
+ *
+ * Uses the same vscode-jsonrpc transport as other languages. Initialize is not
+ * hard-capped at 45s — the compiler handshake is allowed to finish. After
+ * `initialized`, we wait for `language/status ServiceReady` with a wait that
+ * scales with project size (a cap, not a skip).
  */
 
-import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { pathToFileURL } from 'url';
-import { ILspAdapter } from '../../contracts/lsp-adapter.interface.js';
-import {
-  CallHierarchyItem,
-  CallHierarchyOutgoingCall,
-  CallHierarchyIncomingCall,
-  LspHoverResult,
-  LspImplementationResult,
-} from '../../contracts/lsp-types.js';
+import { globSync } from 'glob';
+import { BaseStdioLspAdapter } from '../base-stdio-adapter.js';
 import { resolveJdtlsConfig } from './jdtls-launcher.js';
-import { JsonRpcChannel } from './jsonrpc-channel.js';
 
-export class JavaJdtlsAdapter implements ILspAdapter {
+export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
   public readonly id = 'jdtls';
   public readonly language = 'java';
 
-  private process: ChildProcess | null = null;
-  private channel: JsonRpcChannel | null = null;
-  private openedDocuments = new Set<string>();
   private serviceReady = false;
+  private serviceReadyResolve: (() => void) | null = null;
+  private javaFileCount = 0;
+  private lastStatusAt = 0;
 
   public async isAvailable(): Promise<boolean> {
     try {
@@ -35,68 +31,89 @@ export class JavaJdtlsAdapter implements ILspAdapter {
     }
   }
 
-  public async start(workspacePath: string): Promise<void> {
+  protected handleNotification(method: string, params: unknown): void {
+    if (method !== 'language/status') return;
+    this.lastStatusAt = Date.now();
+    const type = (params as { type?: string } | null)?.type;
+    if (type === 'ServiceReady' || type === 'Started') {
+      this.serviceReady = true;
+      this.serviceReadyResolve?.();
+    }
+  }
+
+  protected initializeTimeoutMs(_workspacePath: string): number | undefined {
+    return Math.min(600_000, Math.max(180_000, this.javaFileCount * 80));
+  }
+
+  protected async afterHandshake(_workspacePath: string): Promise<void> {
+    if (this.serviceReady) return;
+    const readyTimeoutMs = Math.min(900_000, Math.max(180_000, this.javaFileCount * 120));
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        this.serviceReadyResolve = resolve;
+        if (this.serviceReady) resolve();
+      }),
+      new Promise<void>((resolve) => setTimeout(resolve, readyTimeoutMs)),
+    ]);
+
+    // ServiceReady can fire before Maven/Gradle import finishes. Wait until
+    // status notifications go quiet so call-hierarchy sees compiled types.
+    const quietMs = 1500;
+    const settleCapMs = Math.min(60_000, Math.max(8_000, this.javaFileCount * 4));
+    const settleStart = Date.now();
+    while (Date.now() - settleStart < settleCapMs) {
+      const idleFor = Date.now() - (this.lastStatusAt || settleStart);
+      if (idleFor >= quietMs) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
+  protected async getLaunchConfig(workspacePath: string) {
     const { javaBin, launcherJar, configDir } = resolveJdtlsConfig();
     const hash = Buffer.from(path.resolve(workspacePath)).toString('base64url').slice(0, 16);
     const dataDir = path.join('/tmp', `gitnexus_jdtls_${hash}`);
+    fs.rmSync(dataDir, { recursive: true, force: true });
     fs.mkdirSync(dataDir, { recursive: true });
 
     const hasPom = fs.existsSync(path.join(workspacePath, 'pom.xml'));
     const hasGradle =
       fs.existsSync(path.join(workspacePath, 'build.gradle')) ||
-      fs.existsSync(path.join(workspacePath, 'build.gradle.kts'));
+      fs.existsSync(path.join(workspacePath, 'build.gradle.kts')) ||
+      fs.existsSync(path.join(workspacePath, 'settings.gradle')) ||
+      fs.existsSync(path.join(workspacePath, 'settings.gradle.kts'));
 
-    const args = [
-      '-Declipse.application=org.eclipse.jdt.ls.core.id1',
-      '-Dosgi.bundles.defaultStartLevel=4',
-      '-Declipse.product=org.eclipse.jdt.ls.core.product',
-      '-Dlog.level=WARNING',
-      '-noverify',
-      '-XX:TieredStopAtLevel=1',
-      '-Xms512M',
-      '-Xmx2G',
-      '-XX:+UseG1GC',
-      '-XX:+UseStringDeduplication',
-      '--add-modules=ALL-SYSTEM',
-      '--add-opens',
-      'java.base/java.util=ALL-UNNAMED',
-      '--add-opens',
-      'java.base/java.lang=ALL-UNNAMED',
-      '-jar',
-      launcherJar,
-      '-configuration',
-      configDir,
-      '-data',
-      dataDir,
-    ];
+    this.javaFileCount = globSync('**/*.java', {
+      cwd: workspacePath,
+      nodir: true,
+      ignore: ['**/node_modules/**', '**/build/**', '**/target/**', '**/.git/**'],
+    }).length;
+    const xmx = this.javaFileCount > 2000 ? '4G' : '2G';
 
-    this.process = spawn(javaBin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    this.channel = new JsonRpcChannel(this.process);
-
-    const readyPromise = new Promise<void>((resolve) => {
-      this.channel!.on('notification', (msg: any) => {
-        if (msg.method === 'language/status' && msg.params?.type === 'ServiceReady') {
-          this.serviceReady = true;
-          resolve();
-        }
-      });
-    });
-
-    const rootUri = pathToFileURL(path.resolve(workspacePath)).toString();
-    const initParams = {
-      processId: process.pid,
-      rootUri,
-      capabilities: {
-        workspace: { workspaceFolders: true },
-        textDocument: {
-          callHierarchy: { dynamicRegistration: true },
-          documentSymbol: { hierarchicalDocumentSymbolSupport: true },
-          definition: { dynamicRegistration: true },
-          implementation: { dynamicRegistration: true },
-          hover: { dynamicRegistration: true },
-        },
-      },
-      initializationOptions: {
+    return {
+      command: javaBin,
+      args: [
+        '-Declipse.application=org.eclipse.jdt.ls.core.id1',
+        '-Dosgi.bundles.defaultStartLevel=4',
+        '-Declipse.product=org.eclipse.jdt.ls.core.product',
+        '-Dlog.level=WARNING',
+        '-XX:TieredStopAtLevel=1',
+        '-Xms512M',
+        `-Xmx${xmx}`,
+        '-XX:+UseG1GC',
+        '-XX:+UseStringDeduplication',
+        '--add-modules=ALL-SYSTEM',
+        '--add-opens',
+        'java.base/java.util=ALL-UNNAMED',
+        '--add-opens',
+        'java.base/java.lang=ALL-UNNAMED',
+        '-jar',
+        launcherJar,
+        '-configuration',
+        configDir,
+        '-data',
+        dataDir,
+      ],
+      initOptions: {
         settings: {
           java: {
             autobuild: { enabled: true },
@@ -108,163 +125,5 @@ export class JavaJdtlsAdapter implements ILspAdapter {
         },
       },
     };
-
-    await this.channel.sendRequest('initialize', initParams, 45000);
-    this.channel.sendNotification('initialized', {});
-
-    // Wait for ServiceReady compilation
-    await Promise.race([
-      readyPromise,
-      new Promise((resolve) => setTimeout(resolve, 35000)),
-    ]);
-  }
-
-  public async openDocument(filePath: string): Promise<void> {
-    const absPath = path.resolve(filePath);
-    if (this.openedDocuments.has(absPath) || !this.channel) {
-      return;
-    }
-
-    if (!fs.existsSync(absPath)) {
-      return;
-    }
-
-    const uri = pathToFileURL(absPath).toString();
-    const text = fs.readFileSync(absPath, 'utf-8');
-
-    this.channel.sendNotification('textDocument/didOpen', {
-      textDocument: {
-        uri,
-        languageId: 'java',
-        version: 1,
-        text,
-      },
-    });
-
-    this.openedDocuments.add(absPath);
-  }
-
-  public async prepareCallHierarchy(
-    filePath: string,
-    line: number,
-    character: number
-  ): Promise<CallHierarchyItem[]> {
-    if (!this.channel) return [];
-    await this.openDocument(filePath);
-    const uri = pathToFileURL(path.resolve(filePath)).toString();
-
-    try {
-      const res = await this.channel.sendRequest<CallHierarchyItem[]>(
-        'textDocument/prepareCallHierarchy',
-        {
-          textDocument: { uri },
-          position: { line, character },
-        },
-        15000
-      );
-      return res || [];
-    } catch {
-      return [];
-    }
-  }
-
-  public async getOutgoingCalls(item: CallHierarchyItem): Promise<CallHierarchyOutgoingCall[]> {
-    if (!this.channel) return [];
-    try {
-      const res = await this.channel.sendRequest<CallHierarchyOutgoingCall[]>(
-        'callHierarchy/outgoingCalls',
-        { item },
-        15000
-      );
-      return res || [];
-    } catch {
-      return [];
-    }
-  }
-
-  public async getIncomingCalls(item: CallHierarchyItem): Promise<CallHierarchyIncomingCall[]> {
-    if (!this.channel) return [];
-    try {
-      const res = await this.channel.sendRequest<CallHierarchyIncomingCall[]>(
-        'callHierarchy/incomingCalls',
-        { item },
-        15000
-      );
-      return res || [];
-    } catch {
-      return [];
-    }
-  }
-
-  public async findImplementations(
-    filePath: string,
-    line: number,
-    character: number
-  ): Promise<LspImplementationResult[]> {
-    if (!this.channel) return [];
-    await this.openDocument(filePath);
-    const uri = pathToFileURL(path.resolve(filePath)).toString();
-
-    try {
-      const res = await this.channel.sendRequest<any>(
-        'textDocument/implementation',
-        {
-          textDocument: { uri },
-          position: { line, character },
-        },
-        15000
-      );
-
-      if (!res) return [];
-      if (Array.isArray(res)) {
-        return res.map((r: any) => ({
-          uri: r.uri || r.targetUri,
-          range: r.range || r.targetRange,
-        }));
-      }
-      return [{ uri: res.uri || res.targetUri, range: res.range || res.targetRange }];
-    } catch {
-      return [];
-    }
-  }
-
-  public async getHover(
-    filePath: string,
-    line: number,
-    character: number
-  ): Promise<LspHoverResult | null> {
-    if (!this.channel) return null;
-    await this.openDocument(filePath);
-    const uri = pathToFileURL(path.resolve(filePath)).toString();
-
-    try {
-      return await this.channel.sendRequest<LspHoverResult>(
-        'textDocument/hover',
-        {
-          textDocument: { uri },
-          position: { line, character },
-        },
-        10000
-      );
-    } catch {
-      return null;
-    }
-  }
-
-  public async shutdown(): Promise<void> {
-    if (this.channel) {
-      try {
-        await this.channel.sendRequest('shutdown', {}, 5000);
-        this.channel.sendNotification('exit', {});
-      } catch {
-        // Ignore errors during exit
-      }
-    }
-    if (this.process) {
-      this.process.kill('SIGTERM');
-      this.process = null;
-    }
-    this.channel = null;
-    this.openedDocuments.clear();
   }
 }

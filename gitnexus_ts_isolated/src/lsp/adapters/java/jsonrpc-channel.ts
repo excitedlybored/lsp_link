@@ -9,16 +9,43 @@ export class JsonRpcChannel extends EventEmitter {
   private msgId = 0;
   private pendingRequests = new Map<number, { resolve: (res: any) => void; reject: (err: any) => void; timer: NodeJS.Timeout }>();
   private buffer = Buffer.alloc(0);
+  private disposed = false;
 
   constructor(private process: ChildProcess) {
     super();
     if (this.process.stdout) {
       this.process.stdout.on('data', (chunk: Buffer) => this.handleData(chunk));
+      this.process.stdout.on('error', () => {});
+    }
+    if (this.process.stdin) {
+      this.process.stdin.on('error', () => {});
     }
     if (this.process.stderr) {
       this.process.stderr.on('data', () => {
         // Drain stderr
       });
+    }
+  }
+
+  private failAll(err: Error) {
+    if (this.disposed) return;
+    for (const [, pending] of this.pendingRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(err);
+    }
+    this.pendingRequests.clear();
+  }
+
+  private writeFrame(raw: Buffer): boolean {
+    const stdin = this.process.stdin;
+    if (!stdin || stdin.destroyed || this.disposed) return false;
+    const header = Buffer.from(`Content-Length: ${raw.length}\r\n\r\n`, 'latin1');
+    try {
+      stdin.write(header);
+      stdin.write(raw);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -51,7 +78,7 @@ export class JsonRpcChannel extends EventEmitter {
       try {
         const msg = JSON.parse(bodyBuffer.toString('utf-8'));
         this.dispatchMessage(msg);
-      } catch (err) {
+      } catch {
         // Ignore malformed JSON
       }
     }
@@ -89,12 +116,8 @@ export class JsonRpcChannel extends EventEmitter {
 
       const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
       const raw = Buffer.from(payload, 'utf-8');
-      const header = Buffer.from(`Content-Length: ${raw.length}\r\n\r\n`, 'latin1');
 
-      if (this.process.stdin && !this.process.stdin.destroyed) {
-        this.process.stdin.write(header);
-        this.process.stdin.write(raw);
-      } else {
+      if (!this.writeFrame(raw)) {
         clearTimeout(timer);
         this.pendingRequests.delete(id);
         reject(new Error('Process stdin is not writable.'));
@@ -105,11 +128,11 @@ export class JsonRpcChannel extends EventEmitter {
   public sendNotification(method: string, params: any): void {
     const payload = JSON.stringify({ jsonrpc: '2.0', method, params });
     const raw = Buffer.from(payload, 'utf-8');
-    const header = Buffer.from(`Content-Length: ${raw.length}\r\n\r\n`, 'latin1');
+    this.writeFrame(raw);
+  }
 
-    if (this.process.stdin && !this.process.stdin.destroyed) {
-      this.process.stdin.write(header);
-      this.process.stdin.write(raw);
-    }
+  public dispose(): void {
+    this.disposed = true;
+    this.failAll(new Error('JSON-RPC channel disposed'));
   }
 }

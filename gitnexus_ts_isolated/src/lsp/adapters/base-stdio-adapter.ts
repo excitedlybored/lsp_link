@@ -83,11 +83,23 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     );
 
     this.connection.listen();
+    this.connection.onError(() => {
+      this.connection = null;
+    });
+    this.connection.onClose(() => {
+      this.connection = null;
+    });
+    this.connection.onNotification((method: string, params: unknown) => {
+      this.handleNotification(method, params);
+    });
 
-    const rootUri = pathToFileURL(path.resolve(workspacePath)).toString();
+    const resolvedRoot = path.resolve(workspacePath);
+    const rootUri = pathToFileURL(resolvedRoot).toString();
     const initParams = {
       processId: process.pid,
       rootUri,
+      rootPath: resolvedRoot,
+      workspaceFolders: [{ uri: rootUri, name: path.basename(resolvedRoot) }],
       capabilities: {
         workspace: { workspaceFolders: true },
         textDocument: {
@@ -101,9 +113,45 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       initializationOptions: launchConfig.initOptions ?? {},
     };
 
-    await this.connection.sendRequest('initialize', initParams);
+    let initTimer: NodeJS.Timeout | undefined;
+    const initTimeoutMs = this.initializeTimeoutMs(workspacePath);
+    try {
+      if (initTimeoutMs && initTimeoutMs > 0) {
+        const source = new rpc.CancellationTokenSource();
+        initTimer = setTimeout(() => {
+          try {
+            source.cancel();
+          } catch {
+            // cancel() may throw if the pipe already closed
+          }
+        }, initTimeoutMs);
+        await this.connection.sendRequest('initialize', initParams, source.token);
+      } else {
+        await this.connection.sendRequest('initialize', initParams);
+      }
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      throw new Error(
+        initTimeoutMs
+          ? `Request initialize timed out after ${initTimeoutMs}ms (${msg})`
+          : msg
+      );
+    } finally {
+      if (initTimer) clearTimeout(initTimer);
+    }
     this.connection.sendNotification('initialized', {});
+    await this.afterHandshake(workspacePath);
   }
+
+  /** Override to cap initialize wait. Absent/0 = wait until the server answers. */
+  protected initializeTimeoutMs(_workspacePath: string): number | undefined {
+    return undefined;
+  }
+
+  /** Optional compiler-ready wait (e.g. JDT.LS ServiceReady). */
+  protected async afterHandshake(_workspacePath: string): Promise<void> {}
+
+  protected handleNotification(_method: string, _params: unknown): void {}
 
   public async openDocument(filePath: string): Promise<void> {
     const absPath = path.resolve(filePath);
@@ -113,16 +161,31 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     const content = fs.readFileSync(absPath, 'utf8');
     const uri = pathToFileURL(absPath).toString();
 
-    this.connection?.sendNotification('textDocument/didOpen', {
-      textDocument: {
-        uri,
-        languageId: this.language,
-        version: 1,
-        text: content,
-      },
-    });
+    try {
+      this.connection?.sendNotification('textDocument/didOpen', {
+        textDocument: {
+          uri,
+          languageId: this.language,
+          version: 1,
+          text: content,
+        },
+      });
+      this.openedDocuments.add(absPath);
+    } catch {
+      // Dead pipe — caller treats this file as unenriched
+    }
+  }
 
-    this.openedDocuments.add(absPath);
+  public async closeDocument(filePath: string): Promise<void> {
+    const absPath = path.resolve(filePath);
+    if (!this.openedDocuments.has(absPath) || !this.connection) return;
+    const uri = pathToFileURL(absPath).toString();
+    try {
+      this.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+    } catch {
+      // Dead pipe
+    }
+    this.openedDocuments.delete(absPath);
   }
 
   public async prepareCallHierarchy(
@@ -130,23 +193,38 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     line: number,
     character: number
   ): Promise<CallHierarchyItem[]> {
+    if (!this.connection) return [];
     await this.openDocument(filePath);
     const uri = pathToFileURL(path.resolve(filePath)).toString();
-    const res = await this.connection?.sendRequest('textDocument/prepareCallHierarchy', {
-      textDocument: { uri },
-      position: { line, character },
-    });
-    return (res as CallHierarchyItem[]) || [];
+    try {
+      const res = await this.connection.sendRequest('textDocument/prepareCallHierarchy', {
+        textDocument: { uri },
+        position: { line, character },
+      });
+      return (res as CallHierarchyItem[]) || [];
+    } catch {
+      return [];
+    }
   }
 
   public async getOutgoingCalls(item: CallHierarchyItem): Promise<CallHierarchyOutgoingCall[]> {
-    const res = await this.connection?.sendRequest('callHierarchy/outgoingCalls', { item });
-    return (res as CallHierarchyOutgoingCall[]) || [];
+    if (!this.connection) return [];
+    try {
+      const res = await this.connection.sendRequest('callHierarchy/outgoingCalls', { item });
+      return (res as CallHierarchyOutgoingCall[]) || [];
+    } catch {
+      return [];
+    }
   }
 
   public async getIncomingCalls(item: CallHierarchyItem): Promise<CallHierarchyIncomingCall[]> {
-    const res = await this.connection?.sendRequest('callHierarchy/incomingCalls', { item });
-    return (res as CallHierarchyIncomingCall[]) || [];
+    if (!this.connection) return [];
+    try {
+      const res = await this.connection.sendRequest('callHierarchy/incomingCalls', { item });
+      return (res as CallHierarchyIncomingCall[]) || [];
+    } catch {
+      return [];
+    }
   }
 
   public async findImplementations(
@@ -154,19 +232,24 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     line: number,
     character: number
   ): Promise<LspImplementationResult[]> {
+    if (!this.connection) return [];
     await this.openDocument(filePath);
     const uri = pathToFileURL(path.resolve(filePath)).toString();
-    const res: any = await this.connection?.sendRequest('textDocument/implementation', {
-      textDocument: { uri },
-      position: { line, character },
-    });
+    try {
+      const res: any = await this.connection.sendRequest('textDocument/implementation', {
+        textDocument: { uri },
+        position: { line, character },
+      });
 
-    if (!res) return [];
-    const items = Array.isArray(res) ? res : [res];
-    return items.map((it: any) => ({
-      uri: it.uri || it.targetUri,
-      range: it.range || it.targetRange,
-    }));
+      if (!res) return [];
+      const items = Array.isArray(res) ? res : [res];
+      return items.map((it: any) => ({
+        uri: it.uri || it.targetUri,
+        range: it.range || it.targetRange,
+      }));
+    } catch {
+      return [];
+    }
   }
 
   public async getHover(
@@ -174,40 +257,54 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     line: number,
     character: number
   ): Promise<LspHoverResult | null> {
+    if (!this.connection) return null;
     await this.openDocument(filePath);
     const uri = pathToFileURL(path.resolve(filePath)).toString();
-    const res: any = await this.connection?.sendRequest('textDocument/hover', {
-      textDocument: { uri },
-      position: { line, character },
-    });
+    try {
+      const res: any = await this.connection.sendRequest('textDocument/hover', {
+        textDocument: { uri },
+        position: { line, character },
+      });
 
-    if (!res || !res.contents) return null;
-    let contents = '';
-    if (typeof res.contents === 'string') {
-      contents = res.contents;
-    } else if (Array.isArray(res.contents)) {
-      contents = res.contents.map((c: any) => (typeof c === 'string' ? c : c.value)).join('\n');
-    } else if (res.contents.value) {
-      contents = res.contents.value;
+      if (!res || !res.contents) return null;
+      let contents = '';
+      if (typeof res.contents === 'string') {
+        contents = res.contents;
+      } else if (Array.isArray(res.contents)) {
+        contents = res.contents.map((c: any) => (typeof c === 'string' ? c : c.value)).join('\n');
+      } else if (res.contents.value) {
+        contents = res.contents.value;
+      }
+
+      return { contents, range: res.range };
+    } catch {
+      return null;
     }
-
-    return { contents, range: res.range };
   }
 
   public async shutdown(): Promise<void> {
-    if (this.connection) {
+    const stdinAlive = Boolean(this.process?.stdin && !this.process.stdin.destroyed);
+    if (this.connection && stdinAlive) {
       try {
         await this.connection.sendRequest('shutdown', {});
         this.connection.sendNotification('exit', {});
       } catch {
         // Ignore shutdown errors
       }
-      this.connection.dispose();
-      this.connection = null;
     }
+    try {
+      this.connection?.dispose();
+    } catch {
+      // Ignore dispose errors
+    }
+    this.connection = null;
 
     if (this.process) {
-      this.process.kill('SIGTERM');
+      try {
+        this.process.kill('SIGTERM');
+      } catch {
+        // Already gone
+      }
       this.process = null;
     }
     this.openedDocuments.clear();

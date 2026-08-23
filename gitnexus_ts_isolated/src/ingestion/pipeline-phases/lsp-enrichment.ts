@@ -40,6 +40,12 @@ export const lspEnrichmentPhase: PipelinePhase<LspEnrichmentOutput> = {
         });
       });
 
+      onProgress({
+        phase: 'lspEnrichment',
+        percent: 55,
+        message: `LSP added ${stats.enrichedCalls} CALLS, ${stats.enrichedImplementations} IMPLEMENTS (${stats.conflictsResolved} conflicts pruned)`,
+      });
+
       return {
         output: stats,
         stats: {
