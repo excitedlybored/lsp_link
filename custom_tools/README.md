@@ -17,7 +17,7 @@ uv pip install -r custom_tools/requirements.txt
 
 ## 🛠️ Included Python Custom Tools
 
-### 1. Business Flows, Entry & Exit Points Inspector ([`flows_inspector.py`](file:///Users/zijie-machine/code_ai/ide_link/custom_tools/flows_inspector.py))
+### 1. Business Flows, Entry & Exit Points Inspector ([`flows_inspector.py`](flows_inspector.py))
 Reads `.gitnexus/graph.json` directly (executes in ~15ms) and extracts:
 - **🏁 Entry Points**: REST `@GetMapping` / `@PostMapping` controllers, CLI handlers, workflow triggers.
 - **🛑 Exit Points / Terminal Sinks**: Database repositories (`save()`, `delete()`), Kafka publishers, external API calls.
@@ -31,7 +31,7 @@ npm run flows -- sample_projects/spring-boot-demo
 
 ---
 
-### 2. Ingress & Egress Boundary Analyzer ([`ingress_egress_analyzer.py`](file:///Users/zijie-machine/code_ai/ide_link/custom_tools/ingress_egress_analyzer.py))
+### 2. Ingress & Egress Boundary Analyzer ([`ingress_egress_analyzer.py`](ingress_egress_analyzer.py))
 Queries LadybugDB to discover and classify all service boundary ingress & egress points:
 - **🚪 Ingress Boundaries**: REST routes (`@GetMapping`, `@PostMapping`), Kafka consumers, Temporal `@WorkflowMethod` entry points.
 - **🚪 Egress Boundaries**: Database repositories (`CrudRepository`), Temporal activities (`@ActivityMethod`), message producers.
@@ -45,7 +45,7 @@ npm run boundaries -- sample_projects/spring-boot-demo
 
 ---
 
-### 3. Knowledge Graph Precision Benchmark ([`graph_comparator.py`](file:///Users/zijie-machine/code_ai/ide_link/custom_tools/graph_comparator.py))
+### 3. Knowledge Graph Precision Benchmark ([`graph_comparator.py`](graph_comparator.py))
 Reads the database to benchmark compiler-verified edges (`confidence = 1.0`) vs AST structural edges.
 
 ```bash
@@ -56,7 +56,7 @@ npm run compare -- sample_projects/spring-boot-demo
 
 ---
 
-### 3. Direct Knowledge Graph Query CLI ([`query_db.py`](file:///Users/zijie-machine/code_ai/ide_link/custom_tools/query_db.py))
+### 4. Direct Knowledge Graph Query CLI ([`query_db.py`](query_db.py))
 Inspects node distributions, relation types, and caller trees directly from Python.
 
 ```bash
@@ -73,5 +73,5 @@ uv run python custom_tools/query_db.py sample_projects/spring-boot-demo calls sh
 
 To create a new custom tool:
 1. Create a script in `custom_tools/<tool_name>.py`.
-2. Load the database from `Path(project_path) / ".gitnexus" / "graph.json"`.
+2. Open Ladybug at `Path(project_path) / ".gitnexus" / "lbug"` (or `graph.json` for the JSON dump).
 3. Perform your graph analytics, anomaly detection, or pathfinding algorithms.

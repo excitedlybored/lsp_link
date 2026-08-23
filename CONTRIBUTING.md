@@ -11,12 +11,10 @@ Thank you for your interest in contributing to **LSP-Link**! This guide outlines
 - **Java**: OpenJDK 21 LTS (recommended for Eclipse JDT.LS)
 - **Optional Language Runtimes**: Python 3.10+, LLVM `clangd`, Rust toolchain (`cargo`, `rust-analyzer`)
 
-### Clone & Install
+### Clone & install
 ```bash
 git clone git@github.com:excitedlybored/lsp_link.git
 cd lsp_link
-
-# Install dependencies across all packages
 npm install
 ```
 
@@ -24,36 +22,26 @@ npm install
 
 ## 2. Running Local Commands
 
-### Knowledge Graph Analysis (Set 2)
+### Knowledge graph (gitnexus_ts_isolated)
 ```bash
-# Run full compiler-verified analysis (LSP enabled by default):
-npm run analyze ../sample_projects/spring-boot-demo
-
-# Run fast AST-only analysis:
-npm run analyze:no-lsp ../sample_projects/spring-boot-demo
-
-# Run side-by-side AST vs LSP benchmark:
-npm run compare ../sample_projects/spring-boot-demo
+npm run analyze -- sample_projects/spring-boot-demo
+npm run analyze:no-lsp -- sample_projects/spring-boot-demo
+npm run compare -- sample_projects/spring-boot-demo
 ```
 
-### Direct LSP Query CLI (Set 1)
+### LSP query CLI (lsp_server)
 ```bash
-# Query Outgoing Call Hierarchy:
-npm run query calls ../sample_projects/spring-boot-demo --symbol showExecutionHistory
-
-# Query Interface Implementations:
-npm run query impl ../sample_projects/spring-boot-demo --symbol PaymentGateway
-
-# Query 360-Degree Compiler Context:
-npm run query context ../sample_projects/spring-boot-demo --symbol DemoWorkflow
+npm run query -- calls sample_projects/spring-boot-demo --symbol showExecutionHistory
+npm run query -- impl sample_projects/spring-boot-demo --symbol PaymentGateway
+npm run query -- context sample_projects/spring-boot-demo --symbol DemoWorkflow
 ```
 
 ---
 
 ## 3. Adding a New Language Adapter
 
-To add a new Language Server adapter:
-1. Create a class extending [`BaseStdioLspAdapter`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server/adapters/base-stdio-adapter.ts) in `lsp_server/adapters/<lang>/`.
+To add a Language Server adapter:
+1. Add a class extending `BaseStdioAdapter` in `lsp_server/adapters/<lang>/`.
 2. Implement `isAvailable()` and `getLaunchConfig(workspacePath)`.
-3. Register the adapter in [`LspAdapterRegistry`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server/registry/lsp-adapter-registry.ts) and add the file extension mapping.
-4. Run `npm test` to verify.
+3. Register it in `lsp_server/registry/lsp-adapter-registry.ts` and map the file extension.
+4. Run `npm test`.

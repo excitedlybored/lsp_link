@@ -28,8 +28,8 @@ flowchart TD
 ```
 
 1. **Two Distinct Sets of Code**:
-   - **Set 1: [`lsp_server/`](file:///Users/zijie-machine/code_ai/ide_link/lsp_server)**: Standalone Language Server process manager and direct JSON-RPC query CLI.
-   - **Set 2: [`gitnexus_ts_isolated/`](file:///Users/zijie-machine/code_ai/ide_link/gitnexus_ts_isolated)**: Isolated GitNexus knowledge graph engine with 15+ Tree-sitter parsers and live LSP enrichment.
+   - **Set 1: [`lsp_server/`](lsp_server/)**: Standalone Language Server process manager and JSON-RPC query CLI.
+   - **Set 2: [`gitnexus_ts_isolated/`](gitnexus_ts_isolated/)**: Isolated GitNexus knowledge graph engine with Tree-sitter parsers and live LSP enrichment.
 2. **Polyglot Banking LSP Matrix**:
    - **Java (Spring Boot / Temporal)**: Eclipse JDT.LS + Spring Tools 4.
    - **COBOL (Mainframe / CICS)**: Broadcom Code4z / Che4z + native paragraph/PERFORM AST parser.
@@ -51,7 +51,7 @@ flowchart TD
 ## 🚀 Quickstart & Offline Installation
 
 ### 1. Zero-Network 1-Step Setup
-The repository includes all dependencies in [`vendor/`](file:///Users/zijie-machine/code_ai/ide_link/vendor) (offline `.tgz` and `.whl` archives) and raw source code in [`vendor/packages/`](file:///Users/zijie-machine/code_ai/ide_link/vendor/packages). No internet or external npm registry access is required:
+The repository includes dependencies in [`vendor/`](vendor/) (offline `.tgz` / `.whl` archives) and sources in [`vendor/packages/`](vendor/packages/). No internet or npm registry is required:
 
 ```bash
 # Clone repository
@@ -115,7 +115,7 @@ npm run query -- context sample_projects/spring-boot-demo --symbol DemoWorkflow
 
 ## 📊 Benchmark Results: AST vs. LSP on Enterprise Sample
 
-Tested on [`sample_projects/spring-boot-demo`](file:///Users/zijie-machine/code_ai/ide_link/sample_projects/spring-boot-demo) (augmented with 4 enterprise patterns):
+Tested on [`sample_projects/spring-boot-demo`](sample_projects/spring-boot-demo) (augmented with 4 enterprise patterns):
 
 ```
 ========================================================================
@@ -150,7 +150,7 @@ Tested on [`sample_projects/spring-boot-demo`](file:///Users/zijie-machine/code_
 
 ## 🧠 LadybugDB (`lbug`) Data Structure & Storage
 
-GitNexus persists the knowledge graph inside `.gitnexus/lbug/`. For full technical specifications, see **[`docs/LBUG_DATA_STRUCTURE.md`](file:///Users/zijie-machine/code_ai/ide_link/docs/LBUG_DATA_STRUCTURE.md)**.
+GitNexus persists the knowledge graph in `.gitnexus/lbug/`. Schema: **[`docs/LBUG_DATA_STRUCTURE.md`](docs/LBUG_DATA_STRUCTURE.md)**.
 
 ### Hybrid Graph Schema:
 - **Node Tables**: `File`, `Folder`, `Class`, `Interface`, `Method`, `Function`, `Struct`, `Trait`, `Property`, `Community`, `Process`.
@@ -167,55 +167,28 @@ GROUP BY r.confidence;
 
 ---
 
-## 📁 Repository Structure
+## 📁 Repository layout
 
 ```
 lsp_link/
-├── lsp_server/                        # [Set 1] Standalone LSP Server Daemon & Query CLI
-│   ├── server_launcher.ts             # Process lifecycle manager
-│   ├── start_server.sh                # Launcher daemon script
-│   ├── query.ts                       # Unified query CLI (calls, impl, hover, context)
-│   └── adapters/                      # Banking language adapters (Java, Pyright, Clangd, etc.)
-│
-├── gitnexus_ts_isolated/              # [Set 2] Isolated Knowledge Graph Indexing Engine
-│   ├── src/lsp/                       # Live LSP enricher & adapter registry
-│   ├── src/ingestion/                 # 17-Phase pipeline with automatic fallback
-│   ├── src/lbug/                      # LadybugDB columnar graph database
-│   └── src/cli/                       # Core analyze CLI tool
-│
-├── custom_tools/                      # 🛠️ Python Custom Graph Analytics & Boundary Tools
-│   ├── ingress_egress_analyzer.py     # Ingress/Egress boundary detector & SDK manager
-│   ├── flows_inspector.py             # Business flows, entry points & exit sinks inspector
-│   ├── graph_comparator.py            # LadybugDB precision benchmark tool
-│   ├── query_db.py                    # Direct LadybugDB OpenCypher query CLI
-│   ├── sdk_registry.json              # Declarative Ingress/Egress SDK registry
-│   └── README.md                      # Python custom tool developer guide
-│
-├── language_specs/                    # 📚 Upstream Language & Framework Reference Layers
-│   ├── 01_language_server_protocol/   # Eclipse JDT.LS & LSP4J
-│   ├── 02_ast_analysis/               # JavaParser AST & Symbol Solver
-│   ├── 03_framework_metamodel_spring/ # Spring Tools 4 LSP extensions
-│   └── 04_rpc_dynamic_proxy_temporal/ # Temporal Java SDK & Dynamic Proxy Stubs
-│
-├── sample_projects/                   # 🧪 Benchmark & Sample Repositories
-│   ├── spring-boot-demo/              # Enterprise pattern testbed (467 nodes, 785 edges)
-│   └── temporal-pause-resume-compensate/
-│
-├── docs/                              # 📖 Architecture Documentation
-│   ├── boundary_analysis/             # 🌐 Ingress & Egress Boundary Specifications
-│   │   ├── INGRESS_EGRESS_SPECIFICATION.md # Boundary architecture & LadybugDB graph linking
-│   │   └── GENERALISABILITY_ANALYSIS.md    # Polyglot generalisability & enterprise assessment
-│   ├── LSP_SERVER_ARCHITECTURE.md     # LSP Server daemon lifecycle & multi-adapter specs
-│   └── LBUG_DATA_STRUCTURE.md         # LadybugDB hybrid graph schema & Cypher specs
-│
-├── .github/workflows/ci.yml           # GitHub Actions CI Workflow
-├── package.json                       # Monorepo workspaces & scripts
-├── CONTRIBUTING.md                    # Contribution guidelines
-└── LICENSE                            # MIT License
+├── lsp_server/                 # LSP daemons + query CLI
+├── gitnexus_ts_isolated/       # Tree-sitter + LSP knowledge-graph indexer
+├── custom_tools/               # Python analytics on .gitnexus/lbug (OpenCypher)
+├── examples/                   # Small polyglot demos (Java / Python / TS)
+├── sample_projects/            # Larger fixtures (spring-boot-demo, …)
+├── language_specs/             # Optional upstream clones — see that README
+├── docs/                       # Architecture and schema
+├── vendor/                     # Offline npm/Python packages
+├── visualizer/                 # Local graph UI
+├── package.json                # Workspace scripts (analyze, query, boundaries)
+├── CONTRIBUTING.md
+└── LICENSE
 ```
+
+Do **not** commit Apereo CAS, Eclipse JDT.LS, or other full upstream trees. Clone those locally; they are gitignored. Query Ladybug with the official `ladybug` package (`pip install ladybug`) via `custom_tools/lbug_client.py`.
 
 ---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](file:///Users/zijie-machine/code_ai/ide_link/LICENSE).
+This project is licensed under the [MIT License](LICENSE).
