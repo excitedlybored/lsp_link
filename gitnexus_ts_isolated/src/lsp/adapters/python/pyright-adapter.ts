@@ -16,12 +16,12 @@ export class PyrightAdapter extends BaseStdioLspAdapter {
     return bin !== null;
   }
 
-  protected async getLaunchConfig(_workspacePath: string) {
+  protected async buildProcessLaunch(_workspacePath: string) {
     const bin = BaseStdioLspAdapter.findBinary('pyright-langserver') || 'pyright-langserver';
     return {
       command: bin,
       args: ['--stdio'],
-      initOptions: {
+      initializationOptions: {
         python: {
           analysis: {
             typeCheckingMode: 'basic',

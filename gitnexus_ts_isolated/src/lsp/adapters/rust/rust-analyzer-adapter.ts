@@ -15,12 +15,12 @@ export class RustAnalyzerAdapter extends BaseStdioLspAdapter {
     return bin !== null;
   }
 
-  protected async getLaunchConfig(_workspacePath: string) {
+  protected async buildProcessLaunch(_workspacePath: string) {
     const bin = BaseStdioLspAdapter.findBinary('rust-analyzer') || 'rust-analyzer';
     return {
       command: bin,
       args: [],
-      initOptions: {
+      initializationOptions: {
         cargo: { allFeatures: true },
         checkOnSave: { command: 'clippy' },
       },

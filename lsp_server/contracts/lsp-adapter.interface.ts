@@ -1,8 +1,8 @@
 /**
  * Pluggable LSP Adapter Interface.
  *
- * Every language-specific LSP adapter (Java/JDT.LS, Go/Gopls, Rust/Rust-Analyzer, etc.)
- * implements this contract.
+ * Every language-specific adapter (JDT.LS, gopls, rust-analyzer, …) implements
+ * this contract so the enricher can start a server, query symbols, and shut down.
  */
 
 import {
@@ -14,39 +14,37 @@ import {
 } from './lsp-types.js';
 
 export interface ILspAdapter {
-  /** Identifier of the language server (e.g. 'jdtls', 'gopls', 'rust-analyzer') */
+  /** Language server id (e.g. 'jdtls', 'gopls', 'rust-analyzer') */
   readonly id: string;
 
-  /** Target programming language (e.g. 'java', 'go', 'rust', 'typescript') */
+  /** Target language (e.g. 'java', 'go', 'rust', 'typescript') */
   readonly language: string;
 
-  /** Checks if the required language runtime & binary is available on the system */
+  /**
+   * Max in-flight RPCs against this server.
+   * Compilers that serialize internally (JDT.LS, OmniSharp, clangd) should use 1.
+   */
+  readonly maxConcurrentRequests: number;
+
   isAvailable(): Promise<boolean>;
 
-  /** Starts the language server and performs the initialize/initialized handshake */
+  /** Spawn the server and complete initialize / initialized. */
   start(workspacePath: string): Promise<void>;
 
-  /** Ensures target document is opened in the language server */
   openDocument(filePath: string): Promise<void>;
 
-  /** Releases a previously opened document so the compiler working set stays bounded */
-  closeDocument?(filePath: string): Promise<void>;
+  /** didClose so the compiler working set stays bounded. */
+  closeDocument(filePath: string): Promise<void>;
 
-  /** Prepares call hierarchy items at target position */
   prepareCallHierarchy(filePath: string, line: number, character: number): Promise<CallHierarchyItem[]>;
 
-  /** Retrieves outgoing calls for a given call hierarchy item */
   getOutgoingCalls(item: CallHierarchyItem): Promise<CallHierarchyOutgoingCall[]>;
 
-  /** Retrieves incoming calls for a given call hierarchy item */
   getIncomingCalls(item: CallHierarchyItem): Promise<CallHierarchyIncomingCall[]>;
 
-  /** Finds concrete implementations of an interface / method at target position */
   findImplementations(filePath: string, line: number, character: number): Promise<LspImplementationResult[]>;
 
-  /** Retrieves type information / doc hover at target position */
   getHover(filePath: string, line: number, character: number): Promise<LspHoverResult | null>;
 
-  /** Shuts down the language server process cleanly */
   shutdown(): Promise<void>;
 }

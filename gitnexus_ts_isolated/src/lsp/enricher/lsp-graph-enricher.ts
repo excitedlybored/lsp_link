@@ -1,22 +1,21 @@
 /**
- * Polyglot LSP Graph Enricher.
+ * Walks the knowledge graph with live language servers and writes compiler-
+ * accurate CALLS / IMPLEMENTS edges. Does not drop files, languages, or symbols.
  *
- * Algorithm (does not drop files, languages, or symbols):
- * 1. One O(|V|+|E|) pass builds file/name indexes and heuristic CALLS-by-source.
- *    Matching an LSP result is then O(1), not O(|V|) per query.
- * 2. Language servers start in parallel so Java initialize is not queued behind
- *    TypeScript/Python enrichment.
- * 3. Work is grouped by file. A document is opened only when that file is
- *    queried, then closed — JDT.LS is a compiler, not a 7k-file didOpen flood.
- * 4. In-flight RPCs are bounded per language (1 for Java) so the compiler is
- *    not stampeded. Every callable/interface is still visited.
+ * 1. GraphSymbolIndex: one pass, then O(1) match per LSP result.
+ * 2. Language servers start in parallel (Java is not queued behind TS/Python).
+ * 3. Work is grouped by file: didOpen → query symbols in that file → didClose.
+ * 4. In-flight RPCs follow adapter.maxConcurrentRequests (1 for Java).
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import type { GraphNode } from 'gitnexus-shared';
+import type { KnowledgeGraph } from '../../graph/types.js';
 import { LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
+import { GraphSymbolIndex } from './graph-symbol-index.js';
 
 export interface EnricherStats {
   enrichedCalls: number;
@@ -24,163 +23,23 @@ export interface EnricherStats {
   conflictsResolved: number;
 }
 
-type GraphNodeLike = {
-  id: string;
-  label: string;
-  properties?: {
-    name?: string;
-    filePath?: string;
-    startLine?: number;
-    endLine?: number;
-    startCol?: number;
-    column?: number;
-    [key: string]: unknown;
-  };
-};
-
-type GraphRelLike = {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  type: string;
-  confidence: number;
-};
-
-export interface GraphIndex {
-  callablesByFileName: Map<string, GraphNodeLike>;
-  typesByFileName: Map<string, GraphNodeLike>;
-  /** First Class/Struct per file — IMPLEMENTS matching is file-scoped. */
-  primaryTypeByFile: Map<string, GraphNodeLike>;
-  heuristicCallsBySource: Map<string, GraphRelLike[]>;
+interface FileEnrichmentWork {
+  interfaces: GraphNode[];
+  callables: GraphNode[];
 }
 
-function fileNameKey(filePath: string, name: string): string {
-  return `${filePath}\0${name}`;
-}
-
-/** Single linear pass — every later lookup is O(1). */
-export function buildGraphIndex(graph: any): GraphIndex {
-  const callablesByFileName = new Map<string, GraphNodeLike>();
-  const typesByFileName = new Map<string, GraphNodeLike>();
-  const primaryTypeByFile = new Map<string, GraphNodeLike>();
-  const heuristicCallsBySource = new Map<string, GraphRelLike[]>();
-
-  const nodes: Iterable<GraphNodeLike> = graph.iterNodes ? graph.iterNodes() : graph.nodes;
-  for (const node of nodes) {
-    const filePath = node.properties?.filePath;
-    const name = node.properties?.name;
-    if (!filePath || !name) continue;
-    const key = fileNameKey(filePath, name);
-    if (node.label === 'Method' || node.label === 'Function' || node.label === 'Constructor') {
-      if (!callablesByFileName.has(key)) callablesByFileName.set(key, node);
-    } else if (
-      node.label === 'Class' ||
-      node.label === 'Struct' ||
-      node.label === 'Interface' ||
-      node.label === 'Trait'
-    ) {
-      if (!typesByFileName.has(key)) typesByFileName.set(key, node);
-      if (
-        (node.label === 'Class' || node.label === 'Struct') &&
-        !primaryTypeByFile.has(filePath)
-      ) {
-        primaryTypeByFile.set(filePath, node);
-      }
-    }
-  }
-
-  const rels: Iterable<GraphRelLike> = graph.iterRelationshipsByType
-    ? graph.iterRelationshipsByType('CALLS')
-    : graph.iterRelationships
-      ? graph.iterRelationships()
-      : graph.relationships || [];
-  for (const rel of rels) {
-    if (rel.type && rel.type !== 'CALLS') continue;
-    if (rel.confidence >= 1.0) continue;
-    let bucket = heuristicCallsBySource.get(rel.sourceId);
-    if (!bucket) {
-      bucket = [];
-      heuristicCallsBySource.set(rel.sourceId, bucket);
-    }
-    bucket.push(rel);
-  }
-
-  return { callablesByFileName, typesByFileName, primaryTypeByFile, heuristicCallsBySource };
-}
-
-export function groupByFile<T extends GraphNodeLike>(nodes: T[]): Map<string, T[]> {
-  const groups = new Map<string, T[]>();
-  for (const node of nodes) {
-    const filePath = node.properties?.filePath;
-    if (!filePath) continue;
-    let bucket = groups.get(filePath);
-    if (!bucket) {
-      bucket = [];
-      groups.set(filePath, bucket);
-    }
-    bucket.push(node);
-  }
-  return groups;
-}
-
-/** Compilers (JDT.LS, OmniSharp) serialize work internally; extra concurrency only queues timeouts. */
-export function rpcConcurrencyFor(language: string): number {
-  switch (language) {
-    case 'java':
-    case 'csharp':
-    case 'cpp':
-      return 1;
-    default:
-      return 2;
-  }
-}
-
-export function identifierCharacter(lineText: string, name: string): number {
-  if (!name) return 0;
-  const idx = lineText.indexOf(name);
-  return idx >= 0 ? idx : 0;
-}
-
-async function runConcurrent<T>(
-  items: T[],
-  fn: (item: T) => Promise<void>,
-  concurrency: number
-): Promise<void> {
-  if (items.length === 0) return;
-  const limit = Math.max(1, concurrency);
-  const executing = new Set<Promise<void>>();
-
-  for (const item of items) {
-    const p: Promise<void> = Promise.resolve()
-      .then(() => fn(item))
-      .catch(() => undefined);
-    executing.add(p);
-    p.finally(() => executing.delete(p));
-
-    if (executing.size >= limit) {
-      await Promise.race(executing);
-    }
-  }
-
-  await Promise.all(executing);
-}
-
-function uriToRepoPath(uri: string, repoPath: string): string {
-  const abs = uri.startsWith('file://') ? fileURLToPath(uri) : uri;
-  return path.relative(repoPath, abs);
-}
-
-function lspCharacter(node: GraphNodeLike, lineText: string): number {
-  const named = node.properties?.startCol ?? node.properties?.column;
-  if (typeof named === 'number' && named >= 0) return named;
-  return identifierCharacter(lineText, node.properties?.name || '');
+interface EnrichmentTargets {
+  filesByLanguage: Map<string, Set<string>>;
+  callables: GraphNode[];
+  interfaces: GraphNode[];
+  nameCounts: Map<string, number>;
 }
 
 export class LspGraphEnricher {
   constructor(private registry: LspAdapterRegistry = new LspAdapterRegistry()) {}
 
   public async enrich(
-    graph: any,
+    graph: KnowledgeGraph,
     repoPath: string,
     onProgress?: (msg: string) => void
   ): Promise<EnricherStats> {
@@ -190,62 +49,39 @@ export class LspGraphEnricher {
       conflictsResolved: 0,
     };
 
-    const callableNodes: GraphNodeLike[] = [];
-    const interfaceNodes: GraphNodeLike[] = [];
-    const filesByLang = new Map<string, Set<string>>();
-    const nameCounts = new Map<string, number>();
+    const targets = collectEnrichmentTargets(graph, (filePath) =>
+      this.registry.getLanguageForFile(filePath)
+    );
+    if (targets.filesByLanguage.size === 0) return stats;
 
-    for (const node of graph.iterNodes ? graph.iterNodes() : graph.nodes) {
-      const filePath = node.properties?.filePath;
-      if (!filePath) continue;
-
-      const lang = this.registry.getLanguageForFile(filePath);
-      if (lang) {
-        if (!filesByLang.has(lang)) filesByLang.set(lang, new Set());
-        filesByLang.get(lang)!.add(filePath);
-      }
-
-      if (node.label === 'Method' || node.label === 'Function' || node.label === 'Constructor') {
-        callableNodes.push(node);
-        const name = node.properties?.name || '';
-        nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
-      } else if (node.label === 'Interface' || node.label === 'Trait') {
-        interfaceNodes.push(node);
-      }
-    }
-
-    if (filesByLang.size === 0) {
-      return stats;
-    }
-
-    const index = buildGraphIndex(graph);
+    const index = GraphSymbolIndex.fromGraph(graph);
 
     try {
-      // Start every language server at once so Java initialize is not blocked
-      // behind TypeScript/Python document floods.
       await Promise.all(
-        [...filesByLang.entries()].map(async ([lang, files]) => {
+        [...targets.filesByLanguage.entries()].map(async ([language, files]) => {
           let adapter: ILspAdapter | null = null;
           try {
-            adapter = await this.registry.getOrStartAdapter(lang, repoPath);
+            adapter = await this.registry.getOrStartAdapter(language, repoPath);
           } catch {
             adapter = null;
           }
           if (!adapter) return;
 
-          onProgress?.(`⚡ Enriching ${lang.toUpperCase()} symbols via ${adapter.id}...`);
-          await this.enrichLanguage({
+          onProgress?.(`⚡ Enriching ${language.toUpperCase()} symbols via ${adapter.id}...`);
+          await this.enrichLanguage(
             adapter,
-            lang,
             files,
             repoPath,
             graph,
             index,
-            callableNodes,
-            interfaceNodes,
-            nameCounts,
+            targets,
             stats,
-          });
+            (done, total) => {
+              onProgress?.(
+                `⚡ Enriching ${language.toUpperCase()} via ${adapter.id}: ${done}/${total} files`
+              );
+            }
+          );
         })
       );
     } finally {
@@ -255,185 +91,277 @@ export class LspGraphEnricher {
     return stats;
   }
 
-  private async enrichLanguage(opts: {
-    adapter: ILspAdapter;
-    lang: string;
-    files: Set<string>;
-    repoPath: string;
-    graph: any;
-    index: GraphIndex;
-    callableNodes: GraphNodeLike[];
-    interfaceNodes: GraphNodeLike[];
-    nameCounts: Map<string, number>;
-    stats: EnricherStats;
-  }): Promise<void> {
-    const {
-      adapter,
-      lang,
-      files,
-      repoPath,
-      graph,
-      index,
-      callableNodes,
-      interfaceNodes,
-      nameCounts,
-      stats,
-    } = opts;
-
-    const langInterfaces = interfaceNodes.filter((n) => files.has(n.properties?.filePath || ''));
-    const langCallables = callableNodes.filter((n) => {
-      if (!files.has(n.properties?.filePath || '')) return false;
-      const name = n.properties?.name || '';
-      const startLine = n.properties?.startLine ?? 1;
-      const endLine = n.properties?.endLine ?? startLine;
-      if (
-        endLine - startLine <= 1 &&
-        (nameCounts.get(name) || 0) <= 1 &&
-        (name.startsWith('get') || name.startsWith('set'))
-      ) {
-        return false;
-      }
-      return true;
-    });
-
-    const workByFile = new Map<
-      string,
-      { interfaces: GraphNodeLike[]; callables: GraphNodeLike[] }
-    >();
-    for (const [filePath, nodes] of groupByFile(langInterfaces)) {
-      workByFile.set(filePath, { interfaces: nodes, callables: [] });
-    }
-    for (const [filePath, nodes] of groupByFile(langCallables)) {
-      const existing = workByFile.get(filePath);
-      if (existing) existing.callables = nodes;
-      else workByFile.set(filePath, { interfaces: [], callables: nodes });
-    }
+  private async enrichLanguage(
+    adapter: ILspAdapter,
+    files: Set<string>,
+    repoPath: string,
+    graph: KnowledgeGraph,
+    index: GraphSymbolIndex,
+    targets: EnrichmentTargets,
+    stats: EnricherStats,
+    onFileProgress?: (done: number, total: number) => void
+  ): Promise<void> {
+    const workByFile = groupWorkByFile(
+      targets.interfaces.filter((node) => files.has(node.properties?.filePath || '')),
+      targets.callables.filter(
+        (node) =>
+          files.has(node.properties?.filePath || '') &&
+          !isTrivialAccessor(node, targets.nameCounts)
+      )
+    );
 
     const fileEntries = [...workByFile.entries()];
-    await runConcurrent(
+    let done = 0;
+    await mapWithConcurrency(
       fileEntries,
       async ([relFile, work]) => {
-        const absPath = path.resolve(repoPath, relFile);
-        let lineCache: string[] | null = null;
-        const lineAt = (line1: number): string => {
-          if (!lineCache) {
-            try {
-              lineCache = fs.readFileSync(absPath, 'utf8').split(/\r?\n/);
-            } catch {
-              lineCache = [];
-            }
-          }
-          return lineCache[Math.max(0, line1 - 1)] ?? '';
-        };
-
-        try {
-          await adapter.openDocument(absPath);
-
-          for (const ifaceNode of work.interfaces) {
-            const line = (ifaceNode.properties?.startLine ?? 1) - 1;
-            const char = lspCharacter(ifaceNode, lineAt(ifaceNode.properties?.startLine ?? 1));
-            try {
-              const implementations = await adapter.findImplementations(absPath, line, char);
-              for (const impl of implementations) {
-                const implFile = uriToRepoPath(impl.uri, repoPath);
-                const typeNode = index.primaryTypeByFile.get(implFile);
-                if (!typeNode) continue;
-                const relId = `rel:lsp_impl:${typeNode.id}->${ifaceNode.id}`;
-                graph.addRelationship({
-                  id: relId,
-                  sourceId: typeNode.id,
-                  targetId: ifaceNode.id,
-                  type: 'IMPLEMENTS',
-                  confidence: 1.0,
-                  reason: `LSP: ${adapter.id} textDocument/implementation`,
-                });
-                stats.enrichedImplementations += 1;
-              }
-            } catch {
-              // Ignore individual interface lookup errors
-            }
-          }
-
-          for (const callableNode of work.callables) {
-            const line = (callableNode.properties?.startLine ?? 1) - 1;
-            const char = lspCharacter(
-              callableNode,
-              lineAt(callableNode.properties?.startLine ?? 1)
-            );
-            try {
-              const items = await adapter.prepareCallHierarchy(absPath, line, char);
-              if (!items || items.length === 0) continue;
-              const outgoing = await adapter.getOutgoingCalls(items[0]);
-              for (const call of outgoing) {
-                const targetFile = uriToRepoPath(call.to.uri, repoPath);
-                const rawTargetName = call.to.name;
-                const simpleTargetName = rawTargetName.split('(')[0].trim();
-                const targetNode =
-                  index.callablesByFileName.get(fileNameKey(targetFile, simpleTargetName)) ||
-                  index.typesByFileName.get(fileNameKey(targetFile, simpleTargetName));
-                if (!targetNode || targetNode.id === callableNode.id) continue;
-
-                stats.conflictsResolved += this.pruneHeuristicConflicts(
-                  graph,
-                  index,
-                  callableNode.id,
-                  targetFile,
-                  targetNode.id
-                );
-
-                graph.addRelationship({
-                  id: `rel:lsp_call:${callableNode.id}->${targetNode.id}`,
-                  sourceId: callableNode.id,
-                  targetId: targetNode.id,
-                  type: 'CALLS',
-                  confidence: 1.0,
-                  reason: `LSP: ${adapter.id} Call Hierarchy (${rawTargetName})`,
-                });
-                stats.enrichedCalls += 1;
-              }
-            } catch {
-              // Ignore individual callable lookup errors
-            }
-          }
-        } finally {
-          if (adapter.closeDocument) {
-            try {
-              await adapter.closeDocument(absPath);
-            } catch {
-              // Ignore close errors
-            }
-          }
+        await this.enrichSourceFile(adapter, repoPath, relFile, work, graph, index, stats);
+        done += 1;
+        if (done === 1 || done === fileEntries.length || done % 50 === 0) {
+          onFileProgress?.(done, fileEntries.length);
         }
       },
-      rpcConcurrencyFor(lang)
+      adapter.maxConcurrentRequests
     );
   }
 
-  private pruneHeuristicConflicts(
-    graph: any,
-    index: GraphIndex,
-    sourceId: string,
-    targetFile: string,
-    keepTargetId: string
-  ): number {
-    const candidates = index.heuristicCallsBySource.get(sourceId);
-    if (!candidates || candidates.length === 0) return 0;
-    let pruned = 0;
-    const remaining: GraphRelLike[] = [];
-    for (const existingRel of candidates) {
-      const existingTarget = graph.getNode(existingRel.targetId);
-      if (
-        existingTarget &&
-        existingTarget.properties?.filePath === targetFile &&
-        existingTarget.id !== keepTargetId
-      ) {
-        graph.removeRelationship(existingRel.id);
-        pruned += 1;
-      } else {
-        remaining.push(existingRel);
+  private async enrichSourceFile(
+    adapter: ILspAdapter,
+    repoPath: string,
+    relFile: string,
+    work: FileEnrichmentWork,
+    graph: KnowledgeGraph,
+    index: GraphSymbolIndex,
+    stats: EnricherStats
+  ): Promise<void> {
+    const absPath = path.resolve(repoPath, relFile);
+    const lineAt = sourceLineReader(absPath);
+
+    try {
+      await adapter.openDocument(absPath);
+
+      for (const ifaceNode of work.interfaces) {
+        await this.enrichImplementations(adapter, absPath, repoPath, ifaceNode, lineAt, graph, index, stats);
+      }
+      for (const callableNode of work.callables) {
+        await this.enrichOutgoingCalls(adapter, absPath, repoPath, callableNode, lineAt, graph, index, stats);
+      }
+    } finally {
+      try {
+        await adapter.closeDocument(absPath);
+      } catch {
+        // Ignore close errors
       }
     }
-    index.heuristicCallsBySource.set(sourceId, remaining);
-    return pruned;
   }
+
+  private async enrichImplementations(
+    adapter: ILspAdapter,
+    absPath: string,
+    repoPath: string,
+    ifaceNode: GraphNode,
+    lineAt: (line1: number) => string,
+    graph: KnowledgeGraph,
+    index: GraphSymbolIndex,
+    stats: EnricherStats
+  ): Promise<void> {
+    const startLine = ifaceNode.properties?.startLine ?? 1;
+    try {
+      const implementations = await adapter.findImplementations(
+        absPath,
+        startLine - 1,
+        columnOfSymbol(ifaceNode, lineAt(startLine))
+      );
+      for (const impl of implementations) {
+        const implFile = repoPathFromLspUri(impl.uri, repoPath);
+        const typeNode = index.primaryTypeInFile(implFile);
+        if (!typeNode) continue;
+        graph.addRelationship({
+          id: `rel:lsp_impl:${typeNode.id}->${ifaceNode.id}`,
+          sourceId: typeNode.id,
+          targetId: ifaceNode.id,
+          type: 'IMPLEMENTS',
+          confidence: 1.0,
+          reason: `LSP: ${adapter.id} textDocument/implementation`,
+        });
+        stats.enrichedImplementations += 1;
+      }
+    } catch {
+      // Ignore individual interface lookup errors
+    }
+  }
+
+  private async enrichOutgoingCalls(
+    adapter: ILspAdapter,
+    absPath: string,
+    repoPath: string,
+    callableNode: GraphNode,
+    lineAt: (line1: number) => string,
+    graph: KnowledgeGraph,
+    index: GraphSymbolIndex,
+    stats: EnricherStats
+  ): Promise<void> {
+    const startLine = callableNode.properties?.startLine ?? 1;
+    try {
+      const items = await adapter.prepareCallHierarchy(
+        absPath,
+        startLine - 1,
+        columnOfSymbol(callableNode, lineAt(startLine))
+      );
+      if (!items || items.length === 0) return;
+
+      const outgoing = await adapter.getOutgoingCalls(items[0]);
+      for (const call of outgoing) {
+        const targetFile = repoPathFromLspUri(call.to.uri, repoPath);
+        const rawTargetName = call.to.name;
+        const simpleTargetName = rawTargetName.split('(')[0].trim();
+        const targetNode = index.findCallableOrType(targetFile, simpleTargetName);
+        if (!targetNode || targetNode.id === callableNode.id) continue;
+
+        stats.conflictsResolved += index.dropConflictingHeuristicCalls(
+          graph,
+          callableNode.id,
+          targetFile,
+          targetNode.id
+        );
+
+        graph.addRelationship({
+          id: `rel:lsp_call:${callableNode.id}->${targetNode.id}`,
+          sourceId: callableNode.id,
+          targetId: targetNode.id,
+          type: 'CALLS',
+          confidence: 1.0,
+          reason: `LSP: ${adapter.id} Call Hierarchy (${rawTargetName})`,
+        });
+        stats.enrichedCalls += 1;
+      }
+    } catch {
+      // Ignore individual callable lookup errors
+    }
+  }
+}
+
+function collectEnrichmentTargets(
+  graph: KnowledgeGraph,
+  languageForFile: (filePath: string) => string | null
+): EnrichmentTargets {
+  const filesByLanguage = new Map<string, Set<string>>();
+  const callables: GraphNode[] = [];
+  const interfaces: GraphNode[] = [];
+  const nameCounts = new Map<string, number>();
+
+  const nodes = graph.iterNodes ? graph.iterNodes() : graph.nodes ?? [];
+  for (const node of nodes) {
+    const filePath = node.properties?.filePath;
+    if (!filePath) continue;
+
+    const language = languageForFile(filePath);
+    if (language) {
+      let files = filesByLanguage.get(language);
+      if (!files) {
+        files = new Set();
+        filesByLanguage.set(language, files);
+      }
+      files.add(filePath);
+    }
+
+    if (node.label === 'Method' || node.label === 'Function' || node.label === 'Constructor') {
+      callables.push(node);
+      const name = node.properties?.name || '';
+      nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
+    } else if (node.label === 'Interface' || node.label === 'Trait') {
+      interfaces.push(node);
+    }
+  }
+
+  return { filesByLanguage, callables, interfaces, nameCounts };
+}
+
+function groupWorkByFile(
+  interfaces: GraphNode[],
+  callables: GraphNode[]
+): Map<string, FileEnrichmentWork> {
+  const workByFile = new Map<string, FileEnrichmentWork>();
+  for (const node of interfaces) {
+    const filePath = node.properties?.filePath;
+    if (!filePath) continue;
+    let work = workByFile.get(filePath);
+    if (!work) {
+      work = { interfaces: [], callables: [] };
+      workByFile.set(filePath, work);
+    }
+    work.interfaces.push(node);
+  }
+  for (const node of callables) {
+    const filePath = node.properties?.filePath;
+    if (!filePath) continue;
+    let work = workByFile.get(filePath);
+    if (!work) {
+      work = { interfaces: [], callables: [] };
+      workByFile.set(filePath, work);
+    }
+    work.callables.push(node);
+  }
+  return workByFile;
+}
+
+/** One-line get/set with a unique name is not worth a call-hierarchy RPC. */
+function isTrivialAccessor(node: GraphNode, nameCounts: Map<string, number>): boolean {
+  const name = node.properties?.name || '';
+  const startLine = node.properties?.startLine ?? 1;
+  const endLine = node.properties?.endLine ?? startLine;
+  return (
+    endLine - startLine <= 1 &&
+    (nameCounts.get(name) || 0) <= 1 &&
+    (name.startsWith('get') || name.startsWith('set'))
+  );
+}
+
+function columnOfSymbol(node: GraphNode, lineText: string): number {
+  const named = node.properties?.startCol ?? node.properties?.column;
+  if (typeof named === 'number' && named >= 0) return named;
+  const name = node.properties?.name || '';
+  if (!name) return 0;
+  const idx = lineText.indexOf(name);
+  return idx >= 0 ? idx : 0;
+}
+
+function sourceLineReader(absPath: string): (line1: number) => string {
+  let lines: string[] | null = null;
+  return (line1: number): string => {
+    if (!lines) {
+      try {
+        lines = fs.readFileSync(absPath, 'utf8').split(/\r?\n/);
+      } catch {
+        lines = [];
+      }
+    }
+    return lines[Math.max(0, line1 - 1)] ?? '';
+  };
+}
+
+function repoPathFromLspUri(uri: string, repoPath: string): string {
+  const abs = uri.startsWith('file://') ? fileURLToPath(uri) : uri;
+  return path.relative(repoPath, abs);
+}
+
+async function mapWithConcurrency<T>(
+  items: T[],
+  fn: (item: T) => Promise<void>,
+  concurrency: number
+): Promise<void> {
+  if (items.length === 0) return;
+  const limit = Math.max(1, concurrency);
+  const executing = new Set<Promise<void>>();
+
+  for (const item of items) {
+    const pending: Promise<void> = Promise.resolve()
+      .then(() => fn(item))
+      .catch(() => undefined);
+    executing.add(pending);
+    pending.finally(() => executing.delete(pending));
+    if (executing.size >= limit) await Promise.race(executing);
+  }
+
+  await Promise.all(executing);
 }

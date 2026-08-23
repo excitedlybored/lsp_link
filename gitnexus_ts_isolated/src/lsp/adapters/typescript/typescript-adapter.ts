@@ -15,12 +15,12 @@ export class TypeScriptAdapter extends BaseStdioLspAdapter {
     return bin !== null;
   }
 
-  protected async getLaunchConfig(_workspacePath: string) {
+  protected async buildProcessLaunch(_workspacePath: string) {
     const bin = BaseStdioLspAdapter.findBinary('typescript-language-server') || 'typescript-language-server';
     return {
       command: bin,
       args: ['--stdio'],
-      initOptions: {
+      initializationOptions: {
         preferences: {
           includeInlayParameterNameHints: 'all',
         },

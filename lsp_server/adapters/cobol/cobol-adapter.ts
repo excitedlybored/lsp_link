@@ -43,13 +43,13 @@ export class CobolAdapter extends BaseStdioLspAdapter {
     return false;
   }
 
-  protected async getLaunchConfig(_workspacePath: string) {
+  protected async buildProcessLaunch(_workspacePath: string) {
     const jarPath = CobolAdapter.findBroadcomChe4zJar();
     if (jarPath) {
       return {
         command: 'java',
         args: ['-jar', jarPath],
-        initOptions: {
+        initializationOptions: {
           cobol: {
             copybookPaths: ['COPYBOOK', 'copybooks', 'cpy', 'COPY'],
             dialect: 'enterprise-cobol',
@@ -67,7 +67,7 @@ export class CobolAdapter extends BaseStdioLspAdapter {
     return {
       command: bin,
       args: ['--stdio'],
-      initOptions: {
+      initializationOptions: {
         cobol: {
           copybookPaths: ['COPYBOOK', 'copybooks', 'cpy', 'COPY'],
         },
