@@ -18,7 +18,7 @@ from typing import List, Dict, Any
 from tabulate import tabulate
 
 try:
-    from graph_tools.lbug_client import LadybugClient
+    from analyzer.lbug_client import LadybugClient
 except ImportError:
     from lbug_client import LadybugClient
 

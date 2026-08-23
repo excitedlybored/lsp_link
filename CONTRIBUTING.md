@@ -36,13 +36,14 @@ npm run query -- impl sample_projects/spring-boot-demo --symbol PaymentGateway
 npm run query -- context sample_projects/spring-boot-demo --symbol DemoWorkflow
 ```
 
-### Graph tools (Python, `graph_tools/`)
+### Analyzer MCP / Python (`analyzer/`)
 ```bash
 npm run boundaries -- sample_projects/spring-boot-demo
 npm run flows -- sample_projects/spring-boot-demo
+LBUG_REPO=sample_projects/spring-boot-demo npm run mcp:analyzer
 ```
 
-Python must only query `.gitnexus/lbug`. Language adapters belong in `lsp_server/adapters/<lang>/` (keep the indexer copy in sync).
+Python must only query `.gitnexus/lbug` (OpenCypher via MCP or CLI). Language adapters belong in `lsp_server/adapters/<lang>/` (keep the indexer copy in sync).
 
 ---
 

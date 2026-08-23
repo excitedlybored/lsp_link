@@ -4,16 +4,16 @@ SDK-Driven Ingress & Egress Boundary Analyzer and Node Linker (Python + LadybugD
 
 Features:
 1. Boundary Analysis:
-   - Reads tracked SDK definitions from `graph_tools/sdk_registry.json`
+   - Reads tracked SDK definitions from `analyzer/sdk_registry.json`
    - Scans project source files for Ingress & Egress package imports
    - Queries LadybugDB (.gitnexus/lbug) to construct End-to-End Traces
 2. GitNexus Node Linking & Path Tracing:
    - Shows how GitNexus nodes (Route -> Method -> Class -> Calls -> Sinks) are linked
    - Trace full call paths from Ingress endpoints to Egress sinks
 3. SDK Registry Management:
-   - List tracked SDKs: `uv run python graph_tools/ingress_egress_analyzer.py list-sdks`
-   - Add/Edit SDK: `uv run python graph_tools/ingress_egress_analyzer.py add-sdk ...`
-   - Remove SDK: `uv run python graph_tools/ingress_egress_analyzer.py remove-sdk ...`
+   - List tracked SDKs: `uv run python analyzer/ingress_egress_analyzer.py list-sdks`
+   - Add/Edit SDK: `uv run python analyzer/ingress_egress_analyzer.py add-sdk ...`
+   - Remove SDK: `uv run python analyzer/ingress_egress_analyzer.py remove-sdk ...`
 """
 
 import sys

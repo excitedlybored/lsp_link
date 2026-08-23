@@ -42,7 +42,7 @@ flowchart TD
 
 ## 2. Core Generalisability Pillars
 
-### Pillar 1: Declarative SDK Configuration ([`sdk_registry.json`](file:///Users/zijie-machine/code_ai/ide_link/graph_tools/sdk_registry.json))
+### Pillar 1: Declarative SDK Configuration ([`sdk_registry.json`](file:///Users/zijie-machine/code_ai/ide_link/analyzer/sdk_registry.json))
 * **Zero Engine Code Changes**: Adding support for a new framework (e.g. Go Gin, Python Django, Rust Axum, or proprietary banking SDKs) requires only adding a JSON entry.
 * **Regular Expression Signatures**: Matches explicit imports, wildcards (`.*`), and language-specific namespace keywords (`using`, `from ... import`, `import static`).
 
@@ -73,7 +73,7 @@ flowchart TD
 
 ### 1. Internal Corporate SDK Wrappers
 * **Challenge**: Large enterprise banks wrap open-source drivers in internal packages (e.g. `com.bank.framework.eventbus.EventPublisher`).
-* **Mitigation**: Add the corporate wrapper regex pattern to `graph_tools/sdk_registry.json` using `uv run python graph_tools/ingress_egress_analyzer.py add-sdk`.
+* **Mitigation**: Add the corporate wrapper regex pattern to `analyzer/sdk_registry.json` using `uv run python analyzer/ingress_egress_analyzer.py add-sdk`.
 
 ### 2. Dynamic Dependency Injection & Interface Proxies
 * **Challenge**: Dynamic runtime proxies (e.g. Spring `@Autowired PaymentGateway gateway`) cannot be resolved by static string heuristics.

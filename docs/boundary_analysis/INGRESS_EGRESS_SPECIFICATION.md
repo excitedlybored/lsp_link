@@ -39,7 +39,7 @@ GitNexus graph nodes directly link to Ingress and Egress points in LadybugDB (`.
 
 ---
 
-## 3. SDK Boundary Registry: [`sdk_registry.json`](file:///Users/zijie-machine/code_ai/ide_link/graph_tools/sdk_registry.json)
+## 3. SDK Boundary Registry: [`sdk_registry.json`](file:///Users/zijie-machine/code_ai/ide_link/analyzer/sdk_registry.json)
 
 The registry defines declarative regex signatures for all tracked third-party SDKs:
 
@@ -95,7 +95,7 @@ npm run boundaries:links -- sample_projects/spring-boot-demo
 npm run sdks:list
 
 # 4. Add / Update a Custom SDK Rule:
-uv run python graph_tools/ingress_egress_analyzer.py add-sdk \
+uv run python analyzer/ingress_egress_analyzer.py add-sdk \
   --boundary egress \
   --id swift_gateway \
   --lang java \
@@ -104,5 +104,5 @@ uv run python graph_tools/ingress_egress_analyzer.py add-sdk \
   --desc "SWIFT ISO 20022 Payment Gateway"
 
 # 5. Remove an SDK Rule:
-uv run python graph_tools/ingress_egress_analyzer.py remove-sdk --boundary egress --id swift_gateway
+uv run python analyzer/ingress_egress_analyzer.py remove-sdk --boundary egress --id swift_gateway
 ```

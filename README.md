@@ -175,15 +175,15 @@ One repo, three packages (not three remotes):
 | --- | --- | --- |
 | `gitnexus_ts_isolated/` | TypeScript | **Write** `.gitnexus/lbug` (Tree-sitter + LSP) |
 | `lsp_server/` | TypeScript | **Talk** to language servers (canonical adapters + query CLI) |
-| `graph_tools/` | Python | **Read** Ladybug with OpenCypher (no source parsing) |
+| `analyzer/` | Python | **Read** `.gitnexus/lbug` (OpenCypher MCP + CLI) |
 
-Target languages (Java, Python, …) are adapters under `lsp_server/adapters/<lang>/`. Keep copies in the indexer in sync until they import that tree. `graph_tools` must not walk ASTs.
+Target languages (Java, Python, …) are adapters under `lsp_server/adapters/<lang>/`. Keep copies in the indexer in sync until they import that tree. `analyzer` must not walk ASTs.
 
 ```
 lsp_link/
 ├── lsp_server/
 ├── gitnexus_ts_isolated/
-├── graph_tools/                # Python + visualizer/
+├── analyzer/                # Python + visualizer/
 ├── examples/
 ├── sample_projects/
 ├── language_specs/
@@ -194,7 +194,9 @@ lsp_link/
 └── LICENSE
 ```
 
-Do **not** commit Apereo CAS, Eclipse JDT.LS, or other full upstream trees. Clone those locally; they are gitignored. Query Ladybug with `pip install ladybug` via `graph_tools/lbug_client.py`.
+Do **not** commit Apereo CAS, Eclipse JDT.LS, or other full upstream trees. Clone those locally; they are gitignored.
+
+Agents query Ladybug through the **`lbug-analyzer` MCP** (`.cursor/mcp.json`): tools `graph_schema` and `opencypher_query`. Humans can also use `npm run mcp:analyzer` or `analyzer/lbug_client.py`.
 
 ---
 

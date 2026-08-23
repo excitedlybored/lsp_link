@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "lbug-analyzer": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp>=1.9,<2",
+        "--with",
+        "ladybug>=0.19",
+        "python",
+        "analyzer/mcp_server.py"
+      ],
+      "env": {
+        "LBUG_REPO": "${workspaceFolder}"
+      }
+    }
+  }
+}

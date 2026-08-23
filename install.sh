@@ -32,9 +32,9 @@ if command -v uv >/dev/null 2>&1; then
     uv venv .venv
   fi
   if [ -d "vendor/python" ]; then
-    uv pip install --find-links vendor/python -r graph_tools/requirements.lock.txt
+    uv pip install --find-links vendor/python -r analyzer/requirements.lock.txt
   else
-    uv pip install -r graph_tools/requirements.txt
+    uv pip install -r analyzer/requirements.txt
   fi
 else
   echo "  'uv' not found, skipping Python setup (install uv, then re-run this script, if you need it)."

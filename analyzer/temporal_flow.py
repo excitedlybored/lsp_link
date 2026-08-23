@@ -35,7 +35,7 @@ so TypeScript/Python Temporal SDK patterns are a data addition, not a code
 change, when needed.
 
 Usage:
-  uv run python graph_tools/temporal_flow.py <project_dir> [--output-dir DIR]
+  uv run python analyzer/temporal_flow.py <project_dir> [--output-dir DIR]
 """
 
 import argparse
