@@ -81,7 +81,7 @@ export async function persistAnalyzeArtifacts(
     try {
       const { execSync } = await import('child_process');
       const rootDir = path.resolve(process.cwd());
-      const workflowScript = path.join(rootDir, 'custom_tools', 'workflow_pipeline.py');
+      const workflowScript = path.join(rootDir, 'graph_tools', 'workflow_pipeline.py');
       if (fs.existsSync(workflowScript)) {
         execSync(`uv run python "${workflowScript}" "${repoPath}"`, {
           cwd: rootDir,

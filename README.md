@@ -167,25 +167,34 @@ GROUP BY r.confidence;
 
 ---
 
-## 📁 Repository layout
+## Package boundaries
+
+One repo, three packages (not three remotes):
+
+| Package | Language | Role |
+| --- | --- | --- |
+| `gitnexus_ts_isolated/` | TypeScript | **Write** `.gitnexus/lbug` (Tree-sitter + LSP) |
+| `lsp_server/` | TypeScript | **Talk** to language servers (canonical adapters + query CLI) |
+| `graph_tools/` | Python | **Read** Ladybug with OpenCypher (no source parsing) |
+
+Target languages (Java, Python, …) are adapters under `lsp_server/adapters/<lang>/`. Keep copies in the indexer in sync until they import that tree. `graph_tools` must not walk ASTs.
 
 ```
 lsp_link/
-├── lsp_server/                 # LSP daemons + query CLI
-├── gitnexus_ts_isolated/       # Tree-sitter + LSP knowledge-graph indexer
-├── custom_tools/               # Python analytics on .gitnexus/lbug (OpenCypher)
-├── examples/                   # Small polyglot demos (Java / Python / TS)
-├── sample_projects/            # Larger fixtures (spring-boot-demo, …)
-├── language_specs/             # Optional upstream clones — see that README
-├── docs/                       # Architecture and schema
-├── vendor/                     # Offline npm/Python packages
-├── visualizer/                 # Local graph UI
-├── package.json                # Workspace scripts (analyze, query, boundaries)
+├── lsp_server/
+├── gitnexus_ts_isolated/
+├── graph_tools/                # Python + visualizer/
+├── examples/
+├── sample_projects/
+├── language_specs/
+├── docs/
+├── vendor/
+├── package.json                # npm workspaces: the two TS packages
 ├── CONTRIBUTING.md
 └── LICENSE
 ```
 
-Do **not** commit Apereo CAS, Eclipse JDT.LS, or other full upstream trees. Clone those locally; they are gitignored. Query Ladybug with the official `ladybug` package (`pip install ladybug`) via `custom_tools/lbug_client.py`.
+Do **not** commit Apereo CAS, Eclipse JDT.LS, or other full upstream trees. Clone those locally; they are gitignored. Query Ladybug with `pip install ladybug` via `graph_tools/lbug_client.py`.
 
 ---
 

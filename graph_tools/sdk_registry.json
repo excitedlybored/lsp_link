@@ -129,6 +129,13 @@
       "description": "Temporal Orchestration Contract (@WorkflowInterface)"
     },
     {
+      "id": "temporal_update_ingress",
+      "language": "java",
+      "category": "Temporal Update Ingress",
+      "pattern": "\\bio\\.temporal\\.workflow\\.UpdateMethod\\b",
+      "description": "Temporal Synchronous State Update Handler (@UpdateMethod)"
+    },
+    {
       "id": "grpc_server_handler",
       "language": "java",
       "category": "gRPC Service Ingress",
@@ -297,6 +304,13 @@
       "category": "Temporal Activity Contract",
       "pattern": "\\bio\\.temporal\\.activity\\.ActivityInterface\\b",
       "description": "Temporal Distributed Activity Contract (@ActivityInterface)"
+    },
+    {
+      "id": "temporal_child_workflow_egress",
+      "language": "java",
+      "category": "Temporal Child Workflow Egress",
+      "pattern": "\\bio\\.temporal\\.workflow\\.(ChildWorkflowOptions|ChildWorkflowStub)\\b",
+      "description": "Temporal Child Workflow Dispatch (Workflow.newChildWorkflowStub)"
     },
     {
       "id": "temporal_activity_options",

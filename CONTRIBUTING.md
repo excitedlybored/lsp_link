@@ -29,12 +29,20 @@ npm run analyze:no-lsp -- sample_projects/spring-boot-demo
 npm run compare -- sample_projects/spring-boot-demo
 ```
 
-### LSP query CLI (lsp_server)
+### LSP query CLI (`lsp_server/`)
 ```bash
 npm run query -- calls sample_projects/spring-boot-demo --symbol showExecutionHistory
 npm run query -- impl sample_projects/spring-boot-demo --symbol PaymentGateway
 npm run query -- context sample_projects/spring-boot-demo --symbol DemoWorkflow
 ```
+
+### Graph tools (Python, `graph_tools/`)
+```bash
+npm run boundaries -- sample_projects/spring-boot-demo
+npm run flows -- sample_projects/spring-boot-demo
+```
+
+Python must only query `.gitnexus/lbug`. Language adapters belong in `lsp_server/adapters/<lang>/` (keep the indexer copy in sync).
 
 ---
 
