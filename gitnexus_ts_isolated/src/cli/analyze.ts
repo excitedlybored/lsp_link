@@ -8,9 +8,10 @@
 import { Command } from 'commander';
 import * as path from 'path';
 import * as fs from 'fs';
-import { runPipelineFromRepo, resolvePipelineStage, type PipelineStage } from '../ingestion/pipeline.js';
+import { resolvePipelineStage, type PipelineStage } from '../ingestion/pipeline-stage.js';
+import { runPipelineStage } from '../ingestion/sub-pipelines/index.js';
+import { persistAnalyzeArtifacts } from './persist-analyze.js';
 import { PipelineProgress } from '../shared/pipeline.js';
-import { initLbug, loadGraphToLbug, wipeLbugDbFiles, closeLbug } from '../lbug/lbug-adapter.js';
 
 export function createAnalyzeCommand(): Command {
   const cmd = new Command('analyze');
@@ -67,7 +68,7 @@ export function createAnalyzeCommand(): Command {
       };
 
       try {
-        const result = await runPipelineFromRepo(resolvedRepoPath, onProgress, {
+        const result = await runPipelineStage(resolvedRepoPath, onProgress, {
           stage: pipelineStage,
           lsp: isLspEnabled,
           skipGraphPhases: options.skipGraphPhases === true,
@@ -85,127 +86,10 @@ export function createAnalyzeCommand(): Command {
         );
         console.log(`  ${resolvedRepoPath}\n`);
 
-        // Write .gitnexus manifest
-        const gitnexusDir = path.join(resolvedRepoPath, '.gitnexus');
-        fs.mkdirSync(gitnexusDir, { recursive: true });
-
-        const manifest = {
-          repoPath: resolvedRepoPath,
-          indexedAt: new Date().toISOString(),
-          lspEnriched: isLspEnabled,
+        await persistAnalyzeArtifacts(resolvedRepoPath, result, {
           pipelineStage,
-          stats: {
-            files: result.totalFileCount,
-            nodes: result.graph.nodeCount,
-            edges: result.graph.relationshipCount,
-            communities: result.communityResult?.stats.totalCommunities ?? 0,
-            processes: result.processResult?.stats.totalProcesses ?? 0,
-          },
-        };
-
-        // Extract nodes, relationships, and processes
-        const allNodes: any[] = [];
-        for (const node of result.graph.iterNodes ? result.graph.iterNodes() : result.graph.nodes) {
-          allNodes.push({
-            id: node.id,
-            label: node.label,
-            properties: node.properties || {},
-          });
-        }
-
-        const allRels: any[] = [];
-        for (const rel of result.graph.iterRelationships ? result.graph.iterRelationships() : result.graph.relationships) {
-          allRels.push({
-            id: rel.id,
-            sourceId: rel.sourceId,
-            targetId: rel.targetId,
-            type: rel.type,
-            confidence: rel.confidence ?? 1.0,
-            reason: rel.reason || '',
-          });
-        }
-
-        const fullGraphData = {
-          repoPath: resolvedRepoPath,
-          indexedAt: new Date().toISOString(),
           lspEnriched: isLspEnabled,
-          pipelineStage,
-          stats: {
-            files: result.totalFileCount,
-            nodes: result.graph.nodeCount,
-            edges: result.graph.relationshipCount,
-            communities: result.communityResult?.stats.totalCommunities ?? 0,
-            processes: result.processResult?.stats.totalProcesses ?? 0,
-          },
-          nodes: allNodes,
-          relationships: allRels,
-        };
-
-        fs.writeFileSync(
-          path.join(gitnexusDir, 'graph.json'),
-          JSON.stringify(fullGraphData, null, 2),
-          'utf-8'
-        );
-
-        fs.writeFileSync(
-          path.join(gitnexusDir, 'gitnexus.json'),
-          JSON.stringify(manifest, null, 2),
-          'utf-8'
-        );
-
-        // Compile .gitnexus/lbug directly from the in-memory graph — no JSON
-        // round-trip. Mirrors the real GitNexus pipeline (run-analyze.ts):
-        // wipe -> init -> bulk-load via loadGraphToLbug -> close.
-        const lbugPath = path.join(gitnexusDir, 'lbug');
-        await wipeLbugDbFiles(lbugPath);
-        await initLbug(lbugPath);
-        try {
-          await loadGraphToLbug(
-            result.graph,
-            resolvedRepoPath,
-            gitnexusDir,
-            (msg: string) => console.log(`  [lbug] ${msg}`),
-          );
-        } finally {
-          await closeLbug();
-        }
-
-        fs.writeFileSync(
-          path.join(gitnexusDir, 'meta.json'),
-          JSON.stringify(
-            {
-              repoPath: resolvedRepoPath,
-              indexedAt: manifest.indexedAt,
-              lspEnriched: manifest.lspEnriched,
-              database: {
-                type: 'ladybug',
-                path: '.gitnexus/lbug',
-                schemaVersion: '1.0.0',
-              },
-              stats: manifest.stats,
-            },
-            null,
-            2,
-          ),
-          'utf-8',
-        );
-
-        // Workflow diagrams still consume the graph.json export.
-        if (pipelineStage === 'full') {
-          try {
-            const { execSync } = await import('child_process');
-            const rootDir = path.resolve(process.cwd());
-            const workflowScript = path.join(rootDir, 'custom_tools', 'workflow_pipeline.py');
-            if (fs.existsSync(workflowScript)) {
-              execSync(`uv run python "${workflowScript}" "${resolvedRepoPath}"`, {
-                cwd: rootDir,
-                stdio: 'pipe',
-              });
-            }
-          } catch (workflowErr: any) {
-            // Fallback gracefully
-          }
-        }
+        });
       } catch (err: any) {
         console.error(`\n  Analysis failed:`, err.message || err);
         process.exit(1);

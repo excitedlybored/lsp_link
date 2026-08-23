@@ -12,11 +12,11 @@
  * 2. Export it from `pipeline-phases/index.ts`
  * 3. Add it to the `ALL_PHASES` array below
  *
- * See ARCHITECTURE.md for the full phase dependency diagram.
+ * Isolated Tree-sitter / LSP / full entry points live in `sub-pipelines/`.
+ * This module owns phase-list assembly and the shared phase-list engine.
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
-import { knowledgeGraphFromJsonDocument, readGraphJson } from '../graph/graph-json.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
@@ -51,28 +51,13 @@ import {
   type CommunitiesOutput,
   type ProcessesOutput,
 } from './pipeline-phases/index.js';
+import { isFullPipeline, resolvePipelineStage, type PipelineStage } from './pipeline-stage.js';
 
-/**
- * Which sub-pipeline to run.
- *
- * - `full` (default): Tree-sitter parse, then LSP enrichment, then graph analysis
- * - `treesitter`: scan → parse only (no LSP, no post-parse analysis)
- * - `lsp`: load `.gitnexus/graph.json` from a prior treesitter/full run and enrich only
- */
-export type PipelineStage = 'full' | 'treesitter' | 'lsp';
-
-export const PIPELINE_STAGES: readonly PipelineStage[] = ['full', 'treesitter', 'lsp'];
-
-export function resolvePipelineStage(stage?: string): PipelineStage {
-  const resolved = (stage ?? 'full') as PipelineStage;
-  if (!PIPELINE_STAGES.includes(resolved)) {
-    throw new Error(`Invalid pipeline stage '${stage}'. Use: ${PIPELINE_STAGES.join(', ')}`);
-  }
-  return resolved;
-}
+export type { PipelineStage } from './pipeline-stage.js';
+export { PIPELINE_STAGES, resolvePipelineStage } from './pipeline-stage.js';
 
 function isFullAnalyze(o: PipelineOptions): boolean {
-  return resolvePipelineStage(o.stage) === 'full';
+  return isFullPipeline(o.stage);
 }
 
 export interface PipelineOptions {
@@ -357,83 +342,10 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
   );
 }
 
-// ── Pipeline orchestrator ─────────────────────────────────────────────────
-
-/**
- * Tree-sitter sub-pipeline: scan through parse. Isolated — no LSP, no
- * post-parse analysis. Persist `.gitnexus/graph.json` so `runLspParsePipeline`
- * can resume.
- */
-export const runTreesitterParsePipeline = async (
-  repoPath: string,
-  onProgress: (progress: PipelineProgress) => void,
-  options?: Omit<PipelineOptions, 'stage' | 'lsp'>,
-): Promise<PipelineResult> => {
-  return runPipelineFromRepo(repoPath, onProgress, { ...options, stage: 'treesitter', lsp: false });
-};
-
-/**
- * LSP sub-pipeline: load a prior Tree-sitter graph and enrich CALLS/IMPLEMENTS.
- * Isolated — does not re-parse source.
- */
-export const runLspParsePipeline = async (
-  repoPath: string,
-  onProgress: (progress: PipelineProgress) => void,
-  options?: Omit<PipelineOptions, 'stage' | 'lsp'>,
-): Promise<PipelineResult> => {
-  return runPipelineFromRepo(repoPath, onProgress, { ...options, stage: 'lsp', lsp: true });
-};
-
-/**
- * Full analyze: Tree-sitter parse, then LSP enrichment, then graph analysis.
- */
-export const runAnalyzePipeline = async (
-  repoPath: string,
-  onProgress: (progress: PipelineProgress) => void,
-  options?: Omit<PipelineOptions, 'stage'>,
-): Promise<PipelineResult> => {
-  return runPipelineFromRepo(repoPath, onProgress, { ...options, stage: 'full' });
-};
-
-async function runLspParseFromSavedGraph(
-  repoPath: string,
-  onProgress: (progress: PipelineProgress) => void,
-  options?: PipelineOptions,
-): Promise<PipelineResult> {
-  const pipelineStart = Date.now();
-  const saved = readGraphJson(repoPath);
-  const graph = knowledgeGraphFromJsonDocument(saved);
-
-  onProgress({
-    phase: 'enriching',
-    percent: 5,
-    message: `Loaded ${saved.nodes.length} nodes / ${saved.relationships.length} edges from .gitnexus/graph.json`,
-  });
-
-  await lspEnrichmentPhase.execute(
-    { repoPath, graph, onProgress, options, pipelineStart },
-    new Map(),
-  );
-
-  onProgress({
-    phase: 'complete',
-    percent: 100,
-    message: 'LSP enrichment complete.',
-    stats: {
-      filesProcessed: saved.stats.files,
-      totalFiles: saved.stats.files,
-      nodesCreated: graph.nodeCount,
-    },
-  });
-
-  return {
-    graph,
-    repoPath,
-    totalFileCount: saved.stats.files,
-    resolutionOutcomes: [],
-    usedWorkerPool: false,
-  };
-}
+// ── Phase-list engine ─────────────────────────────────────────────────────
+// Tree-sitter and full analyze share this runner. Isolated LSP enrichment
+// lives in `sub-pipelines/lsp.ts` (`runLspParsePipeline`) because it loads a
+// saved graph instead of executing registered phases.
 
 export const runPipelineFromRepo = async (
   repoPath: string,
@@ -441,12 +353,11 @@ export const runPipelineFromRepo = async (
   options?: PipelineOptions,
 ): Promise<PipelineResult> => {
   const stage = resolvePipelineStage(options?.stage);
-
   if (stage === 'lsp') {
-    if (options?.lsp === false) {
-      throw new Error('The lsp pipeline requires Language Server enrichment. Do not pass --no-lsp.');
-    }
-    return runLspParseFromSavedGraph(repoPath, onProgress, { ...options, stage: 'lsp', lsp: true });
+    throw new Error(
+      "Isolated LSP enrichment must use runLspParsePipeline (it loads .gitnexus/graph.json). " +
+        "Call runPipelineStage({ stage: 'lsp' }) from the CLI, not this phase-list engine.",
+    );
   }
 
   const graph = createKnowledgeGraph();
@@ -554,3 +465,10 @@ export const runPipelineFromRepo = async (
     propertyInference,
   };
 };
+
+export {
+  runTreesitterParsePipeline,
+  runLspParsePipeline,
+  runAnalyzePipeline,
+  runPipelineStage,
+} from './sub-pipelines/index.js';

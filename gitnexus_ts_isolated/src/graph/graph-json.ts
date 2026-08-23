@@ -8,6 +8,7 @@ import * as path from 'path';
 import type { GraphNode, GraphRelationship, NodeLabel, RelationshipType } from 'gitnexus-shared';
 import { createKnowledgeGraph } from './graph.js';
 import type { KnowledgeGraph } from './types.js';
+import type { PipelineStage } from '../ingestion/pipeline-stage.js';
 
 export const GRAPH_JSON_FILENAME = 'graph.json';
 
@@ -23,7 +24,7 @@ export interface GraphJsonDocument {
   repoPath: string;
   indexedAt: string;
   lspEnriched: boolean;
-  pipelineStage?: 'full' | 'treesitter' | 'lsp';
+  pipelineStage?: PipelineStage;
   stats: GraphJsonStats;
   nodes: Array<{
     id: string;
@@ -76,7 +77,7 @@ export function graphToJsonDocument(
     repoPath: string;
     indexedAt: string;
     lspEnriched: boolean;
-    pipelineStage: 'full' | 'treesitter' | 'lsp';
+    pipelineStage: PipelineStage;
     stats: GraphJsonStats;
   },
 ): GraphJsonDocument {
@@ -134,4 +135,27 @@ export function writeGraphJson(repoPath: string, doc: GraphJsonDocument): void {
   const gitnexusDir = path.join(repoPath, '.gitnexus');
   fs.mkdirSync(gitnexusDir, { recursive: true });
   fs.writeFileSync(graphJsonPath(repoPath), JSON.stringify(doc, null, 2), 'utf-8');
+}
+
+/** Serialize a live knowledge graph and write `.gitnexus/graph.json`. */
+export function writeKnowledgeGraphJson(
+  repoPath: string,
+  graph: KnowledgeGraph,
+  fields: {
+    indexedAt: string;
+    lspEnriched: boolean;
+    pipelineStage: PipelineStage;
+    stats: GraphJsonStats;
+  },
+): void {
+  writeGraphJson(
+    repoPath,
+    graphToJsonDocument(graph, {
+      repoPath,
+      indexedAt: fields.indexedAt,
+      lspEnriched: fields.lspEnriched,
+      pipelineStage: fields.pipelineStage,
+      stats: fields.stats,
+    }),
+  );
 }
