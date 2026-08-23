@@ -44,11 +44,13 @@ export class JdtlsRuntimeLocator {
     };
   }
 
-  /** Prefer JDK 21 (redhat.java 1.40+). JAVA_HOME 17 is last-resort, not first. */
+  /** JDT.LS (redhat.java 1.40+) needs JDK 21+. Never boot the compiler on 17. */
   private static selectCompilerJdk(): string {
     const candidates = [
-      ...globSync('/opt/homebrew/opt/openjdk@*/bin/java'),
+      ...globSync('/opt/homebrew/opt/openjdk@21/bin/java'),
+      ...globSync('/opt/homebrew/opt/openjdk@2*/bin/java'),
       ...globSync('/opt/homebrew/opt/openjdk/bin/java'),
+      ...globSync('/opt/homebrew/Cellar/openjdk@21/*/libexec/openjdk.jdk/Contents/Home/bin/java'),
       ...globSync('/opt/homebrew/Cellar/openjdk*/*/libexec/openjdk.jdk/Contents/Home/bin/java'),
       ...globSync('/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java'),
       ...globSync(path.join(os.homedir(), 'Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java')),
@@ -56,20 +58,20 @@ export class JdtlsRuntimeLocator {
 
     if (process.env.JAVA_HOME) {
       const fromHome = path.join(process.env.JAVA_HOME, 'bin', 'java');
-      if (fs.existsSync(fromHome)) candidates.push(fromHome);
+      if (fs.existsSync(fromHome)) candidates.unshift(fromHome);
     }
 
     const unique = [...new Set(candidates.filter((p) => fs.existsSync(p)))];
-    if (unique.length === 0) return 'java';
-
     const scored = unique.map((bin) => ({ bin, version: jdkMajorVersionFromPath(bin) }));
-    const jdk21Lts = scored.filter((s) => s.version === 21);
-    if (jdk21Lts.length > 0) return jdk21Lts[0].bin;
-    const jdk21OrNewer = scored.filter((s) => s.version >= 21).sort((a, b) => b.version - a.version);
+    const jdk21OrNewer = scored.filter((s) => s.version >= 21).sort((a, b) => {
+      if (a.version !== b.version) return a.version === 21 ? -1 : b.version === 21 ? 1 : b.version - a.version;
+      return 0;
+    });
     if (jdk21OrNewer.length > 0) return jdk21OrNewer[0].bin;
 
-    scored.sort((a, b) => b.version - a.version);
-    return scored[0].bin;
+    throw new Error(
+      'JDT.LS requires JDK 21+. Install Homebrew openjdk@21 or set JAVA_HOME to a JDK 21+ home. JDK 17 cannot run redhat.java 1.55.'
+    );
   }
 
   private static findEquinoxInstall(): { equinoxLauncherJar: string; osgiConfigDir: string } {
