@@ -372,6 +372,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
           workspaceFolders: true,
           configuration: true,
           applyEdit: true,
+          executeCommand: { dynamicRegistration: true },
         },
         window: { workDoneProgress: true },
         textDocument: {

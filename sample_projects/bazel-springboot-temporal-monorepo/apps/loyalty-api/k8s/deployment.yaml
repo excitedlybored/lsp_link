@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: loyalty-api, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: loyalty-api}}, template: {metadata: {labels: {app: loyalty-api}}, spec: {serviceAccountName: loyalty-api, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/loyalty-api:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

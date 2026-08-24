@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: identity-api, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: identity-api}}, template: {metadata: {labels: {app: identity-api}}, spec: {serviceAccountName: identity-api, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/identity-api:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

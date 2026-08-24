@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: inventory-worker, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: inventory-worker}}, template: {metadata: {labels: {app: inventory-worker}}, spec: {serviceAccountName: inventory-worker, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/inventory-worker:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

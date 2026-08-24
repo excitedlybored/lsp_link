@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: reporting-api, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: reporting-api}}, template: {metadata: {labels: {app: reporting-api}}, spec: {serviceAccountName: reporting-api, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/reporting-api:TAG", ports: [{containerPort: 8082}], env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

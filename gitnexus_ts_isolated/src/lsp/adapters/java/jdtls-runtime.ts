@@ -8,6 +8,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { locateSpringToolsRuntime, springToolsEnabled } from './spring-tools-runtime.js';
 import * as os from 'os';
 import { createHash } from 'crypto';
 import { globSync } from 'glob';
@@ -321,6 +322,7 @@ export function createJdtlsProcessLaunch(
   fs.rmSync(resolvedDataDir, { recursive: true, force: true });
   fs.mkdirSync(resolvedDataDir, { recursive: true });
 
+  const springTools = springToolsEnabled() ? locateSpringToolsRuntime() : null;
   return {
     command: runtime.jdkJavaBin,
     args: jdtlsVmArguments({
@@ -329,6 +331,7 @@ export function createJdtlsProcessLaunch(
       heapXmx: workspace.heapXmx(),
     }),
     initializationOptions: {
+      ...(springTools?.jdtBundles.length ? { bundles: springTools.jdtBundles } : {}),
       extendedClientCapabilities: {
         skipProjectConfiguration: !workspace.importBuildTools(),
         classFileContentsSupport: true,

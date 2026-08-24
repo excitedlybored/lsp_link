@@ -8,6 +8,9 @@
 import * as path from 'path';
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
+import { SpringBootLanguageServerAdapter } from '../adapters/java/spring-boot-adapter.js';
+import { springToolsEnabled } from '../adapters/java/spring-tools-runtime.js';
+import { BazelPreparationReport, prepareBazelProjectModels } from '../adapters/java/bazel-project-model.js';
 import { discoverJavaBuildRoots, JavaBuildRoot, ownerBuildRoot } from '../adapters/java/jdtls-runtime.js';
 import { PyrightAdapter } from '../adapters/python/pyright-adapter.js';
 import { ClangdAdapter } from '../adapters/cpp/clangd-adapter.js';
@@ -19,7 +22,10 @@ import { CobolAdapter } from '../adapters/cobol/cobol-adapter.js';
 export class LspAdapterRegistry {
   private adapters = new Map<string, ILspAdapter>();
   private activeAdapters = new Map<string, ILspAdapter>();
+  private javaCompanions = new Map<ILspAdapter, ILspAdapter>();
   private javaLayouts = new Map<string, JavaBuildRoot[]>();
+  private preparedBazelRoots = new Set<string>();
+  private bazelPreparations = new Map<string, Promise<BazelPreparationReport>>();
 
   private static EXTENSION_MAP: Record<string, string> = {
     '.java': 'java',
@@ -114,6 +120,21 @@ export class LspAdapterRegistry {
     return roots;
   }
 
+  public async prepareJavaBuildRoots(repositoryPath: string, rootIds?: string[]): Promise<BazelPreparationReport> {
+    const key = path.resolve(repositoryPath);
+    const selectionKey = `${key}:${[...(rootIds ?? [])].sort().join(',')}`;
+    const active = this.bazelPreparations.get(selectionKey);
+    if (active) return active;
+    const selected = rootIds ? new Set(rootIds) : undefined;
+    const roots = this.getJavaBuildRoots(key).filter((root) => !selected || selected.has(root.id));
+    const preparation = prepareBazelProjectModels(roots).then((report) => {
+      for (const result of report.roots) this.preparedBazelRoots.add(path.resolve(result.workspacePath));
+      return report;
+    });
+    this.bazelPreparations.set(selectionKey, preparation);
+    return preparation;
+  }
+
   public async getOrStartJavaBuildRoot(root: JavaBuildRoot): Promise<ILspAdapter | null> {
     const sessionKey = `java:${root.id}:${root.workspacePath}`;
     const active = this.activeAdapters.get(sessionKey);
@@ -122,11 +143,25 @@ export class LspAdapterRegistry {
       buildRootId: root.id,
       buildSystems: root.systems,
       excludedRoots: root.excludedRoots,
+      bazelModelPrepared: this.preparedBazelRoots.has(path.resolve(root.workspacePath)),
     });
     try {
       if (!(await adapter.isAvailable())) return null;
       await adapter.start(root.workspacePath);
       this.activeAdapters.set(sessionKey, adapter);
+      if (springToolsEnabled()) {
+        const spring = new SpringBootLanguageServerAdapter(adapter, root.id);
+        if (await spring.isAvailable()) {
+          try {
+            await spring.start(root.workspacePath);
+            this.activeAdapters.set(`spring:${root.id}:${root.workspacePath}`, spring);
+            this.javaCompanions.set(adapter, spring);
+          } catch (error) {
+            console.warn(`[LSP Registry] Spring Tools unavailable for ${root.id}:`, error instanceof Error ? error.message : error);
+            try { await spring.shutdown(); } catch { /* partial startup */ }
+          }
+        }
+      }
       return adapter;
     } catch (err: any) {
       console.warn(`[LSP Registry] Failed to start Java build root ${root.id}:`, err.message || err);
@@ -149,10 +184,20 @@ export class LspAdapterRegistry {
   }
 
   public async shutdownAdapter(adapter: ILspAdapter): Promise<void> {
+    const companion = this.javaCompanions.get(adapter);
+    if (companion) {
+      try { await companion.shutdown(); } catch { /* best-effort companion cleanup */ }
+      this.javaCompanions.delete(adapter);
+      for (const [key, active] of this.activeAdapters) if (active === companion) this.activeAdapters.delete(key);
+    }
     try { await adapter.shutdown(); } catch { /* best-effort session cleanup */ }
     for (const [key, active] of this.activeAdapters) {
       if (active === adapter) this.activeAdapters.delete(key);
     }
+  }
+
+  public getJavaCompanion(adapter: ILspAdapter): ILspAdapter | undefined {
+    return this.javaCompanions.get(adapter);
   }
 
   public async shutdownAll(): Promise<void> {
@@ -164,6 +209,9 @@ export class LspAdapterRegistry {
       }
     }
     this.activeAdapters.clear();
+    this.javaCompanions.clear();
     this.javaLayouts.clear();
+    this.preparedBazelRoots.clear();
+    this.bazelPreparations.clear();
   }
 }

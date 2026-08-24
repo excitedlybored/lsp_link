@@ -42,9 +42,28 @@ npx tsx query.ts context ../sample_projects/spring-boot-demo --symbol DemoWorkfl
 
 ## Java build import
 
+### Spring Tools
+
+Java sessions optionally start the official Spring Boot Language Server beside
+JDT.LS and load its JDT extension bundles. Install it once with:
+
+```bash
+bash lsp_server/scripts/install-spring-tools.sh
+```
+
+The runtime is discovered from the GitNexus cache, installed VS Code/Cursor
+extensions, or `GITNEXUS_SPRING_TOOLS_HOME`. Set `GITNEXUS_SPRING_TOOLS=false`
+to disable it. Spring Tools receives its Java type and classpath answers through
+the matching build-root-scoped JDT.LS session.
+
+For Bazel, the Java adapter generates `.gitnexus/jdtls/bazel-project.json`
+before JDT.LS starts. Spring's bean index then receives the same exact configured
+classpath as Java compilation.
+
 Build systems are detected independently, including mixed repositories and nested Maven or Gradle modules.
 Gradle is imported through Buildship and Maven through M2E. Bazel does not have a native JDT.LS importer,
-so a Bazel aspect or other exporter must write `.gitnexus/jdtls/bazel-project.json`:
+so GitNexus runs a configured `bazel cquery`, selects every target exposing
+`JavaInfo.transitive_compile_time_jars`, and atomically writes this external model:
 
 ```json
 {
@@ -58,7 +77,8 @@ so a Bazel aspect or other exporter must write `.gitnexus/jdtls/bazel-project.js
 Classpath entries may be absolute or relative to the workspace; source and output paths must stay inside the
 workspace. The classpath must contain the exact compile-time jars
 reported by Bazel's `JavaInfo`; scanning every jar under `bazel-bin` is intentionally unsupported because it
-produces an inaccurate dependency graph. Set `GITNEXUS_JDT_BAZEL_PROJECT_MODEL` to use another manifest path.
+produces an inaccurate dependency graph. The generated model is reused until a `MODULE.bazel`, workspace,
+BUILD, or `.bazelrc` file changes. Set `GITNEXUS_JDT_BAZEL_PROJECT_MODEL` to use a pre-generated manifest.
 
 Imports are enabled by default. Use `GITNEXUS_JDT_IMPORT=0` globally, or
 `GITNEXUS_JDT_GRADLE_IMPORT`, `GITNEXUS_JDT_MAVEN_IMPORT`, and `GITNEXUS_JDT_BAZEL_IMPORT`
@@ -68,7 +88,9 @@ Provider configuration is passed through without repository edits:
 
 - Gradle: `GITNEXUS_JDT_GRADLE_ARGUMENTS`, `GITNEXUS_JDT_GRADLE_USER_HOME`, and `GITNEXUS_JDT_GRADLE_OFFLINE`.
 - Maven: `GITNEXUS_JDT_MAVEN_USER_SETTINGS`, `GITNEXUS_JDT_MAVEN_GLOBAL_SETTINGS`, and `GITNEXUS_JDT_MAVEN_OFFLINE`.
-- Bazel: `GITNEXUS_JDT_BAZEL_PROJECT_MODEL`.
+- Bazel: `GITNEXUS_JDT_BAZEL_PROJECT_MODEL`, `GITNEXUS_BAZEL_BIN`,
+  `GITNEXUS_JDT_BAZEL_TARGETS`, `GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS`, and
+  `GITNEXUS_JDT_BAZEL_AUTO_MODEL=0` to disable generation.
 
 ### Poly-build monorepositories
 
@@ -83,3 +105,8 @@ Each Java file is assigned to its nearest build root. JDT.LS sessions run sequen
 workspace data and nested foreign roots excluded from import. This bounds memory and prevents Maven, Gradle,
 or Bazel classpaths from leaking into one another. Persisted LSP relationships include structured build-root
 and build-system evidence.
+
+Before those memory-bounded JDT sessions start, Bazel classpaths are prepared concurrently. The default pool
+contains three Bazel processes and the repository-wide preparation budget is ten minutes. Override these with
+`GITNEXUS_JDT_BAZEL_PREPARE_CONCURRENCY` and `GITNEXUS_JDT_BAZEL_PREPARE_TIMEOUT_MS`. A failed or timed-out
+root is recorded as failed without blocking successful roots, and cached roots normally complete immediately.

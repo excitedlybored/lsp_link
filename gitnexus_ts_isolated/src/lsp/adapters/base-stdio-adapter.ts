@@ -140,6 +140,18 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     this.openedDocuments.delete(absPath);
   }
 
+  public async request<T>(method: string, params: unknown): Promise<T> {
+    if (!this.connection) throw new Error(`${this.id} has no JSON-RPC connection`);
+    const timeoutMs = this.queryTimeoutMs();
+    const source = new rpc.CancellationTokenSource();
+    const timer = setTimeout(() => source.cancel(), timeoutMs);
+    try {
+      return (await this.connection.sendRequest(method, params, source.token)) as T;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   public async prepareCallHierarchy(
     filePath: string,
     line: number,
@@ -299,6 +311,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
           workspaceFolders: true,
           configuration: true,
           applyEdit: true,
+          executeCommand: { dynamicRegistration: true },
         },
         window: { workDoneProgress: true },
         textDocument: {

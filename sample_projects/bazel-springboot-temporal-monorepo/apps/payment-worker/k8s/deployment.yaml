@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: payment-worker, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: payment-worker}}, template: {metadata: {labels: {app: payment-worker}}, spec: {serviceAccountName: payment-worker, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/payment-worker:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

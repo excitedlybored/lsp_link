@@ -69,7 +69,11 @@ export interface LspKnowledgeGraph {
   lspServer: string;
   lspEnriched: true;
   stats: { files: number; nodes: number; edges: number; buildRoots: number; failedBuildRoots: number };
-  buildRoots: Array<{ id: string; path: string; systems: string[] }>;
+  buildRoots: Array<{
+    id: string; path: string; systems: string[];
+    importStatus: 'ready' | 'disabled' | 'failed';
+    configurationHash?: string; classpathEntries?: number; importError?: string;
+  }>;
   nodes: GraphNode[];
   relationships: GraphEdge[];
   validation?: ValidationReport;
@@ -343,6 +347,15 @@ export async function buildLspGraph(repoPath: string): Promise<LspKnowledgeGraph
     filesByRoot.set(root.id, grouped);
   }
   console.log(`Discovered ${buildRoots.length} Java build roots; indexing ${files.length} Java files`);
+  const bazelPreparation = await registry.prepareJavaBuildRoots(workspace, [...filesByRoot.keys()]);
+  const bazelPreparationByRoot = new Map(bazelPreparation.roots.map((result) => [result.rootId, result]));
+  if (bazelPreparation.roots.length > 0) {
+    const ready = bazelPreparation.roots.filter((result) => result.status === 'generated' || result.status === 'cached').length;
+    console.log(`Prepared Bazel classpaths for ${ready}/${bazelPreparation.roots.length} roots in ${bazelPreparation.durationMs}ms (concurrency=${bazelPreparation.concurrency})`);
+    for (const failure of bazelPreparation.roots.filter((result) => result.status === 'failed')) {
+      console.warn(`Bazel classpath unavailable for ${failure.rootId}: ${failure.reason}`);
+    }
+  }
 
   const nodes = new Map<string, GraphNode>();
   const edges = new Map<string, GraphEdge>();
@@ -395,7 +408,18 @@ export async function buildLspGraph(repoPath: string): Promise<LspKnowledgeGraph
       lspServer: 'jdtls',
       lspEnriched: true,
       stats: { files: files.length, nodes: nodes.size, edges: edges.size, buildRoots: buildRoots.length, failedBuildRoots },
-      buildRoots: buildRoots.map((root) => ({ id: root.id, path: root.relativePath, systems: root.systems })),
+      buildRoots: buildRoots.map((root) => {
+        const preparation = bazelPreparationByRoot.get(root.id);
+        return {
+          id: root.id, path: root.relativePath, systems: root.systems,
+          importStatus: !preparation || preparation.status === 'generated' || preparation.status === 'cached'
+            ? 'ready'
+            : preparation.status === 'disabled' ? 'disabled' : 'failed',
+          configurationHash: preparation?.configurationHash,
+          classpathEntries: preparation?.classpathEntries,
+          importError: preparation?.reason,
+        };
+      }),
       nodes: [...nodes.values()],
       relationships: [...edges.values()],
     };

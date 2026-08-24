@@ -10,6 +10,7 @@ import {
   JdtlsWorkspace,
   ownerBuildRoot,
 } from '../adapters/java/jdtls-runtime.js';
+import { ensureBazelProjectModel, prepareBazelProjectModels } from '../adapters/java/bazel-project-model.js';
 
 const runtime: JdtlsRuntime = {
   jdkJavaBin: '/jdk/25/bin/java',
@@ -84,6 +85,99 @@ test('loads an exact Bazel project model instead of guessing bazel-bin jars', ()
   assert.deepEqual(java.project.referencedLibraries.include, [path.join(root, 'bazel-out/lib/dependency.jar')]);
   assert.deepEqual(java.project.sourcePaths, ['src/main/java']);
   assert.equal(java.project.outputPath, 'bazel-out/classes');
+});
+
+test('generates and caches an exact Bazel JavaInfo classpath model', async () => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "sample")',
+    'BUILD.bazel': 'java_library(name = "app", srcs = glob(["src/main/java/**/*.java"]))',
+    'src/main/java/example/Sample.java': 'package example; class Sample {}',
+  });
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    'if [ "$1" = "info" ]; then',
+    `  printf '%s\\n' '${path.join(root, 'execroot')}'`,
+    'elif [ "$1" = "cquery" ]; then',
+    "  printf '//:app\\texternal/maven/spring-context.jar\\tbazel-out/app.jar\\n'",
+    'elif [ "$1" = "build" ]; then',
+    `  mkdir -p '${path.join(root, 'execroot/external/maven')}' '${path.join(root, 'execroot/bazel-out')}'`,
+    `  : > '${path.join(root, 'execroot/external/maven/spring-context.jar')}'`,
+    `  : > '${path.join(root, 'execroot/bazel-out/app.jar')}'`,
+    'else',
+    '  exit 2',
+    'fi',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  try {
+    const generated = await ensureBazelProjectModel(root);
+    assert.equal(generated.status, 'generated');
+    assert.equal(generated.classpathEntries, 2);
+
+    const model = JdtlsWorkspace.inspect(root).bazelProjectModel!;
+    assert.deepEqual(model.classpath, [
+      path.join(root, 'execroot/bazel-out/app.jar'),
+      path.join(root, 'execroot/external/maven/spring-context.jar'),
+    ]);
+    assert.deepEqual(model.sourcePaths, ['src/main/java']);
+
+    fs.writeFileSync(fakeBazel, '#!/bin/sh\nexit 99\n');
+    const cached = await ensureBazelProjectModel(root);
+    assert.equal(cached.status, 'cached');
+    assert.equal(cached.classpathEntries, 2);
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+  }
+});
+
+test('prepares many Bazel roots with bounded concurrency and per-root results', async () => {
+  const roots = Array.from({ length: 7 }, (_, index) => ({
+    id: `bazel:app-${index}`,
+    workspacePath: `/repo/app-${index}`,
+    systems: ['bazel'],
+  }));
+  let active = 0;
+  let maximumActive = 0;
+  const report = await prepareBazelProjectModels(roots, {
+    concurrency: 3,
+    timeoutMs: 2_000,
+    generate: async (workspacePath) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      active -= 1;
+      return { status: workspacePath.endsWith('3') ? 'failed' : 'generated' };
+    },
+  });
+  assert.equal(report.concurrency, 3);
+  assert.equal(maximumActive, 3);
+  assert.equal(report.roots.length, 7);
+  assert.equal(report.roots.filter((result) => result.status === 'generated').length, 6);
+  assert.equal(report.roots.find((result) => result.rootId === 'bazel:app-3')?.status, 'failed');
+  assert.equal(report.timedOut, false);
+});
+
+test('stops scheduling Bazel roots when the repository-wide budget expires', async () => {
+  const roots = Array.from({ length: 3 }, (_, index) => ({
+    id: `bazel:slow-${index}`,
+    workspacePath: `/repo/slow-${index}`,
+    systems: ['bazel'],
+  }));
+  let started = 0;
+  const report = await prepareBazelProjectModels(roots, {
+    concurrency: 1,
+    timeoutMs: 25,
+    generate: async (_workspacePath, options) => {
+      started += 1;
+      await new Promise<void>((resolve) => options.signal?.addEventListener('abort', () => resolve(), { once: true }));
+      return { status: 'failed', reason: 'aborted' };
+    },
+  });
+  assert.equal(report.timedOut, true);
+  assert.equal(started, 1);
+  assert.equal(report.roots.length, 3);
+  assert.ok(report.roots.every((result) => result.status === 'failed'));
 });
 
 test('keeps mixed build systems and provider overrides distinct', () => {

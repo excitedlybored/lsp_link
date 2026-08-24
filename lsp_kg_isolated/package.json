@@ -6,7 +6,12 @@
   "description": "LSP-native knowledge graph schema for LadybugDB",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "import:graph": "tsx src/import-graph.ts",
     "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@ladybugdb/core": "0.19.1",
+    "tsx": "file:../lsp_server/vendor/tsx-4.23.12.tgz"
   },
   "devDependencies": {
     "typescript": "file:../lsp_server/vendor/typescript-5.9.3.tgz"

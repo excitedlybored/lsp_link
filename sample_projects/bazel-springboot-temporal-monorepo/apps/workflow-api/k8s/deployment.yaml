@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: workflow-api, namespace: temporal-demo}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: workflow-api}}
+  template:
+    metadata: {labels: {app: workflow-api}}
+    spec:
+      serviceAccountName: workflow-api
+      containers:
+        - name: app
+          image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/workflow-api:TAG"
+          ports: [{containerPort: 8080}]
+          env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]
+          readinessProbe: {httpGet: {path: /actuator/health, port: 8080}}

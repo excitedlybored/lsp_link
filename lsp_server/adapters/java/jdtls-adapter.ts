@@ -10,11 +10,13 @@ import {
   JdtlsRuntimeLocator,
   JdtlsWorkspace,
 } from './jdtls-runtime.js';
+import { ensureBazelProjectModel } from './bazel-project-model.js';
 
 export interface JavaJdtlsAdapterOptions {
   buildRootId?: string;
   buildSystems?: JavaBuildSystemKind[];
   excludedRoots?: string[];
+  bazelModelPrepared?: boolean;
 }
 
 /** Tracks `language/status` until ServiceReady and Maven/Gradle import go quiet. */
@@ -102,6 +104,16 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
       buildSystems: this.options.buildSystems,
       excludedRoots: this.options.excludedRoots,
     });
+    if (this.workspace.usesBazel && this.workspace.buildImportEnabled('bazel') && !this.options.bazelModelPrepared) {
+      const result = await ensureBazelProjectModel(workspacePath);
+      if (result.status === 'failed') console.warn(`[jdtls] ${result.reason}`);
+      if (result.status === 'generated') {
+        this.workspace = JdtlsWorkspace.inspect(workspacePath, {
+          buildSystems: this.options.buildSystems,
+          excludedRoots: this.options.excludedRoots,
+        });
+      }
+    }
     const runtime = JdtlsRuntimeLocator.locate(this.workspace.requiredJavaMajor);
     return createJdtlsProcessLaunch(workspacePath, this.workspace, runtime);
   }

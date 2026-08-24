@@ -123,6 +123,12 @@ export class LspGraphEnricher {
       filesByRoot.set(root.id, group);
     }
 
+    const bazelPreparation = await this.registry.prepareJavaBuildRoots(repoPath, [...filesByRoot.keys()]);
+    if (bazelPreparation.roots.length > 0) {
+      const ready = bazelPreparation.roots.filter((result) => result.status === 'generated' || result.status === 'cached').length;
+      onProgress?.(`⚡ Prepared Bazel classpaths for ${ready}/${bazelPreparation.roots.length} Java roots (${bazelPreparation.concurrency} concurrent)`);
+    }
+
     for (const { root, files: rootFiles } of [...filesByRoot.values()].sort((a, b) => a.root.id.localeCompare(b.root.id))) {
       const adapter = await this.registry.getOrStartJavaBuildRoot(root);
       if (!adapter) {

@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: returns-api, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: returns-api}}, template: {metadata: {labels: {app: returns-api}}, spec: {serviceAccountName: returns-api, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/returns-api:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

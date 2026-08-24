@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: orders-api, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: orders-api}}, template: {metadata: {labels: {app: orders-api}}, spec: {serviceAccountName: orders-api, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/orders-api:TAG", ports: [{containerPort: 8081}], env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}, {name: MONGODB_URI, valueFrom: {secretKeyRef: {name: orders-mongodb, key: uri}}}] }]}}}

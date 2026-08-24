@@ -1,0 +1,4 @@
+apiVersion: v1
+kind: Service
+metadata: {name: reporting-api, namespace: temporal-demo}
+spec: {selector: {app: reporting-api}, ports: [{port: 80, targetPort: 8082}]}

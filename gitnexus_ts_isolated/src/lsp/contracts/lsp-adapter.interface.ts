@@ -34,6 +34,9 @@ export interface ILspAdapter {
   /** Spawn the server and complete initialize / initialized. */
   start(workspacePath: string): Promise<void>;
 
+  /** Raw protocol request used by companion servers such as Spring Tools. */
+  request<T>(method: string, params: unknown): Promise<T>;
+
   openDocument(filePath: string): Promise<void>;
 
   /** didClose so the compiler working set stays bounded. */

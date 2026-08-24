@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: fraud-worker, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: fraud-worker}}, template: {metadata: {labels: {app: fraud-worker}}, spec: {serviceAccountName: fraud-worker, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/fraud-worker:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

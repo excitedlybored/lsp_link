@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: notification-worker, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: notification-worker}}, template: {metadata: {labels: {app: notification-worker}}, spec: {serviceAccountName: notification-worker, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/notification-worker:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}

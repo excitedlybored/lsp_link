@@ -1,0 +1,4 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: reconciliation-worker, namespace: temporal-demo}
+spec: {replicas: 2, selector: {matchLabels: {app: reconciliation-worker}}, template: {metadata: {labels: {app: reconciliation-worker}}, spec: {serviceAccountName: reconciliation-worker, containers: [{name: app, image: "REGION-docker.pkg.dev/PROJECT/temporal-demo/reconciliation-worker:TAG", env: [{name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}]}]}}}
