@@ -47,7 +47,7 @@
  * on a cold run. Content-addressing makes stale reuse impossible: a changed
  * file changes its chunk hash, which misses BOTH stores and re-dispatches.
  */
-import type { ParsedFile, SymbolDefinition } from '../_shared/index.js';
+import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 /**
  * Build a JSON.parse reviver that (a) interns every string against a shared
  * pool and (b) applies the parse-cache `mapReviver` (Map/Set reconstruction).

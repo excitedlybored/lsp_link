@@ -46,8 +46,8 @@ export class GraphSymbolIndex {
   }
 
   /**
-   * Drops Tree-sitter CALLS from `sourceId` that point at a different symbol
-   * in the same file as the compiler-resolved target.
+   * Drops heuristic CALLS from `sourceId` into the same file as the
+   * compiler-resolved target (wrong overloads, and the 0.85 edge being upgraded).
    */
   dropConflictingHeuristicCalls(
     graph: KnowledgeGraph,
@@ -62,11 +62,7 @@ export class GraphSymbolIndex {
     const remaining: GraphRelationship[] = [];
     for (const existing of candidates) {
       const existingTarget = graph.getNode(existing.targetId);
-      if (
-        existingTarget &&
-        existingTarget.properties.filePath === targetFile &&
-        existingTarget.id !== keepTargetId
-      ) {
+      if (existingTarget && existingTarget.properties.filePath === targetFile) {
         graph.removeRelationship(existing.id);
         dropped += 1;
       } else {

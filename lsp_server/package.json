@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "server": "tsx server_launcher.ts",
-    "query": "tsx query.ts"
+    "query": "tsx query.ts",
+    "graph": "tsx build-lsp-graph.ts",
+    "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
     "glob": "file:./vendor/glob-13.0.6.tgz",

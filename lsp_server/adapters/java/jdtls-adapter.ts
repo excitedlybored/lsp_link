@@ -6,9 +6,16 @@
 import { BaseStdioLspAdapter, StdioProcessLaunch } from '../base-stdio-adapter.js';
 import {
   createJdtlsProcessLaunch,
+  JavaBuildSystemKind,
   JdtlsRuntimeLocator,
   JdtlsWorkspace,
 } from './jdtls-runtime.js';
+
+export interface JavaJdtlsAdapterOptions {
+  buildRootId?: string;
+  buildSystems?: JavaBuildSystemKind[];
+  excludedRoots?: string[];
+}
 
 /** Tracks `language/status` until ServiceReady and Maven/Gradle import go quiet. */
 class JdtlsStatusTracker {
@@ -54,6 +61,14 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
   private workspace: JdtlsWorkspace | null = null;
   private readonly status = new JdtlsStatusTracker();
 
+  constructor(private readonly options: JavaJdtlsAdapterOptions = {}) {
+    super();
+  }
+
+  public override getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] } {
+    return { ...super.getSessionMetadata(), buildRootId: this.options.buildRootId, buildSystems: this.options.buildSystems };
+  }
+
   public async isAvailable(): Promise<boolean> {
     return JdtlsRuntimeLocator.isInstalled();
   }
@@ -63,7 +78,7 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
   }
 
   protected queryTimeoutMs(): number {
-    return 12_000;
+    return this.workspace?.importBuildTools() ? 20_000 : 12_000;
   }
 
   protected initializeTimeoutMs(_workspacePath: string): number | undefined {
@@ -76,12 +91,18 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
     await this.status.waitUntilServiceReady(workspace.serviceReadyTimeoutMs());
     // Indexing still runs after ServiceReady. Querying during that window
     // just hits per-RPC timeouts. Wait until status is quiet, then enrich.
-    await this.status.waitUntilStatusQuiet(2000, workspace.importQuietTimeoutMs());
+    await this.status.waitUntilStatusQuiet(
+      workspace.importBuildTools() ? 4000 : 2000,
+      workspace.importQuietTimeoutMs()
+    );
   }
 
   protected async buildProcessLaunch(workspacePath: string): Promise<StdioProcessLaunch> {
-    const runtime = JdtlsRuntimeLocator.locate();
-    this.workspace = JdtlsWorkspace.inspect(workspacePath);
+    this.workspace = JdtlsWorkspace.inspect(workspacePath, {
+      buildSystems: this.options.buildSystems,
+      excludedRoots: this.options.excludedRoots,
+    });
+    const runtime = JdtlsRuntimeLocator.locate(this.workspace.requiredJavaMajor);
     return createJdtlsProcessLaunch(workspacePath, this.workspace, runtime);
   }
 }

@@ -48,3 +48,12 @@ export interface LspImplementationResult {
   uri: string;
   range: LspRange;
 }
+
+export interface LspDocumentSymbol {
+  name: string;
+  detail?: string;
+  kind: number;
+  range: LspRange;
+  selectionRange: LspRange;
+  children?: LspDocumentSymbol[];
+}

@@ -6,7 +6,8 @@
   "type": "module",
   "workspaces": [
     "lsp_server",
-    "gitnexus_ts_isolated"
+    "gitnexus_ts_isolated",
+    "lsp_kg_isolated"
   ],
   "scripts": {
     "analyze": "tsx gitnexus_ts_isolated/src/cli/analyze.ts",
@@ -26,6 +27,9 @@
     "graph:summary": "uv run python analyzer/query_db.py",
     "mcp:analyzer": "uv run python analyzer/mcp_server.py",
     "query": "tsx lsp_server/query.ts",
+    "graph:lsp": "tsx lsp_server/build-lsp-graph.ts",
+    "lsp:kg:build": "npm run build --workspace lsp-kg-isolated",
+    "lsp:kg:test": "npm run test --workspace lsp-kg-isolated",
     "server": "tsx lsp_server/server_launcher.ts",
     "build": "npm --workspaces run build --if-present",
     "test": "npm --workspaces run test --if-present"

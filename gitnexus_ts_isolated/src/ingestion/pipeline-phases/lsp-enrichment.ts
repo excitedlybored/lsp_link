@@ -17,6 +17,10 @@ export interface LspEnrichmentOutput {
   enrichedCalls: number;
   enrichedImplementations: number;
   conflictsResolved: number;
+  emptyCallHierarchy?: number;
+  unmappedCallTargets?: number;
+  javaBuildRoots?: number;
+  failedJavaBuildRoots?: number;
 }
 
 export const lspEnrichmentPhase: PipelinePhase<LspEnrichmentOutput> = {
@@ -43,7 +47,7 @@ export const lspEnrichmentPhase: PipelinePhase<LspEnrichmentOutput> = {
       onProgress({
         phase: 'lspEnrichment',
         percent: 55,
-        message: `LSP added ${stats.enrichedCalls} CALLS, ${stats.enrichedImplementations} IMPLEMENTS (${stats.conflictsResolved} conflicts pruned)`,
+        message: `LSP added ${stats.enrichedCalls} CALLS, ${stats.enrichedImplementations} IMPLEMENTS across ${stats.javaBuildRoots} Java build roots (${stats.failedJavaBuildRoots} failed roots; ${stats.conflictsResolved} conflicts pruned; ${stats.emptyCallHierarchy} empty hierarchies, ${stats.unmappedCallTargets} unmapped targets)`,
       });
 
       return {
@@ -52,6 +56,10 @@ export const lspEnrichmentPhase: PipelinePhase<LspEnrichmentOutput> = {
           enrichedCalls: stats.enrichedCalls,
           enrichedImplementations: stats.enrichedImplementations,
           conflictsResolved: stats.conflictsResolved,
+          emptyCallHierarchy: stats.emptyCallHierarchy,
+          unmappedCallTargets: stats.unmappedCallTargets,
+          javaBuildRoots: stats.javaBuildRoots,
+          failedJavaBuildRoots: stats.failedJavaBuildRoots,
         },
       };
     } catch (err: any) {

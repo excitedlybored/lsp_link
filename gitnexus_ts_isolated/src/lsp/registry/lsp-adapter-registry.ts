@@ -8,6 +8,7 @@
 import * as path from 'path';
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
+import { discoverJavaBuildRoots, JavaBuildRoot, ownerBuildRoot } from '../adapters/java/jdtls-runtime.js';
 import { PyrightAdapter } from '../adapters/python/pyright-adapter.js';
 import { ClangdAdapter } from '../adapters/cpp/clangd-adapter.js';
 import { RustAnalyzerAdapter } from '../adapters/rust/rust-analyzer-adapter.js';
@@ -18,6 +19,7 @@ import { CobolAdapter } from '../adapters/cobol/cobol-adapter.js';
 export class LspAdapterRegistry {
   private adapters = new Map<string, ILspAdapter>();
   private activeAdapters = new Map<string, ILspAdapter>();
+  private javaLayouts = new Map<string, JavaBuildRoot[]>();
 
   private static EXTENSION_MAP: Record<string, string> = {
     '.java': 'java',
@@ -67,11 +69,12 @@ export class LspAdapterRegistry {
 
   public async getOrStartAdapter(language: string, workspacePath: string): Promise<ILspAdapter | null> {
     const langKey = language.toLowerCase();
-    if (this.activeAdapters.has(langKey)) {
-      return this.activeAdapters.get(langKey)!;
+    const sessionKey = `${langKey}:${path.resolve(workspacePath)}`;
+    if (this.activeAdapters.has(sessionKey)) {
+      return this.activeAdapters.get(sessionKey)!;
     }
 
-    const adapter = this.getAdapter(langKey);
+    const adapter = this.createAdapter(langKey);
     if (!adapter) {
       return null;
     }
@@ -83,7 +86,7 @@ export class LspAdapterRegistry {
       }
 
       await adapter.start(workspacePath);
-      this.activeAdapters.set(langKey, adapter);
+      this.activeAdapters.set(sessionKey, adapter);
       return adapter;
     } catch (err: any) {
       console.warn(`[LSP Registry] Failed to start adapter for ${language}:`, err.message || err);
@@ -99,7 +102,62 @@ export class LspAdapterRegistry {
   public async getOrStartAdapterForFile(filePath: string, workspacePath: string): Promise<ILspAdapter | null> {
     const lang = this.getLanguageForFile(filePath);
     if (!lang) return null;
+    if (lang === 'java') {
+      const roots = this.getJavaBuildRoots(workspacePath);
+      const root = ownerBuildRoot(filePath, roots);
+      if (root) return this.getOrStartJavaBuildRoot(root);
+    }
     return this.getOrStartAdapter(lang, workspacePath);
+  }
+
+  public getJavaBuildRoots(repositoryPath: string): JavaBuildRoot[] {
+    const key = path.resolve(repositoryPath);
+    const cached = this.javaLayouts.get(key);
+    if (cached) return cached;
+    const roots = discoverJavaBuildRoots(key);
+    this.javaLayouts.set(key, roots);
+    return roots;
+  }
+
+  public async getOrStartJavaBuildRoot(root: JavaBuildRoot): Promise<ILspAdapter | null> {
+    const sessionKey = `java:${root.id}:${root.workspacePath}`;
+    const active = this.activeAdapters.get(sessionKey);
+    if (active) return active;
+    const adapter = new JavaJdtlsAdapter({
+      buildRootId: root.id,
+      buildSystems: root.systems,
+      excludedRoots: root.excludedRoots,
+    });
+    try {
+      if (!(await adapter.isAvailable())) return null;
+      await adapter.start(root.workspacePath);
+      this.activeAdapters.set(sessionKey, adapter);
+      return adapter;
+    } catch (err: any) {
+      console.warn(`[LSP Registry] Failed to start Java build root ${root.id}:`, err.message || err);
+      try { await adapter.shutdown(); } catch { /* partial startup */ }
+      return null;
+    }
+  }
+
+  private createAdapter(language: string): ILspAdapter | undefined {
+    switch (language) {
+      case 'java': return new JavaJdtlsAdapter();
+      case 'python': return new PyrightAdapter();
+      case 'cpp': return new ClangdAdapter();
+      case 'rust': return new RustAnalyzerAdapter();
+      case 'typescript': return new TypeScriptAdapter();
+      case 'csharp': return new CSharpAdapter();
+      case 'cobol': return new CobolAdapter();
+      default: return this.getAdapter(language);
+    }
+  }
+
+  public async shutdownAdapter(adapter: ILspAdapter): Promise<void> {
+    try { await adapter.shutdown(); } catch { /* best-effort session cleanup */ }
+    for (const [key, active] of this.activeAdapters) {
+      if (active === adapter) this.activeAdapters.delete(key);
+    }
   }
 
   public async shutdownAll(): Promise<void> {
@@ -111,5 +169,6 @@ export class LspAdapterRegistry {
       }
     }
     this.activeAdapters.clear();
+    this.javaLayouts.clear();
   }
 }

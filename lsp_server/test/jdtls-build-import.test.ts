@@ -1,0 +1,164 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+import {
+  createJdtlsProcessLaunch,
+  discoverJavaBuildRoots,
+  JdtlsRuntime,
+  JdtlsWorkspace,
+  ownerBuildRoot,
+} from '../adapters/java/jdtls-runtime.js';
+
+const runtime: JdtlsRuntime = {
+  jdkJavaBin: '/jdk/25/bin/java',
+  jdkMajorVersion: 25,
+  equinoxLauncherJar: '/jdtls/launcher.jar',
+  osgiConfigDir: '/jdtls/config',
+};
+
+function fixture(files: Record<string, string>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jdtls-build-import-'));
+  for (const [relativePath, content] of Object.entries(files)) {
+    const fullPath = path.join(root, relativePath);
+    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+    fs.writeFileSync(fullPath, content);
+  }
+  return root;
+}
+
+function javaSettings(root: string): any {
+  const workspace = JdtlsWorkspace.inspect(root);
+  const launch = createJdtlsProcessLaunch(root, workspace, runtime, path.join(root, '.jdtls-test'));
+  return { workspace, java: (launch.initializationOptions as any).settings.java };
+}
+
+test('detects and configures a Gradle workspace independently', () => {
+  const root = fixture({
+    'settings.gradle.kts': 'rootProject.name = "sample"',
+    'gradle.properties': [
+      'sourceCompatibility=25',
+      'org.gradle.unsafe.isolated-projects=true',
+    ].join('\n'),
+    'src/main/java/Sample.java': 'class Sample {}',
+  });
+  const { workspace, java } = javaSettings(root);
+  assert.deepEqual(workspace.buildSystems.map((system) => system.kind), ['gradle']);
+  assert.equal(workspace.requiredJavaMajor, 25);
+  assert.equal(java.import.gradle.enabled, true);
+  assert.equal(java.import.maven.enabled, false);
+  assert.match(java.import.gradle.arguments, /isolated-projects=false/);
+});
+
+test('detects Maven modules and their declared Java release', () => {
+  const root = fixture({
+    'pom.xml': '<project><properties><maven.compiler.release>21</maven.compiler.release></properties></project>',
+    'module/pom.xml': '<project/>',
+    'module/src/main/java/Sample.java': 'class Sample {}',
+  });
+  const { workspace, java } = javaSettings(root);
+  assert.equal(workspace.usesMaven, true);
+  assert.equal(workspace.requiredJavaMajor, 21);
+  assert.equal(workspace.buildSystems[0].roots.length, 1);
+  assert.equal(java.import.maven.enabled, true);
+  assert.equal(java.import.gradle.enabled, false);
+});
+
+test('loads an exact Bazel project model instead of guessing bazel-bin jars', () => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "sample")',
+    '.bazelrc': 'build --java_language_version=25',
+    '.gitnexus/jdtls/bazel-project.json': JSON.stringify({
+      javaMajor: 25,
+      classpath: ['bazel-out/lib/dependency.jar'],
+      sourcePaths: ['src/main/java'],
+      outputPath: 'bazel-out/classes',
+    }),
+    'src/main/java/Sample.java': 'class Sample {}',
+  });
+  const { workspace, java } = javaSettings(root);
+  assert.equal(workspace.usesBazel, true);
+  assert.equal(workspace.buildSystems[0].importMode, 'external-model');
+  assert.equal(workspace.importBuildTools(), true);
+  assert.deepEqual(java.project.referencedLibraries.include, [path.join(root, 'bazel-out/lib/dependency.jar')]);
+  assert.deepEqual(java.project.sourcePaths, ['src/main/java']);
+  assert.equal(java.project.outputPath, 'bazel-out/classes');
+});
+
+test('keeps mixed build systems and provider overrides distinct', () => {
+  const root = fixture({
+    'pom.xml': '<project/>',
+    'build.gradle': 'plugins { id "java" }',
+    'MODULE.bazel': 'module(name = "mixed")',
+    'src/main/java/Sample.java': 'class Sample {}',
+  });
+  process.env.GITNEXUS_JDT_GRADLE_IMPORT = '0';
+  try {
+    const { workspace, java } = javaSettings(root);
+    assert.deepEqual(workspace.buildSystems.map((system) => system.kind), ['gradle', 'maven', 'bazel']);
+    assert.equal(java.import.gradle.enabled, false);
+    assert.equal(java.import.maven.enabled, true);
+    assert.equal(workspace.buildImportEnabled('bazel'), true);
+    assert.equal(workspace.buildImportStatuses().find((status) => status.kind === 'bazel')?.status, 'missing-external-model');
+    assert.equal(workspace.importBuildTools(), true);
+  } finally {
+    delete process.env.GITNEXUS_JDT_GRADLE_IMPORT;
+  }
+});
+
+test('discovers and routes a poly-build monorepo by independent build root', () => {
+  const root = fixture({
+    'gradle/app/settings.gradle': 'rootProject.name = "app"',
+    'gradle/app/build.gradle': 'plugins { id "java" }',
+    'gradle/app/src/main/java/App.java': 'class App {}',
+    'tools/standalone/build.gradle.kts': 'plugins { java }',
+    'tools/standalone/src/main/java/Tool.java': 'class Tool {}',
+    'maven/reactor/pom.xml': '<project><modules><module>child</module></modules></project>',
+    'maven/reactor/child/pom.xml': '<project/>',
+    'maven/reactor/child/src/main/java/Child.java': 'class Child {}',
+    'vendor/independent/pom.xml': '<project/>',
+    'vendor/independent/src/main/java/Vendor.java': 'class Vendor {}',
+    'bazel/service/MODULE.bazel': 'module(name = "service")',
+    'bazel/service/src/main/java/Service.java': 'class Service {}',
+    'scratch/Loose.java': 'class Loose {}',
+  });
+  const roots = discoverJavaBuildRoots(root);
+  assert.deepEqual(roots.map((buildRoot) => buildRoot.id).sort(), [
+    'bazel:bazel/service',
+    'gradle:gradle/app',
+    'gradle:tools/standalone',
+    'maven:maven/reactor',
+    'maven:vendor/independent',
+    'unmanaged:.',
+  ].sort());
+  const owner = (relativePath: string) => ownerBuildRoot(path.join(root, relativePath), roots)?.id;
+  assert.equal(owner('gradle/app/src/main/java/App.java'), 'gradle:gradle/app');
+  assert.equal(owner('maven/reactor/child/src/main/java/Child.java'), 'maven:maven/reactor');
+  assert.equal(owner('bazel/service/src/main/java/Service.java'), 'bazel:bazel/service');
+  assert.equal(owner('scratch/Loose.java'), 'unmanaged:.');
+  const unmanaged = roots.find((buildRoot) => buildRoot.id === 'unmanaged:.')!;
+  assert.equal(unmanaged.excludedRoots.length, 5);
+  const unmanagedWorkspace = JdtlsWorkspace.inspect(unmanaged.workspacePath, {
+    buildSystems: unmanaged.systems,
+    excludedRoots: unmanaged.excludedRoots,
+  });
+  assert.equal(unmanagedWorkspace.sourceFileCount, 1);
+  assert.equal(unmanagedWorkspace.requiredJavaMajor, undefined);
+  assert.deepEqual(unmanagedWorkspace.importExclusions.sort(), [
+    'bazel/service/**',
+    'gradle/app/**',
+    'maven/reactor/**',
+    'tools/standalone/**',
+    'vendor/independent/**',
+  ]);
+  const sessionDataDirs = roots.slice(1, 3).map((buildRoot) => {
+    const workspace = JdtlsWorkspace.inspect(buildRoot.workspacePath, {
+      buildSystems: buildRoot.systems,
+      excludedRoots: buildRoot.excludedRoots,
+    });
+    const launch = createJdtlsProcessLaunch(buildRoot.workspacePath, workspace, runtime);
+    return launch.args[launch.args.indexOf('-data') + 1];
+  });
+  assert.notEqual(sessionDataDirs[0], sessionDataDirs[1]);
+});

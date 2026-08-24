@@ -27,7 +27,7 @@
  */
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
-import { buildScopeTree } from '../_shared/index.js';
+import { buildScopeTree } from 'gitnexus-shared';
 import { mapReplacer } from './parse-cache.js';
 import { makeInterningReviver } from './parsedfile-store.js';
 const STORE_DIRNAME = 'scope-index-store';

@@ -25,7 +25,7 @@
  * Default-off: only constructed when `GITNEXUS_DISK_SCOPE_INDEX` is set. The
  * resident `buildScopeTree` path is untouched otherwise.
  */
-import type { Scope, ScopeId, ScopeTree } from '../_shared/index.js';
+import type { Scope, ScopeId, ScopeTree } from 'gitnexus-shared';
 /** Resident per-scope skeleton — everything `ScopeTree` answers WITHOUT the heavy
  *  binding payload. `shard` names the on-disk file holding the full `Scope`. */
 interface ScopeSkeletonEntry {

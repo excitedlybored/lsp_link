@@ -35,6 +35,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   protected openedDocuments = new Set<string>();
   private launchSettings: Record<string, unknown> = {};
   private workspaceFolderList: { uri: string; name: string }[] = [];
+  private sessionWorkspacePath?: string;
 
   public static findBinary(name: string): string | null {
     const searchPaths = [
@@ -54,9 +55,14 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
 
   public abstract isAvailable(): Promise<boolean>;
 
+  public getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] } {
+    return { workspacePath: this.sessionWorkspacePath };
+  }
+
   protected abstract buildProcessLaunch(workspacePath: string): Promise<StdioProcessLaunch>;
 
   public async start(workspacePath: string): Promise<void> {
+    this.sessionWorkspacePath = path.resolve(workspacePath);
     const launch = await this.buildProcessLaunch(workspacePath);
     this.launchSettings = (launch.initializationOptions?.settings as Record<string, unknown>) ?? {};
     this.spawnLanguageServer(launch);

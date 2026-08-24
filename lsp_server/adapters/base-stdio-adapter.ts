@@ -15,8 +15,11 @@ import {
   CallHierarchyItem,
   CallHierarchyOutgoingCall,
   CallHierarchyIncomingCall,
+  LspDocumentSymbol,
   LspHoverResult,
   LspImplementationResult,
+  LspLocation,
+  LspRange,
 } from '../contracts/lsp-types.js';
 
 export interface StdioProcessLaunch {
@@ -35,6 +38,9 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   protected openedDocuments = new Set<string>();
   private launchSettings: Record<string, unknown> = {};
   private workspaceFolderList: { uri: string; name: string }[] = [];
+  private sessionWorkspacePath?: string;
+  private serverCapabilities: Record<string, unknown> = {};
+  private notificationBuffer = new Map<string, unknown[]>();
 
   public static findBinary(name: string): string | null {
     const searchPaths = [
@@ -54,9 +60,14 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
 
   public abstract isAvailable(): Promise<boolean>;
 
+  public getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] } {
+    return { workspacePath: this.sessionWorkspacePath };
+  }
+
   protected abstract buildProcessLaunch(workspacePath: string): Promise<StdioProcessLaunch>;
 
   public async start(workspacePath: string): Promise<void> {
+    this.sessionWorkspacePath = path.resolve(workspacePath);
     const launch = await this.buildProcessLaunch(workspacePath);
     this.launchSettings = (launch.initializationOptions?.settings as Record<string, unknown>) ?? {};
     this.spawnLanguageServer(launch);
@@ -118,6 +129,35 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       this.openedDocuments.add(absPath);
     } catch {
       // Dead pipe — caller treats this file as unenriched
+    }
+  }
+
+  public getServerCapabilities(): Record<string, unknown> {
+    return this.serverCapabilities;
+  }
+
+  public documentUri(filePath: string): string {
+    return this.toFileUri(filePath);
+  }
+
+  public takeNotifications<T>(method: string): T[] {
+    const values = (this.notificationBuffer.get(method) ?? []) as T[];
+    this.notificationBuffer.delete(method);
+    return values;
+  }
+
+  public async request<T>(method: string, params: unknown): Promise<T> {
+    if (!this.connection) throw new Error(`${this.id} has no JSON-RPC connection`);
+    const timeoutMs = this.queryTimeoutMs();
+    const source = new rpc.CancellationTokenSource();
+    const timer = setTimeout(() => source.cancel(), timeoutMs);
+    try {
+      return (await this.connection.sendRequest(method, params, source.token)) as T;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Request ${method} failed or timed out after ${timeoutMs}ms: ${message}`);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -197,6 +237,41 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     return { contents: hoverContentsToText(result.contents), range: result.range };
   }
 
+  public async documentSymbols(filePath: string): Promise<LspDocumentSymbol[]> {
+    await this.openDocument(filePath);
+    const result = await this.sendQuery<unknown>('textDocument/documentSymbol', {
+      textDocument: { uri: this.toFileUri(filePath) },
+    });
+    return flattenDocumentSymbols(result);
+  }
+
+  public async findDefinition(
+    filePath: string,
+    line: number,
+    character: number
+  ): Promise<LspLocation[]> {
+    await this.openDocument(filePath);
+    const result = await this.sendQuery<unknown>('textDocument/definition', {
+      textDocument: { uri: this.toFileUri(filePath) },
+      position: { line, character },
+    });
+    return normalizeLocations(result);
+  }
+
+  public async findReferences(
+    filePath: string,
+    line: number,
+    character: number
+  ): Promise<LspLocation[]> {
+    await this.openDocument(filePath);
+    const result = await this.sendQuery<unknown>('textDocument/references', {
+      textDocument: { uri: this.toFileUri(filePath) },
+      position: { line, character },
+      context: { includeDeclaration: true },
+    });
+    return normalizeLocations(result);
+  }
+
   public async shutdown(): Promise<void> {
     const stdinAlive = Boolean(this.process?.stdin && !this.process.stdin.destroyed);
     if (this.connection && stdinAlive) {
@@ -223,6 +298,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       this.process = null;
     }
     this.openedDocuments.clear();
+    this.notificationBuffer.clear();
   }
 
   private spawnLanguageServer(launch: StdioProcessLaunch): void {
@@ -265,6 +341,9 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       this.connection = null;
     });
     this.connection.onNotification((method: string, params: unknown) => {
+      const buffered = this.notificationBuffer.get(method) ?? [];
+      buffered.push(params);
+      this.notificationBuffer.set(method, buffered);
       this.onServerNotification(method, params);
     });
     this.connection.onRequest((method: string, params: unknown) => {
@@ -299,8 +378,29 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
           callHierarchy: { dynamicRegistration: true },
           documentSymbol: { hierarchicalDocumentSymbolSupport: true },
           definition: { dynamicRegistration: true },
+          declaration: { dynamicRegistration: true, linkSupport: true },
+          typeDefinition: { dynamicRegistration: true, linkSupport: true },
+          references: { dynamicRegistration: true },
           implementation: { dynamicRegistration: true },
           hover: { dynamicRegistration: true },
+          typeHierarchy: { dynamicRegistration: true },
+          signatureHelp: { dynamicRegistration: true },
+          diagnostic: { dynamicRegistration: true },
+          semanticTokens: {
+            dynamicRegistration: true,
+            requests: { range: true, full: { delta: true } },
+            tokenTypes: [
+              'namespace', 'type', 'class', 'enum', 'interface', 'struct',
+              'typeParameter', 'parameter', 'variable', 'property', 'enumMember',
+              'event', 'function', 'method', 'macro', 'keyword', 'modifier',
+              'comment', 'string', 'number', 'regexp', 'operator', 'decorator',
+            ],
+            tokenModifiers: [
+              'declaration', 'definition', 'readonly', 'static', 'deprecated',
+              'abstract', 'async', 'modification', 'documentation', 'defaultLibrary',
+            ],
+            formats: ['relative'],
+          },
         },
       },
       initializationOptions: launch.initializationOptions ?? {},
@@ -318,9 +418,15 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
             // cancel() may throw if the pipe already closed
           }
         }, timeoutMs);
-        await this.connection.sendRequest('initialize', initParams, source.token);
+        const result = await this.connection.sendRequest('initialize', initParams, source.token) as {
+          capabilities?: Record<string, unknown>;
+        };
+        this.serverCapabilities = result.capabilities ?? {};
       } else {
-        await this.connection.sendRequest('initialize', initParams);
+        const result = await this.connection.sendRequest('initialize', initParams) as {
+          capabilities?: Record<string, unknown>;
+        };
+        this.serverCapabilities = result.capabilities ?? {};
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -359,6 +465,55 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       clearTimeout(timer);
     }
   }
+}
+
+function normalizeLocations(result: unknown): LspLocation[] {
+  if (!result) return [];
+  const items = Array.isArray(result) ? result : [result];
+  const locations: LspLocation[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    const rec = item as {
+      uri?: string;
+      targetUri?: string;
+      range?: LspRange;
+      targetRange?: LspRange;
+      targetSelectionRange?: LspRange;
+    };
+    const uri = rec.uri || rec.targetUri;
+    const range = rec.range || rec.targetSelectionRange || rec.targetRange;
+    if (uri && range) locations.push({ uri, range });
+  }
+  return locations;
+}
+
+function flattenDocumentSymbols(result: unknown): LspDocumentSymbol[] {
+  if (!result || !Array.isArray(result)) return [];
+  return result.map((raw) => normalizeDocumentSymbol(raw)).filter((s): s is LspDocumentSymbol => Boolean(s));
+}
+
+function normalizeDocumentSymbol(raw: unknown): LspDocumentSymbol | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const rec = raw as {
+    name?: string;
+    detail?: string;
+    kind?: number;
+    range?: LspRange;
+    selectionRange?: LspRange;
+    location?: LspLocation;
+    children?: unknown[];
+  };
+  const range = rec.range || rec.location?.range;
+  const selectionRange = rec.selectionRange || range;
+  if (!rec.name || rec.kind == null || !range || !selectionRange) return null;
+  return {
+    name: rec.name,
+    detail: rec.detail,
+    kind: rec.kind,
+    range,
+    selectionRange,
+    children: rec.children?.map((child) => normalizeDocumentSymbol(child)).filter((s): s is LspDocumentSymbol => Boolean(s)),
+  };
 }
 
 function hoverContentsToText(contents: unknown): string {

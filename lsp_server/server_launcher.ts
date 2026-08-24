@@ -20,8 +20,8 @@ export class StandaloneLspServer {
   constructor(private workspacePath: string) {}
 
   public start(): ChildProcess {
-    const runtime = JdtlsRuntimeLocator.locate();
     const workspace = JdtlsWorkspace.inspect(this.workspacePath);
+    const runtime = JdtlsRuntimeLocator.locate(workspace.requiredJavaMajor);
     const dataDir = path.join('/tmp', `jdtls_server_${Date.now()}_${process.pid}`);
     fs.mkdirSync(dataDir, { recursive: true });
 

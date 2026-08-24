@@ -26,6 +26,9 @@ export interface ILspAdapter {
    */
   readonly maxConcurrentRequests: number;
 
+  /** Session identity used to preserve build-root and workspace provenance. */
+  getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] };
+
   isAvailable(): Promise<boolean>;
 
   /** Spawn the server and complete initialize / initialized. */

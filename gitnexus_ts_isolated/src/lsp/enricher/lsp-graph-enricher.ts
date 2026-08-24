@@ -16,11 +16,16 @@ import type { KnowledgeGraph } from '../../graph/types.js';
 import { LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { GraphSymbolIndex } from './graph-symbol-index.js';
+import { ownerBuildRoot } from '../adapters/java/jdtls-runtime.js';
 
 export interface EnricherStats {
   enrichedCalls: number;
   enrichedImplementations: number;
   conflictsResolved: number;
+  emptyCallHierarchy: number;
+  unmappedCallTargets: number;
+  javaBuildRoots: number;
+  failedJavaBuildRoots: number;
 }
 
 interface FileEnrichmentWork {
@@ -47,6 +52,10 @@ export class LspGraphEnricher {
       enrichedCalls: 0,
       enrichedImplementations: 0,
       conflictsResolved: 0,
+      emptyCallHierarchy: 0,
+      unmappedCallTargets: 0,
+      javaBuildRoots: 0,
+      failedJavaBuildRoots: 0,
     };
 
     const targets = collectEnrichmentTargets(graph, (filePath) =>
@@ -59,6 +68,10 @@ export class LspGraphEnricher {
     try {
       await Promise.all(
         [...targets.filesByLanguage.entries()].map(async ([language, files]) => {
+          if (language === 'java') {
+            await this.enrichJavaBuildRoots(files, repoPath, graph, index, targets, stats, onProgress);
+            return;
+          }
           let adapter: ILspAdapter | null = null;
           try {
             adapter = await this.registry.getOrStartAdapter(language, repoPath);
@@ -89,6 +102,42 @@ export class LspGraphEnricher {
     }
 
     return stats;
+  }
+
+  private async enrichJavaBuildRoots(
+    files: Set<string>,
+    repoPath: string,
+    graph: KnowledgeGraph,
+    index: GraphSymbolIndex,
+    targets: EnrichmentTargets,
+    stats: EnricherStats,
+    onProgress?: (msg: string) => void
+  ): Promise<void> {
+    const roots = this.registry.getJavaBuildRoots(repoPath);
+    const filesByRoot = new Map<string, { root: (typeof roots)[number]; files: Set<string> }>();
+    for (const relFile of files) {
+      const root = ownerBuildRoot(path.resolve(repoPath, relFile), roots);
+      if (!root) continue;
+      const group = filesByRoot.get(root.id) ?? { root, files: new Set<string>() };
+      group.files.add(relFile);
+      filesByRoot.set(root.id, group);
+    }
+
+    for (const { root, files: rootFiles } of [...filesByRoot.values()].sort((a, b) => a.root.id.localeCompare(b.root.id))) {
+      const adapter = await this.registry.getOrStartJavaBuildRoot(root);
+      if (!adapter) {
+        stats.failedJavaBuildRoots += 1;
+        continue;
+      }
+      stats.javaBuildRoots += 1;
+      onProgress?.(`⚡ Enriching JAVA build root ${root.id} (${rootFiles.size} files)...`);
+      try {
+        await this.enrichLanguage(adapter, rootFiles, repoPath, graph, index, targets, stats);
+      } finally {
+        // Bound memory in large monorepos: one JDT process per build root, sequentially.
+        await this.registry.shutdownAdapter(adapter);
+      }
+    }
   }
 
   private async enrichLanguage(
@@ -165,15 +214,12 @@ export class LspGraphEnricher {
     index: GraphSymbolIndex,
     stats: EnricherStats
   ): Promise<void> {
-    const startLine = ifaceNode.properties?.startLine ?? 1;
+    const pos = lspPositionForSymbol(ifaceNode, lineAt);
     try {
-      const implementations = await adapter.findImplementations(
-        absPath,
-        startLine - 1,
-        columnOfSymbol(ifaceNode, lineAt(startLine))
-      );
+      const implementations = await adapter.findImplementations(absPath, pos.line0, pos.character);
       for (const impl of implementations) {
         const implFile = repoPathFromLspUri(impl.uri, repoPath);
+        if (!implFile) continue;
         const typeNode = index.primaryTypeInFile(implFile);
         if (!typeNode) continue;
         graph.addRelationship({
@@ -183,6 +229,7 @@ export class LspGraphEnricher {
           type: 'IMPLEMENTS',
           confidence: 1.0,
           reason: `LSP: ${adapter.id} textDocument/implementation`,
+          evidence: lspSessionEvidence(adapter),
         });
         stats.enrichedImplementations += 1;
       }
@@ -201,22 +248,29 @@ export class LspGraphEnricher {
     index: GraphSymbolIndex,
     stats: EnricherStats
   ): Promise<void> {
-    const startLine = callableNode.properties?.startLine ?? 1;
+    const pos = lspPositionForSymbol(callableNode, lineAt);
     try {
-      const items = await adapter.prepareCallHierarchy(
-        absPath,
-        startLine - 1,
-        columnOfSymbol(callableNode, lineAt(startLine))
-      );
-      if (!items || items.length === 0) return;
+      const items = await adapter.prepareCallHierarchy(absPath, pos.line0, pos.character);
+      if (!items || items.length === 0) {
+        stats.emptyCallHierarchy += 1;
+        return;
+      }
 
       const outgoing = await adapter.getOutgoingCalls(items[0]);
+      if (outgoing.length === 0) stats.emptyCallHierarchy += 1;
       for (const call of outgoing) {
         const targetFile = repoPathFromLspUri(call.to.uri, repoPath);
         const rawTargetName = call.to.name;
         const simpleTargetName = rawTargetName.split('(')[0].trim();
+        if (!targetFile) {
+          stats.unmappedCallTargets += 1;
+          continue;
+        }
         const targetNode = index.findCallableOrType(targetFile, simpleTargetName);
-        if (!targetNode || targetNode.id === callableNode.id) continue;
+        if (!targetNode || targetNode.id === callableNode.id) {
+          stats.unmappedCallTargets += 1;
+          continue;
+        }
 
         stats.conflictsResolved += index.dropConflictingHeuristicCalls(
           graph,
@@ -232,6 +286,7 @@ export class LspGraphEnricher {
           type: 'CALLS',
           confidence: 1.0,
           reason: `LSP: ${adapter.id} Call Hierarchy (${rawTargetName})`,
+          evidence: lspSessionEvidence(adapter),
         });
         stats.enrichedCalls += 1;
       }
@@ -239,6 +294,15 @@ export class LspGraphEnricher {
       // Ignore individual callable lookup errors
     }
   }
+}
+
+function lspSessionEvidence(adapter: ILspAdapter): readonly { kind: string; weight: number; note?: string }[] {
+  const session = adapter.getSessionMetadata();
+  return [
+    { kind: 'lsp-server', weight: 1, note: adapter.id },
+    ...(session.buildRootId ? [{ kind: 'lsp-build-root', weight: 1, note: session.buildRootId }] : []),
+    ...(session.buildSystems?.map((system) => ({ kind: 'lsp-build-system', weight: 1, note: system })) ?? []),
+  ];
 }
 
 function collectEnrichmentTargets(
@@ -317,13 +381,26 @@ function isTrivialAccessor(node: GraphNode, nameCounts: Map<string, number>): bo
   );
 }
 
-function columnOfSymbol(node: GraphNode, lineText: string): number {
-  const named = node.properties?.startCol ?? node.properties?.column;
-  if (typeof named === 'number' && named >= 0) return named;
+/**
+ * Tree-sitter method spans often start on a blank line or annotation, not
+ * the identifier. JDT prepareCallHierarchy needs the name token.
+ */
+function lspPositionForSymbol(
+  node: GraphNode,
+  lineAt: (line1: number) => string
+): { line0: number; character: number } {
   const name = node.properties?.name || '';
-  if (!name) return 0;
-  const idx = lineText.indexOf(name);
-  return idx >= 0 ? idx : 0;
+  const startLine = Math.max(1, node.properties?.startLine ?? 1);
+  const endLine = Math.max(startLine, node.properties?.endLine ?? startLine);
+  if (name) {
+    for (let line1 = startLine; line1 <= endLine; line1++) {
+      const idx = lineAt(line1).indexOf(name);
+      if (idx >= 0) return { line0: line1 - 1, character: idx };
+    }
+  }
+  const named = node.properties?.startCol ?? node.properties?.column;
+  const character = typeof named === 'number' && named >= 0 ? named : 0;
+  return { line0: startLine - 1, character };
 }
 
 function sourceLineReader(absPath: string): (line1: number) => string {
@@ -340,9 +417,12 @@ function sourceLineReader(absPath: string): (line1: number) => string {
   };
 }
 
-function repoPathFromLspUri(uri: string, repoPath: string): string {
-  const abs = uri.startsWith('file://') ? fileURLToPath(uri) : uri;
-  return path.relative(repoPath, abs);
+function repoPathFromLspUri(uri: string, repoPath: string): string | null {
+  if (!uri.startsWith('file://')) return null;
+  const abs = fileURLToPath(uri);
+  const rel = path.relative(repoPath, abs);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return rel;
 }
 
 async function mapWithConcurrency<T>(

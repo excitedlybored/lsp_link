@@ -1,0 +1,14 @@
+{
+  "name": "lsp-kg-isolated",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LSP-native knowledge graph schema for LadybugDB",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "file:../lsp_server/vendor/typescript-5.9.3.tgz"
+  }
+}

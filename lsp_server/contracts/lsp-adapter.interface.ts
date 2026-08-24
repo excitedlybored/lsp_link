@@ -9,8 +9,10 @@ import {
   CallHierarchyItem,
   CallHierarchyOutgoingCall,
   CallHierarchyIncomingCall,
+  LspDocumentSymbol,
   LspHoverResult,
   LspImplementationResult,
+  LspLocation,
 } from './lsp-types.js';
 
 export interface ILspAdapter {
@@ -26,10 +28,25 @@ export interface ILspAdapter {
    */
   readonly maxConcurrentRequests: number;
 
+  /** Session identity used to preserve build-root and workspace provenance. */
+  getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] };
+
   isAvailable(): Promise<boolean>;
 
   /** Spawn the server and complete initialize / initialized. */
   start(workspacePath: string): Promise<void>;
+
+  /** Capabilities returned by the server's initialize response. */
+  getServerCapabilities(): Record<string, unknown>;
+
+  /** Raw protocol request for capabilities not covered by convenience methods. */
+  request<T>(method: string, params: unknown): Promise<T>;
+
+  /** Canonical file URI used in textDocument request parameters. */
+  documentUri(filePath: string): string;
+
+  /** Buffered server notifications, removed when read. */
+  takeNotifications<T>(method: string): T[];
 
   openDocument(filePath: string): Promise<void>;
 
@@ -45,6 +62,12 @@ export interface ILspAdapter {
   findImplementations(filePath: string, line: number, character: number): Promise<LspImplementationResult[]>;
 
   getHover(filePath: string, line: number, character: number): Promise<LspHoverResult | null>;
+
+  documentSymbols(filePath: string): Promise<LspDocumentSymbol[]>;
+
+  findDefinition(filePath: string, line: number, character: number): Promise<LspLocation[]>;
+
+  findReferences(filePath: string, line: number, character: number): Promise<LspLocation[]>;
 
   shutdown(): Promise<void>;
 }

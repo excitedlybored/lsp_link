@@ -279,7 +279,7 @@ Options:
   const registry = new LspAdapterRegistry();
   const langKey = registry.getLanguageForFile(loc.filePath) || loc.language || 'java';
 
-  const adapter = await registry.getOrStartAdapter(langKey, workspacePath);
+  const adapter = await registry.getOrStartAdapterForFile(loc.filePath, workspacePath);
   if (!adapter) {
     console.error(`❌ No active or available LSP adapter found for language '${langKey}'.`);
     process.exit(1);
