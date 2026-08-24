@@ -40,6 +40,8 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   private workspaceFolderList: { uri: string; name: string }[] = [];
   private sessionWorkspacePath?: string;
   private serverCapabilities: Record<string, unknown> = {};
+  private serverInfo?: { name: string; version?: string };
+  private dynamicRegistrations = new Map<string, { id: string; method: string; registerOptions?: unknown }>();
   private notificationBuffer = new Map<string, unknown[]>();
 
   public static findBinary(name: string): string | null {
@@ -100,7 +102,11 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       case 'workspace/workspaceFolders':
         return this.workspaceFolderList;
       case 'client/registerCapability':
+        this.registerDynamicCapabilities(params);
+        return null;
       case 'client/unregisterCapability':
+        this.unregisterDynamicCapabilities(params);
+        return null;
       case 'window/workDoneProgress/create':
       case 'window/showMessageRequest':
       case 'window/showDocument':
@@ -133,7 +139,11 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   public getServerCapabilities(): Record<string, unknown> {
-    return this.serverCapabilities;
+    return {
+      ...this.serverCapabilities,
+      __serverInfo: this.serverInfo,
+      __dynamicRegistrations: [...this.dynamicRegistrations.values()],
+    };
   }
 
   public documentUri(filePath: string): string {
@@ -150,12 +160,18 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     if (!this.connection) throw new Error(`${this.id} has no JSON-RPC connection`);
     const timeoutMs = this.queryTimeoutMs();
     const source = new rpc.CancellationTokenSource();
-    const timer = setTimeout(() => source.cancel(), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      source.cancel();
+    }, timeoutMs);
     try {
       return (await this.connection.sendRequest(method, params, source.token)) as T;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Request ${method} failed or timed out after ${timeoutMs}ms: ${message}`);
+      throw new Error(timedOut
+        ? `Request ${method} timed out after ${timeoutMs}ms: ${message}`
+        : `Request ${method} failed: ${message}`);
     } finally {
       clearTimeout(timer);
     }
@@ -421,13 +437,17 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
         }, timeoutMs);
         const result = await this.connection.sendRequest('initialize', initParams, source.token) as {
           capabilities?: Record<string, unknown>;
+          serverInfo?: { name: string; version?: string };
         };
         this.serverCapabilities = result.capabilities ?? {};
+        this.serverInfo = result.serverInfo;
       } else {
         const result = await this.connection.sendRequest('initialize', initParams) as {
           capabilities?: Record<string, unknown>;
+          serverInfo?: { name: string; version?: string };
         };
         this.serverCapabilities = result.capabilities ?? {};
+        this.serverInfo = result.serverInfo;
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -464,6 +484,30 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       return undefined;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  private registerDynamicCapabilities(params: unknown): void {
+    const registrations = (params as {
+      registrations?: Array<{ id?: string; method?: string; registerOptions?: unknown }>;
+    } | null)?.registrations ?? [];
+    for (const registration of registrations) {
+      if (!registration.id || !registration.method) continue;
+      this.dynamicRegistrations.set(registration.id, {
+        id: registration.id,
+        method: registration.method,
+        registerOptions: registration.registerOptions,
+      });
+    }
+  }
+
+  private unregisterDynamicCapabilities(params: unknown): void {
+    const value = params as {
+      unregisterations?: Array<{ id?: string }>;
+      unregistrations?: Array<{ id?: string }>;
+    } | null;
+    for (const registration of value?.unregisterations ?? value?.unregistrations ?? []) {
+      if (registration.id) this.dynamicRegistrations.delete(registration.id);
     }
   }
 }

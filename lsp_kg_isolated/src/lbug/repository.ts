@@ -18,6 +18,7 @@ import {
   toSymbolRecord,
 } from './rows.js';
 import { LSP_RELATION_TABLE, LSP_SCHEMA_QUERIES } from './schema.js';
+import { JvmArtifactRepository } from '../artifact/repository.js';
 
 export interface LbugQueryResultLike {
   close?(): void | Promise<void>;
@@ -49,6 +50,7 @@ export interface LadybugModuleLike {
 
 export interface LspDatabaseHandle {
   repository: LspLadybugRepository;
+  artifactRepository: JvmArtifactRepository;
   close(): Promise<void>;
 }
 
@@ -64,6 +66,7 @@ export function openLspLadybugDatabase(
   const connection = new ladybug.Connection(database);
   return {
     repository: new LspLadybugRepository(connection),
+    artifactRepository: new JvmArtifactRepository(connection),
     async close(): Promise<void> {
       await connection.close?.();
       await database.close?.();

@@ -121,7 +121,7 @@ export function ingestDocumentSymbols(
 
   const visit = (observation: DocumentSymbolObservation, parent?: LspSymbol): void => {
     const kindName = requireKindName(observation.kind);
-    const symbol = makeSymbol(context.document, observation, kindName);
+    const symbol = materializeSymbol(context.document, observation, kindName);
     batch.symbols.push(symbol);
     batch.relations.push(makeRelation(
       context,
@@ -224,11 +224,12 @@ export function makeMappedSymbolRelation(
   );
 }
 
-function makeSymbol(
+export function materializeSymbol(
   document: LspDocument,
   observation: DocumentSymbolObservation,
-  kindName: LspSymbolKindName,
+  knownKindName?: LspSymbolKindName,
 ): LspSymbol {
+  const kindName = knownKindName ?? requireKindName(observation.kind);
   const id = stableId(
     'symbol', document.uri, kindName, observation.name,
     rangeKey(observation.selectionRange), observation.detail ?? '',
@@ -311,10 +312,10 @@ function requireKindName(kind: number): LspSymbolKindName {
   return name;
 }
 
-function rangeKey(range: LspRange): string {
+export function rangeKey(range: LspRange): string {
   return `${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`;
 }
 
-function stableId(...parts: string[]): string {
+export function stableId(...parts: string[]): string {
   return parts.map((part) => encodeURIComponent(part)).join(':');
 }

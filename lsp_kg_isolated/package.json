@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@ladybugdb/core": "0.19.1",
+    "glob": "file:../lsp_server/vendor/glob-13.0.6.tgz",
     "tsx": "file:../lsp_server/vendor/tsx-4.23.12.tgz"
   },
   "devDependencies": {

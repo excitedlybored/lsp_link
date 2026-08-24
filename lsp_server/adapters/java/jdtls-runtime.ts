@@ -37,6 +37,7 @@ export interface JavaBuildSystem {
 export interface BazelProjectModel {
   modelPath: string;
   classpath: string[];
+  runtimeClasspath?: string[];
   sourcePaths: string[];
   outputPath?: string;
   javaMajor?: number;
@@ -592,6 +593,7 @@ function readBazelProjectModel(workspacePath: string): BazelProjectModel | undef
   if (!fs.existsSync(modelPath)) return undefined;
   const parsed = JSON.parse(fs.readFileSync(modelPath, 'utf8')) as {
     classpath?: unknown;
+    runtimeClasspath?: unknown;
     sourcePaths?: unknown;
     outputPath?: unknown;
     javaMajor?: unknown;
@@ -613,6 +615,9 @@ function readBazelProjectModel(workspacePath: string): BazelProjectModel | undef
   return {
     modelPath,
     classpath: parsed.classpath.map(resolveClasspath),
+    ...(Array.isArray(parsed.runtimeClasspath) && parsed.runtimeClasspath.every((entry) => typeof entry === 'string')
+      ? { runtimeClasspath: parsed.runtimeClasspath.map(resolveClasspath) }
+      : {}),
     sourcePaths: parsed.sourcePaths.map((entry) => resolveWorkspaceRelative(entry, 'sourcePaths')),
     ...(typeof parsed.outputPath === 'string' ? { outputPath: resolveWorkspaceRelative(parsed.outputPath, 'outputPath') } : {}),
     ...(typeof parsed.javaMajor === 'number' ? { javaMajor: parsed.javaMajor } : {}),

@@ -12,6 +12,7 @@ const MODEL_RELATIVE_PATH = '.gitnexus/jdtls/bazel-project.json';
 interface GeneratedBazelModel {
   javaMajor?: number;
   classpath: string[];
+  runtimeClasspath: string[];
   sourcePaths: string[];
   generatedBy: 'gitnexus-bazel-cquery';
   generatedAt: string;
@@ -79,6 +80,8 @@ export async function ensureBazelProjectModel(
     existing?.configurationHash === configurationHash
     && arraysEqual(existing.sourcePaths, sourcePaths)
     && existing.classpath.every(fs.existsSync)
+    && Array.isArray(existing.runtimeClasspath)
+    && existing.runtimeClasspath.every(fs.existsSync)
   ) {
     return cachedResult(modelPath, existing.classpath.length, existing.configurationHash);
   }
@@ -93,27 +96,42 @@ export async function ensureBazelProjectModel(
   const targetQuery = process.env.GITNEXUS_JDT_BAZEL_TARGETS || '//...';
   try {
     const executionRoot = (await runBazel(bazelBinary, ['info', 'execution_root'], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal)).trim();
-    const expression = '"\\t".join([str(target.label)] + [f.path for f in providers(target)["JavaInfo"].transitive_compile_time_jars.to_list()]) if "JavaInfo" in providers(target) else ""';
+    // Bazel 8 / rules_java no longer exposes this provider under the literal
+    // `JavaInfo` key. Canonical keys include the defining bzl label and retain
+    // `%JavaInfo` as the stable suffix across bzlmod repository versions.
+    const expression = '"\\t".join([str(target.label)] + [f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in (v.compilation_info.compilation_classpath if hasattr(v, "compilation_info") else v.transitive_compile_time_jars).to_list()])';
     const output = await runBazel(bazelBinary, [
       'cquery', targetQuery, '--output=starlark', `--starlark:expr=${expression}`,
     ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
     const configured = parseConfiguredTargets(output, executionRoot);
+    const runtimeExpression = '"\\t".join([str(target.label)] + [f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in v.transitive_runtime_jars.to_list()])';
+    const runtimeOutput = await runBazel(bazelBinary, [
+      'cquery', targetQuery, '--output=starlark', `--starlark:expr=${runtimeExpression}`,
+    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
+    const runtime = parseConfiguredTargets(runtimeOutput, executionRoot);
     if (configured.labels.length === 0 || configured.classpath.length === 0) {
       return { status: 'failed', reason: `Bazel cquery returned no JavaInfo compile-time jars for ${targetQuery}.` };
     }
-    if (configured.classpath.some((jar) => !fs.existsSync(jar))) {
+    if ([...configured.classpath, ...runtime.classpath].some((jar) => !fs.existsSync(jar))) {
       const targetFile = path.join(workspacePath, '.gitnexus/jdtls/bazel-targets.txt');
       fs.mkdirSync(path.dirname(targetFile), { recursive: true });
       fs.writeFileSync(targetFile, `${configured.labels.join('\n')}\n`);
-      await runBazel(bazelBinary, ['build', `--target_pattern_file=${targetFile}`], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
+      // This build only materializes analysis artifacts. A union JDT classpath
+      // intentionally contains transitive jars, so Bazel's direct-dependency
+      // enforcement is not meaningful here and can prevent otherwise valid
+      // dependency jars from being produced.
+      await runBazel(bazelBinary, [
+        'build', '--strict_java_deps=off', `--target_pattern_file=${targetFile}`,
+      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
     }
-    const missing = configured.classpath.filter((jar) => !fs.existsSync(jar));
+    const missing = [...configured.classpath, ...runtime.classpath].filter((jar) => !fs.existsSync(jar));
     if (missing.length > 0) {
       return { status: 'failed', reason: `Bazel did not materialize ${missing.length} configured Java compile-time jars.` };
     }
 
     const model: GeneratedBazelModel = {
       classpath: configured.classpath,
+      runtimeClasspath: runtime.classpath,
       sourcePaths,
       generatedBy: 'gitnexus-bazel-cquery',
       generatedAt: new Date().toISOString(),

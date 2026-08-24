@@ -70,6 +70,7 @@ so GitNexus runs a configured `bazel cquery`, selects every target exposing
   "javaMajor": 25,
   "sourcePaths": ["src/main/java"],
   "classpath": ["bazel-out/path/to/compile-time.jar"],
+  "runtimeClasspath": ["bazel-out/path/to/full-runtime.jar"],
   "outputPath": "bazel-out/classes"
 }
 ```
@@ -91,6 +92,14 @@ Provider configuration is passed through without repository edits:
 - Bazel: `GITNEXUS_JDT_BAZEL_PROJECT_MODEL`, `GITNEXUS_BAZEL_BIN`,
   `GITNEXUS_JDT_BAZEL_TARGETS`, `GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS`, and
   `GITNEXUS_JDT_BAZEL_AUTO_MODEL=0` to disable generation.
+
+The separate JVM artifact-enrichment stage consumes normalized descriptors
+from an `ArtifactClasspathProvider` registry. Bazel uses the generated
+compile/runtime `JavaInfo` model; Maven and Gradle use the classpaths actually
+imported by M2E and Buildship through JDT LS; generic JDT and explicit JSON
+manifest providers cover unmanaged and externally modeled projects. Use
+`--artifact-classpath-manifest` for an additional manifest and
+`--artifact-max-classes` only when a bounded dependency crawl is desired.
 
 ### Poly-build monorepositories
 

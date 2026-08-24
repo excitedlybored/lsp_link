@@ -121,3 +121,107 @@ of treating a swallowed request error as an empty response.
 npm run build
 npm test
 ```
+
+## Complete JDT LS crawl
+
+The production crawler does not read a Tree-sitter graph. It discovers Java
+build roots, prepares up to four Bazel project models concurrently, then runs
+up to four independent JDT LS processes. Requests inside each process remain
+serialized so one compiler is never flooded.
+
+JDT `documentSymbol` supplies declaration nodes and hierarchy. JDT semantic
+tokens then seed usage-level definition, declaration, type-definition,
+implementation, and hover requests, so imported types and dependency usages
+that are not document symbols are still crawled.
+
+```bash
+cd lsp_server
+npm run kg -- build /path/to/repository \
+  --output /path/to/new/lsp-lbug \
+  --concurrency 4
+```
+
+The output path must not already exist. Every standard semantic capability has
+an `LspCoverage` outcome, including unsupported, excluded, empty, partial,
+failed, timed-out, observed, mapped, and unmapped results.
+
+Signature-help cursors are found with a Java lexical scan of invocation
+delimiters, not an AST. Every location observation retains both the request
+URI/position and the response URI/ranges, while each call-hierarchy
+`fromRange` remains a separate `LspCallSite`.
+
+## Stage 2: JVM artifact enrichment
+
+Artifact enrichment runs only after the LSP crawl has finished. It has its own
+`JvmArtifactEnrichmentRun` provenance node, five JVM entity tables, and a
+`JvmRelation` table. It never writes bytecode-derived facts into `LspRelation`,
+so protocol observations and compiled-artifact observations remain queryably
+separate even though they live in the same LadybugDB database.
+
+For every Bazel header JAR on a prepared build-root classpath, the stage:
+
+1. associates the header JAR with its processed/full binary JAR;
+2. finds a sibling or local Maven source JAR, or downloads the Maven source JAR
+   into the build model's `artifact-sources` cache;
+3. creates one `JvmArtifact` and one `JvmClass` per dependency class;
+4. seeds `javap` from external JDT URIs observed during stage 1;
+5. creates separate `JvmMethod`, `JvmField`, and `JvmCallSite` nodes, plus
+   superclass, interface, declaration, and resolved bytecode-call relations;
+6. disassembles every unique dependency class, prioritizing stage-1 seeds, and
+   records the dependency logic graph.
+
+The default is a complete dependency-class crawl. For exceptionally large
+repositories, opt into a bounded seed-reachable logic crawl with
+`--artifact-max-classes N`; reaching that bound records
+`status=partial,truncated=true`. Class inventorying itself is never limited.
+Source acquisition is on by default and can be disabled for an offline run with
+`--no-artifact-source-fetch`. Missing source artifacts remain explicit as
+`sourceOrigin=unavailable` and `associationStatus=binary_only`; this does not
+discard the binary graph.
+
+Seed classes retain the exact stage-1 external URIs in `JvmClass.seedUris`.
+This provides an auditable join back to the LSP observation without putting a
+bytecode-derived edge in the LSP relationship table.
+
+### General classpath-provider boundary
+
+`ArtifactClasspathProvider` isolates build/import discovery from bytecode
+enrichment. Every provider emits the same `NormalizedArtifactDescriptor`:
+build-root ownership, provider identity, scope, classpath/module-path status,
+coordinate, and optional header, full-binary, and source JAR paths.
+
+The default registry contains:
+
+| Provider | Authority |
+| --- | --- |
+| `bazel-java-info` | `JavaInfo` compile-time and runtime JARs from the generated external model |
+| `maven-m2e` | Runtime classpath imported by M2E into JDT LS |
+| `gradle-buildship` | Runtime classpath imported by Buildship into JDT LS |
+| `jdt-ls` | Generic fallback through `java.project.getClasspaths` |
+| `explicit-manifest` | User-supplied normalized classpath manifest |
+
+Maven and Gradle providers intentionally query JDT LS after import instead of
+running Maven or Gradle again. The JDT extension commands are invoked through
+`workspace/executeCommand`; all imported projects returned by
+`java.project.getAll` are queried, including module paths. Provider evidence is
+merged when a mixed build root reports the same JAR through M2E and Buildship.
+
+An explicit manifest can be placed at
+`.gitnexus/artifact-classpath.json`, passed repeatedly with
+`--artifact-classpath-manifest /path/to/manifest.json`, or configured through
+`GITNEXUS_ARTIFACT_CLASSPATH_MANIFEST`. It accepts either `classpath` strings or
+structured `artifacts` entries:
+
+```json
+{
+  "artifacts": [{
+    "classpathEntryPath": "lib/header_demo.jar",
+    "headerJarPath": "lib/header_demo.jar",
+    "binaryJarPath": "lib/demo.jar",
+    "sourceJarPath": "lib/demo-sources.jar",
+    "coordinate": "example:demo:1.0",
+    "scope": "runtime",
+    "modulePath": false
+  }]
+}
+```

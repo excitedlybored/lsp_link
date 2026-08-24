@@ -69,7 +69,8 @@ CREATE NODE TABLE LspCallSite (
 export const LSP_OCCURRENCE_SCHEMA = `
 CREATE NODE TABLE LspOccurrence (
   id STRING, runId STRING, serverId STRING, documentId STRING,
-  capability STRING, uri STRING,
+  capability STRING, requestUri STRING, requestLine INT64, requestCharacter INT64,
+  uri STRING,
   startLine INT64, startCharacter INT64, endLine INT64, endCharacter INT64,
   selectionStartLine INT64, selectionStartCharacter INT64,
   selectionEndLine INT64, selectionEndCharacter INT64,

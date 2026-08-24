@@ -133,7 +133,11 @@ export class LspAdapterRegistry {
     const selected = rootIds ? new Set(rootIds) : undefined;
     const roots = this.getJavaBuildRoots(key).filter((root) => !selected || selected.has(root.id));
     const preparation = prepareBazelProjectModels(roots).then((report) => {
-      for (const result of report.roots) this.preparedBazelRoots.add(path.resolve(result.workspacePath));
+      for (const result of report.roots) {
+        if (result.status === 'generated' || result.status === 'cached') {
+          this.preparedBazelRoots.add(path.resolve(result.workspacePath));
+        }
+      }
       return report;
     });
     this.bazelPreparations.set(selectionKey, preparation);

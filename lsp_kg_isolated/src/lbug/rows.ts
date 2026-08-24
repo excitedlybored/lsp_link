@@ -135,6 +135,9 @@ export interface LspOccurrenceRow extends FlatRangeRow {
   serverId: string;
   documentId: string;
   capability: string;
+  requestUri: Nullable<string>;
+  requestLine: Nullable<number>;
+  requestCharacter: Nullable<number>;
   uri: string;
   selectionStartLine: Nullable<number>;
   selectionStartCharacter: Nullable<number>;
@@ -351,6 +354,9 @@ export const toOccurrenceRow = (value: LspOccurrence): LspOccurrenceRow => {
     serverId: value.serverId,
     documentId: value.documentId,
     capability: value.capability,
+    requestUri: value.requestUri ?? null,
+    requestLine: value.requestPosition?.line ?? null,
+    requestCharacter: value.requestPosition?.character ?? null,
     uri: value.uri,
     ...flattenRange(value.range),
     selectionStartLine: value.selectionRange?.start.line ?? null,

@@ -87,6 +87,7 @@ export type LspObservationStatus =
   | 'excluded'
   | 'failed'
   | 'timeout'
+  | 'partial'
   | 'empty'
   | 'observed'
   | 'mapped'
@@ -260,6 +261,9 @@ export interface LspOccurrence {
   serverId: string;
   documentId: string;
   capability: string;
+  /** Cursor sent to the provider; retained even when a Location has no origin. */
+  requestUri?: string;
+  requestPosition?: LspPosition;
   /** URI and range returned by the server. */
   uri: string;
   range: LspRange;

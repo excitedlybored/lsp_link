@@ -120,6 +120,7 @@ test('generates and caches an exact Bazel JavaInfo classpath model', async () =>
       path.join(root, 'execroot/bazel-out/app.jar'),
       path.join(root, 'execroot/external/maven/spring-context.jar'),
     ]);
+    assert.deepEqual(model.runtimeClasspath, model.classpath);
     assert.deepEqual(model.sourcePaths, ['src/main/java']);
 
     fs.writeFileSync(fakeBazel, '#!/bin/sh\nexit 99\n');
