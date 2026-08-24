@@ -145,7 +145,7 @@ export async function prepareBazelProjectModels(
   candidates.sort((left, right) => Number(preferred.has(right.id)) - Number(preferred.has(left.id)) || left.id.localeCompare(right.id));
   const requestedConcurrency = options.concurrency
     ?? positiveInteger(process.env.GITNEXUS_JDT_BAZEL_PREPARE_CONCURRENCY)
-    ?? 3;
+    ?? 4;
   const concurrency = Math.max(1, Math.min(
     candidates.length || 1,
     requestedConcurrency

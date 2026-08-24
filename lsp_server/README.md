@@ -107,6 +107,6 @@ or Bazel classpaths from leaking into one another. Persisted LSP relationships i
 and build-system evidence.
 
 Before those memory-bounded JDT sessions start, Bazel classpaths are prepared concurrently. The default pool
-contains three Bazel processes and the repository-wide preparation budget is ten minutes. Override these with
+contains four Bazel processes and the repository-wide preparation budget is ten minutes. Override these with
 `GITNEXUS_JDT_BAZEL_PREPARE_CONCURRENCY` and `GITNEXUS_JDT_BAZEL_PREPARE_TIMEOUT_MS`. A failed or timed-out
 root is recorded as failed without blocking successful roots, and cached roots normally complete immediately.
