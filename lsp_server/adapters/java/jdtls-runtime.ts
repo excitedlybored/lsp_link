@@ -13,6 +13,8 @@ import * as os from 'os';
 import { createHash } from 'crypto';
 import { globSync } from 'glob';
 
+const VENDORED_JDTLS_VERSION = '1.57.0';
+
 export interface JdtlsRuntime {
   jdkJavaBin: string;
   jdkMajorVersion: number;
@@ -165,26 +167,58 @@ export class JdtlsRuntimeLocator {
   }
 
   private static findEquinoxInstall(): { equinoxLauncherJar: string; osgiConfigDir: string } {
+    for (const workspaceRoot of ancestorDirectories(process.cwd())) {
+      const bundled = runtimeInstall(path.join(workspaceRoot, 'vendor', 'jdtls', VENDORED_JDTLS_VERSION));
+      if (bundled) return bundled;
+    }
+
     const serverDirs = [
       ...globSync(path.join(os.homedir(), '.vscode/extensions/redhat.java-*/server')),
       ...globSync(path.join(os.homedir(), '.cursor/extensions/redhat.java-*/server')),
     ];
 
     for (const serverDir of serverDirs) {
-      const launcherJars = globSync(path.join(serverDir, 'plugins/org.eclipse.equinox.launcher_*.jar'));
-      const osgiConfigDir = [
-        path.join(serverDir, 'config_mac_arm'),
-        path.join(serverDir, 'config_mac'),
-        path.join(serverDir, 'config_linux'),
-        path.join(serverDir, 'config_win'),
-      ].find((dir) => fs.existsSync(dir));
-
-      if (launcherJars.length > 0 && osgiConfigDir) {
-        return { equinoxLauncherJar: launcherJars[0], osgiConfigDir };
-      }
+      const installed = runtimeInstall(serverDir);
+      if (installed) return installed;
     }
 
-    throw new Error('Eclipse JDT.LS launcher not found in ~/.vscode/extensions or ~/.cursor/extensions.');
+    throw new Error(
+      `Eclipse JDT.LS launcher not found. Expected vendor/jdtls/${VENDORED_JDTLS_VERSION} or a Red Hat Java extension in ~/.vscode/extensions or ~/.cursor/extensions.`
+    );
+  }
+}
+
+function runtimeInstall(serverDir: string): { equinoxLauncherJar: string; osgiConfigDir: string } | undefined {
+  const launcherJars = globSync(path.join(serverDir, 'plugins/org.eclipse.equinox.launcher_*.jar'));
+  const osgiConfigDir = jdtlsConfigDirectories(serverDir).find((dir) => fs.existsSync(dir));
+  return launcherJars.length > 0 && osgiConfigDir
+    ? { equinoxLauncherJar: launcherJars.sort()[0], osgiConfigDir }
+    : undefined;
+}
+
+function jdtlsConfigDirectories(serverDir: string): string[] {
+  if (process.platform === 'darwin') {
+    return process.arch === 'arm64'
+      ? [path.join(serverDir, 'config_mac_arm'), path.join(serverDir, 'config_mac')]
+      : [path.join(serverDir, 'config_mac')];
+  }
+  if (process.platform === 'linux') {
+    return process.arch === 'arm64'
+      ? [path.join(serverDir, 'config_linux_arm'), path.join(serverDir, 'config_linux')]
+      : [path.join(serverDir, 'config_linux')];
+  }
+  if (process.platform === 'win32') return [path.join(serverDir, 'config_win')];
+  return [];
+}
+
+function ancestorDirectories(start: string): string[] {
+  const directories: string[] = [];
+  let current = path.resolve(start);
+  while (true) {
+    directories.push(current);
+    const parent = path.dirname(current);
+    if (parent === current) return directories;
+    current = parent;
   }
 }
 

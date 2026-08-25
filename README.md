@@ -8,8 +8,8 @@ derived call normalization, and JVM artifact enrichment are separate stages.
 
 Requirements:
 
-- Node.js 20 or 22
-- A JDK: Java 21 or Java 25
+- Node.js 20.17+ or 22.9+, with npm 9.2+
+- A JDK: Java 21 or Java 25. Eclipse JDT.LS 1.57.0 is bundled; no editor installation is required.
 - `uv` and Python 3.12 only when using the Python analyzer
 
 Clone and install. npm dependencies are bundled in this repository; the

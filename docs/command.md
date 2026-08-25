@@ -1,6 +1,7 @@
 # Command reference
 
 Run all commands from the repository root after `./install.sh` unless noted.
+Use Node.js 20.17+ or 22.9+ with npm 9.2+.
 
 ## Install
 
@@ -9,7 +10,9 @@ Run all commands from the repository root after `./install.sh` unless noted.
 ```
 
 This uses the checked-in `vendor/npm` tarballs with `npm ci --offline`; it does
-not contact Artifactory or another npm registry.
+not contact Artifactory or another npm registry. It also verifies the bundled
+Eclipse JDT.LS runtime in `vendor/jdtls/1.57.0`; install only a JDK 21+ to use
+Java indexing.
 
 ## Build a knowledge graph
 

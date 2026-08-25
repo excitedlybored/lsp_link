@@ -16,7 +16,10 @@ Artifactory:
 The root `.npmrc` enforces offline installation and `./install.sh` runs `npm ci
 --offline`. Do not commit an Artifactory URL or authentication token in this
 repository. Java JDT.LS, clangd, rust-analyzer, and the other non-Node language
-servers remain separately installed system/runtime prerequisites.
+servers remain separately installed system/runtime prerequisites. Eclipse
+JDT.LS 1.57.0 is the exception: its official distribution is bundled at
+`vendor/jdtls/1.57.0` and is selected before an installed editor extension.
+Only a JDK 21+ remains necessary for Java indexing.
 
 ---
 
