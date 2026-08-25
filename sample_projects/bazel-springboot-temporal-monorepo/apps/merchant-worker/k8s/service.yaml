@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: Service
+metadata: {name: merchant-worker, namespace: temporal-demo}
+spec:
+  selector: {app: merchant-worker}
+  ports: [{name: http, port: 80, targetPort: 8107}]

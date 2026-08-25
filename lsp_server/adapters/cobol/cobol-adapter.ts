@@ -5,7 +5,7 @@
  *   1. Broadcom / Eclipse Che4z COBOL LSP (`che-che4z-lsp-for-cobol` / Code4z)
  *   2. IBM Z Open Editor COBOL Language Server
  *   3. GnuCOBOL / Superbol LSP (`superbol-lsp`, `gnucobol-lsp`)
- *   4. Built-in Tree-sitter COBOL Ast fallback (resolves sections, paragraphs, COPYBOOKs, PERFORM/CALL)
+ *   4. A separately configured COBOL language server when the preferred server is unavailable
  */
 
 import * as fs from 'fs';

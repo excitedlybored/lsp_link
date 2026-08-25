@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MCP stdio server: OpenCypher over GitNexus Ladybug (`.gitnexus/lbug`)."""
+"""MCP stdio server: OpenCypher over legacy and LSP-native LadybugDB."""
 
 from __future__ import annotations
 
@@ -20,9 +20,11 @@ from query import graph_schema as load_graph_schema
 mcp = FastMCP(
     "lbug-analyzer",
     instructions=(
-        "Query the GitNexus knowledge graph in .gitnexus/lbug with read-only OpenCypher. "
+        "Query a LadybugDB graph with read-only OpenCypher. The input may be a direct .lbug "
+        "file or a GitNexus project containing .gitnexus/lbug. "
         "Call graph_schema first, then opencypher_query. Bind values with $name and parameters_json. "
-        "Edges are CodeRelation with a type property (CALLS, IMPLEMENTS, …). "
+        "LSP-native edges are LspRelation(kind), and dependency bytecode edges are JvmRelation(kind). "
+        "Legacy graphs use CodeRelation(type). "
         "Default repo is LBUG_REPO or the process cwd."
     ),
 )
@@ -30,7 +32,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 def graph_schema(repo: str = "") -> str:
-    """List Ladybug node/rel tables and CodeRelation type counts. Call before writing Cypher."""
+    """List node/relationship tables and semantic relation-kind counts."""
     try:
         return dumps(load_graph_schema(repo or None))
     except Exception as exc:
@@ -44,7 +46,7 @@ def opencypher_query(
     parameters_json: str = "{}",
     limit: int = 100,
 ) -> str:
-    """Run read-only OpenCypher against .gitnexus/lbug.
+    """Run read-only OpenCypher against a .lbug file or indexed project.
 
     Use $param in cypher and pass JSON object parameters_json, e.g. {"needle": "login"}.
     Writes (CREATE/MERGE/DELETE/SET/COPY/…) are rejected.

@@ -1,36 +1,37 @@
-# analyzer
+# Analyzer
 
-Python package that **reads** a GitNexus Ladybug DB (`.gitnexus/lbug`). It does not parse source.
+`analyzer` is the read-only consumer of LSP-native LadybugDB databases. It does
+not crawl source, start language servers, or mutate graph data.
 
-Agents should use the **MCP server** (`opencypher_query`, `graph_schema`). CLIs (`query_db.py`, flows, boundaries, visualizer) stay for humans.
-
-## MCP (OpenCypher)
+## OpenCypher MCP server
 
 ```bash
 uv pip install -r analyzer/requirements.txt
-# Indexed repo first:
-npm run analyze -- /path/to/project
-
-# Stdio MCP (Cursor / any MCP host)
-LBUG_REPO=/path/to/project npm run mcp:analyzer
+LBUG_REPO=/tmp/repository.lbug npm run mcp:analyzer
 ```
 
-This repo’s Cursor config is [`.cursor/mcp.json`](../.cursor/mcp.json). Point `LBUG_REPO` at the tree you indexed (the directory that contains `.gitnexus/lbug`).
+Available tools:
 
-Tools:
-
-| Tool | Role |
+| Tool | Purpose |
 | --- | --- |
-| `graph_schema` | Tables + `CodeRelation` type counts + example MATCH queries |
-| `opencypher_query` | Read-only OpenCypher. Use `$name` + `parameters_json`. Cap `limit` (max 500). |
+| `graph_schema` | List node/relation tables and relation-kind counts |
+| `opencypher_query` | Execute bounded, read-only OpenCypher with parameters |
 
-Writes (`CREATE`, `MERGE`, `DELETE`, `SET`, `COPY`, …) are rejected. The DB is opened `read_only`.
+`CREATE`, `MERGE`, `DELETE`, `SET`, `COPY`, and other write clauses are
+rejected, and LadybugDB is opened in read-only mode.
 
 ## CLI
 
 ```bash
-uv pip install -r analyzer/requirements.txt
-npm run flows -- sample_projects/spring-boot-demo
-npm run boundaries -- sample_projects/spring-boot-demo
-uv run python analyzer/query_db.py sample_projects/spring-boot-demo summary
+npm run graph:summary -- /tmp/repository.lbug
+npm run lbug:read -- /tmp/repository.lbug
+npm run rules:analyze -- /tmp/repository.lbug --pack temporal
 ```
+
+The typed client exposes exact symbol kinds and ranges, individual
+`LspCallSite` observations, occurrence mappings, capability coverage, and the
+separate JVM artifact-enrichment model.
+
+Framework-specific interpretation belongs in [`rules`](rules/README.md). Each
+technology is an isolated rule pack containing its OpenCypher queries and
+Python mapping logic; Temporal is the first implementation.

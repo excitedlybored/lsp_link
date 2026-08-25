@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation-api
+  namespace: temporal-demo
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: recommendation-api}}
+  template:
+    metadata: {labels: {app: recommendation-api}}
+    spec:
+      serviceAccountName: recommendation-api
+      containers:
+        - name: app
+          image: REGION-docker.pkg.dev/PROJECT/temporal-demo/recommendation-api:TAG
+          ports: [{containerPort: 8108}]
+          resources:
+            requests: {cpu: 250m, memory: 384Mi}
+            limits: {cpu: "1", memory: 768Mi}
+          readinessProbe: {tcpSocket: {port: 8108}, initialDelaySeconds: 15, periodSeconds: 10}
+          env:
+            - {name: TEMPORAL_TARGET, value: "temporal-frontend.temporal.svc.cluster.local:7233"}
+            - {name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka.temporal-demo.svc.cluster.local:9092"}
+            - name: MONGODB_URI
+              valueFrom: {secretKeyRef: {name: shared-mongodb, key: uri}}

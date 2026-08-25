@@ -1,14 +1,18 @@
-"""Read-only OpenCypher against a GitNexus Ladybug (`.gitnexus/lbug`) directory."""
+"""Read-only OpenCypher against legacy or LSP-native LadybugDB databases."""
 
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Any, Mapping
 
 import ladybug
+
+try:
+    from .database import resolve_lbug_path
+except ImportError:
+    from database import resolve_lbug_path
 
 WRITE_TOKEN = re.compile(
     r"\b(CREATE|MERGE|DELETE|DETACH|SET|DROP|ALTER|COPY|INSTALL|ATTACH|LOAD|CHECKPOINT|EXPORT|IMPORT)\b",
@@ -20,17 +24,8 @@ MAX_LIMIT = 500
 
 
 def resolve_lbug_dir(repo: str | None = None) -> Path:
-    raw = (repo or os.environ.get("LBUG_REPO") or os.getcwd()).strip()
-    root = Path(raw).expanduser().resolve()
-    if root.name == "lbug" and root.is_dir():
-        return root
-    nested = root / ".gitnexus" / "lbug"
-    if nested.exists():
-        return nested
-    raise FileNotFoundError(
-        f"No Ladybug DB at {nested}. Run `npm run analyze -- {root}` first, "
-        "or pass repo= / set LBUG_REPO to an indexed project."
-    )
+    """Compatibility alias; the result may be a single ``.lbug`` file."""
+    return resolve_lbug_path(repo)
 
 
 def assert_read_only_cypher(cypher: str) -> None:
@@ -102,21 +97,45 @@ def graph_schema(repo: str | None = None) -> dict[str, Any]:
         repo=repo,
         limit=MAX_LIMIT,
     )
-    rels = execute_opencypher(
-        "MATCH ()-[r:CodeRelation]->() RETURN r.type AS type, count(r) AS n ORDER BY n DESC;",
-        repo=repo,
-        limit=MAX_LIMIT,
-    )
+    table_types = {row[0]: row[1] for row in tables["rows"]}
+    relation_counts: dict[str, list[list[Any]]] = {}
+    if "LspRelation" in table_types:
+        relation_counts["LspRelation"] = execute_opencypher(
+            "MATCH ()-[r:LspRelation]->() RETURN r.kind AS kind, count(r) AS n ORDER BY n DESC;",
+            repo=repo, limit=MAX_LIMIT,
+        )["rows"]
+    if "JvmRelation" in table_types:
+        relation_counts["JvmRelation"] = execute_opencypher(
+            "MATCH ()-[r:JvmRelation]->() RETURN r.kind AS kind, count(r) AS n ORDER BY n DESC;",
+            repo=repo, limit=MAX_LIMIT,
+        )["rows"]
+    if "CodeRelation" in table_types:
+        relation_counts["CodeRelation"] = execute_opencypher(
+            "MATCH ()-[r:CodeRelation]->() RETURN r.type AS type, count(r) AS n ORDER BY n DESC;",
+            repo=repo, limit=MAX_LIMIT,
+        )["rows"]
+
+    lsp_native = "LspRelation" in relation_counts
     return {
         "database": tables["database"],
         "tables": tables["rows"],
-        "code_relation_types": rels["rows"],
-        "example_queries": [
-            "MATCH (c:Class) RETURN c.name, c.filePath LIMIT 20",
-            "MATCH (a:Method)-[r:CodeRelation {type: 'CALLS'}]->(b) "
-            "RETURN a.name, b.name, r.confidence LIMIT 30",
-            "MATCH (n) WHERE n.name CONTAINS $needle RETURN labels(n), n.name, n.filePath LIMIT 20",
-        ],
+        "schema_family": "lsp-native" if lsp_native else "gitnexus-legacy",
+        "relation_kinds": relation_counts,
+        "example_queries": (
+            [
+                "MATCH (s:LspMethodSymbol) RETURN s.name, s.uri, s.startLine LIMIT 20",
+                "MATCH (caller)-[h:LspRelation {kind: 'HAS_CALLSITE'}]->(site:LspCallSite) "
+                "OPTIONAL MATCH (site)-[r:LspRelation {kind: 'RESOLVES_TO'}]->(callee) "
+                "RETURN caller.name, site.startLine, site.startCharacter, callee.name LIMIT 30",
+                "MATCH (c:LspCoverage) RETURN c.capability, c.status, c.failureCount, c.timeoutCount LIMIT 50",
+                "MATCH (a:JvmArtifact)-[:JvmRelation {kind: 'CONTAINS_CLASS'}]->(c:JvmClass) "
+                "RETURN a.coordinate, c.binaryName LIMIT 20",
+            ] if lsp_native else [
+                "MATCH (c:Class) RETURN c.name, c.filePath LIMIT 20",
+                "MATCH (a:Method)-[r:CodeRelation {type: 'CALLS'}]->(b) "
+                "RETURN a.name, b.name, r.confidence LIMIT 30",
+            ]
+        ),
     }
 
 

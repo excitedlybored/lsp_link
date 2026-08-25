@@ -5,23 +5,163 @@ metadata: {name: temporal-demo}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: workflow-api
+  name: accounting-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: workflow-api@PROJECT.iam.gserviceaccount.com}
+  annotations: {iam.gke.io/gcp-service-account: accounting-api@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: workflow-worker
+  name: accounting-worker
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: workflow-worker@PROJECT.iam.gserviceaccount.com}
+  annotations: {iam.gke.io/gcp-service-account: accounting-worker@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: orders-api
+  name: analytics-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: orders-api@PROJECT.iam.gserviceaccount.com}
+  annotations: {iam.gke.io/gcp-service-account: analytics-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: analytics-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: analytics-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: audit-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: audit-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: audit-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: audit-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: billing-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: billing-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: catalog-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: catalog-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: checkout-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: checkout-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: checkout-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: checkout-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: customer-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: customer-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: customer-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: customer-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: device-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: device-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: device-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: device-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fraud-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: fraud-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fraud-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: fraud-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: identity-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: identity-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inventory-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: inventory-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loyalty-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: loyalty-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loyalty-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: loyalty-worker@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: merchant-api
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: merchant-api@PROJECT.iam.gserviceaccount.com}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: merchant-worker
+  namespace: temporal-demo
+  annotations: {iam.gke.io/gcp-service-account: merchant-worker@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -33,33 +173,9 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: reporting-api
+  name: orders-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: reporting-api@PROJECT.iam.gserviceaccount.com}
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: reconciliation-worker
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: reconciliation-worker@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: catalog-api
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: catalog-api@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: inventory-worker
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: inventory-worker@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: orders-api@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -67,7 +183,6 @@ metadata:
   name: payment-api
   namespace: temporal-demo
   annotations: {iam.gke.io/gcp-service-account: payment-api@PROJECT.iam.gserviceaccount.com}
-
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -75,23 +190,6 @@ metadata:
   name: payment-worker
   namespace: temporal-demo
   annotations: {iam.gke.io/gcp-service-account: payment-worker@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: shipping-api
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: shipping-api@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: shipping-worker
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: shipping-worker@PROJECT.iam.gserviceaccount.com}
-
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -99,63 +197,34 @@ metadata:
   name: pricing-api
   namespace: temporal-demo
   annotations: {iam.gke.io/gcp-service-account: pricing-api@PROJECT.iam.gserviceaccount.com}
-
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: billing-worker
+  name: recommendation-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: billing-worker@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: recommendation-api@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: customer-api
+  name: recommendation-worker
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: customer-api@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: recommendation-worker@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: customer-worker
+  name: reconciliation-worker
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: customer-worker@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: reconciliation-worker@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: search-api
+  name: reporting-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: search-api@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: search-worker
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: search-worker@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: fraud-api
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: fraud-api@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: fraud-worker
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: fraud-worker@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: reporting-api@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -163,7 +232,6 @@ metadata:
   name: returns-api
   namespace: temporal-demo
   annotations: {iam.gke.io/gcp-service-account: returns-api@PROJECT.iam.gserviceaccount.com}
-
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -171,67 +239,45 @@ metadata:
   name: returns-worker
   namespace: temporal-demo
   annotations: {iam.gke.io/gcp-service-account: returns-worker@PROJECT.iam.gserviceaccount.com}
-
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: loyalty-api
+  name: search-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: loyalty-api@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: search-api@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: loyalty-worker
+  name: search-worker
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: loyalty-worker@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: search-worker@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: identity-api
+  name: shipping-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: identity-api@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: shipping-api@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: identity-worker
+  name: shipping-worker
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: identity-worker@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: shipping-worker@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: analytics-api
+  name: workflow-api
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: analytics-api@PROJECT.iam.gserviceaccount.com}
-
+  annotations: {iam.gke.io/gcp-service-account: workflow-api@PROJECT.iam.gserviceaccount.com}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: analytics-worker
+  name: workflow-worker
   namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: analytics-worker@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: audit-api
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: audit-api@PROJECT.iam.gserviceaccount.com}
-
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: audit-worker
-  namespace: temporal-demo
-  annotations: {iam.gke.io/gcp-service-account: audit-worker@PROJECT.iam.gserviceaccount.com}
+  annotations: {iam.gke.io/gcp-service-account: workflow-worker@PROJECT.iam.gserviceaccount.com}

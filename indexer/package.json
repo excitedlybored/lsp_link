@@ -1,0 +1,20 @@
+{
+  "name": "lsp-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LSP-native repository crawler and LadybugDB knowledge-graph writer",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.runtime.json",
+    "index": "tsx src/cli/build.ts",
+    "test": "npm run build && node --test test/*.test.mjs && tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@ladybugdb/core": "0.19.1",
+    "glob": "file:../lsp_server/vendor/glob-13.0.6.tgz",
+    "tsx": "file:../lsp_server/vendor/tsx-4.23.12.tgz"
+  },
+  "devDependencies": {
+    "typescript": "file:../lsp_server/vendor/typescript-5.9.3.tgz"
+  }
+}

@@ -1,0 +1,6 @@
+apiVersion: v1
+kind: Service
+metadata: {name: recommendation-worker, namespace: temporal-demo}
+spec:
+  selector: {app: recommendation-worker}
+  ports: [{name: http, port: 80, targetPort: 8109}]

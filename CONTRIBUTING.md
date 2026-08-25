@@ -22,11 +22,10 @@ npm install
 
 ## 2. Running Local Commands
 
-### Knowledge graph (gitnexus_ts_isolated)
+### Indexer
 ```bash
-npm run analyze -- sample_projects/spring-boot-demo
-npm run analyze:no-lsp -- sample_projects/spring-boot-demo
-npm run compare -- sample_projects/spring-boot-demo
+npm run index -- build sample_projects/spring-boot-demo --output /tmp/spring-demo.lbug
+npm run graph:summary -- /tmp/spring-demo.lbug
 ```
 
 ### LSP query CLI (`lsp_server/`)
@@ -38,12 +37,13 @@ npm run query -- context sample_projects/spring-boot-demo --symbol DemoWorkflow
 
 ### Analyzer MCP / Python (`analyzer/`)
 ```bash
-npm run boundaries -- sample_projects/spring-boot-demo
-npm run flows -- sample_projects/spring-boot-demo
-LBUG_REPO=sample_projects/spring-boot-demo npm run mcp:analyzer
+LBUG_REPO=/tmp/spring-demo.lbug npm run mcp:analyzer
+npm run rules:analyze -- /tmp/spring-demo.lbug --pack temporal
 ```
 
-Python must only query `.gitnexus/lbug` (OpenCypher via MCP or CLI). Language adapters belong in `lsp_server/adapters/<lang>/` (keep the indexer copy in sync).
+Python only queries an existing `.lbug` database. Language adapters belong in
+`lsp_server/adapters/<lang>/`; graph normalization and persistence belong in
+`indexer/`.
 
 ---
 

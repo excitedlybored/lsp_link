@@ -17,4 +17,5 @@ cd ../04_rpc_dynamic_proxy_temporal
 git clone --depth 1 https://github.com/temporalio/sdk-java.git temporal-sdk-java
 ```
 
-Indexing and query code live in `gitnexus_ts_isolated/` and `lsp_server/`.
+Indexing lives in `indexer/`, language-server integration in `lsp_server/`, and
+read-only queries in `analyzer/`.

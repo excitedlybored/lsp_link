@@ -14,11 +14,14 @@ public class NotificationWorkflowImpl implements NotificationWorkflow {
   public List<DeliveryResult> dispatch(Notification notification) {
     List<DeliveryResult> results = new ArrayList<>();
     for (Channel channel : notification.channels()) {
-      results.add(switch (channel) {
-        case EMAIL -> email.deliverEmail(notification);
-        case SMS -> sms.deliverSms(notification);
-        case PUSH -> push.deliverPush(notification);
-      });
+      DeliveryResult result;
+      switch (channel) {
+        case EMAIL: result = email.deliverEmail(notification); break;
+        case SMS: result = sms.deliverSms(notification); break;
+        case PUSH: result = push.deliverPush(notification); break;
+        default: throw new IllegalArgumentException("Unsupported notification channel " + channel);
+      }
+      results.add(result);
     }
     return results;
   }

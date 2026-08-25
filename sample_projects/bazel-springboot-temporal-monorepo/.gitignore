@@ -1,3 +1,9 @@
-bazel-*/
+bazel-*
+.bazel-verify/
 .bazelrc.user
 MODULE.bazel.lock
+
+# The repository-level `gitnexus/` clone rule must not hide this fixture's
+# Java package path (`src/main/java/dev/gitnexus`).
+!apps/*/src/main/java/dev/gitnexus/
+!apps/*/src/main/java/dev/gitnexus/**

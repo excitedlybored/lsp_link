@@ -6,8 +6,6 @@
   "scripts": {
     "server": "tsx server_launcher.ts",
     "query": "tsx query.ts",
-    "graph": "tsx build-lsp-graph.ts",
-    "kg": "tsx build-lsp-kg.ts",
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {

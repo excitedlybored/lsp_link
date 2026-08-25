@@ -75,7 +75,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     this.spawnLanguageServer(launch);
     this.openJsonRpcConnection();
     await this.performInitializeHandshake(workspacePath, launch);
-    this.notifyInitialized();
+    await this.notifyInitialized();
     await this.waitUntilWorkspaceReady(workspacePath);
   }
 
@@ -124,7 +124,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     if (!fs.existsSync(absPath)) return;
 
     try {
-      this.connection?.sendNotification('textDocument/didOpen', {
+      await this.connection?.sendNotification('textDocument/didOpen', {
         textDocument: {
           uri: this.toFileUri(absPath),
           languageId: this.language,
@@ -181,7 +181,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     const absPath = path.resolve(filePath);
     if (!this.openedDocuments.has(absPath) || !this.connection) return;
     try {
-      this.connection.sendNotification('textDocument/didClose', {
+      await this.connection.sendNotification('textDocument/didClose', {
         textDocument: { uri: this.toFileUri(absPath) },
       });
     } catch {
@@ -289,25 +289,30 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   public async shutdown(): Promise<void> {
+    const connection = this.connection;
+    const childProcess = this.process;
     const stdinAlive = Boolean(this.process?.stdin && !this.process.stdin.destroyed);
-    if (this.connection && stdinAlive) {
+    if (connection && stdinAlive) {
       try {
-        await this.connection.sendRequest('shutdown', {});
-        this.connection.sendNotification('exit', {});
+        await connection.sendRequest('shutdown', {});
+        // vscode-jsonrpc writes notifications asynchronously. Await the exit
+        // write before disposing its stream, otherwise concurrent adapters can
+        // surface ERR_STREAM_DESTROYED as an unhandled rejection.
+        await connection.sendNotification('exit', {});
       } catch {
         // Ignore shutdown errors
       }
     }
     try {
-      this.connection?.dispose();
+      connection?.dispose();
     } catch {
       // Ignore dispose errors
     }
     this.connection = null;
 
-    if (this.process) {
+    if (childProcess) {
       try {
-        this.process.kill('SIGTERM');
+        childProcess.kill('SIGTERM');
       } catch {
         // Already gone
       }
@@ -459,8 +464,8 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     }
   }
 
-  private notifyInitialized(): void {
-    this.connection?.sendNotification('initialized', {});
+  private async notifyInitialized(): Promise<void> {
+    await this.connection?.sendNotification('initialized', {});
   }
 
   private toFileUri(filePath: string): string {

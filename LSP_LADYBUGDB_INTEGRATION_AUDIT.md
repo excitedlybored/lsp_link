@@ -2,14 +2,16 @@
 
 ## Status
 
-The current implementation is not a complete Language Server Protocol integration into the LadybugDB knowledge model. It is an AST-owned graph followed by a best-effort LSP edge-enrichment pass.
+This document records the assumptions that motivated the LSP-native redesign.
+The legacy parser-owned graph described below has now been removed. The active
+implementation is split across `lsp_server/`, `indexer/`, and `analyzer/`.
 
 Until the integration is redesigned and coverage can be measured, descriptions such as "compiler ground truth", "compiler-verified graph", and "100% compiler precision" should be treated as unproven.
 
 ## Current Data Flow
 
 ```text
-Tree-sitter parsing
+Legacy parser crawl
   -> AST symbols and heuristic relationships
   -> LSP enrichment of selected CALLS and IMPLEMENTS relationships
   -> framework and scope-resolution phases
@@ -17,7 +19,9 @@ Tree-sitter parsing
   -> graph.json and LadybugDB
 ```
 
-The intended model should instead treat Tree-sitter, LSP servers, and framework analyzers as evidence providers. Canonical identity, reconciliation, provenance, and completeness belong to the knowledge base.
+The intended model should instead treat protocol servers, artifact analyzers,
+and framework analyzers as evidence providers. Canonical identity,
+reconciliation, provenance, and completeness belong to the knowledge base.
 
 ## Confirmed Invalid or Incomplete Assumptions
 
@@ -26,7 +30,7 @@ The intended model should instead treat Tree-sitter, LSP servers, and framework 
 It does not. There are duplicated adapter stacks under:
 
 - `lsp_server/`
-- `gitnexus_ts_isolated/src/lsp/`
+- the removed duplicate adapter stack
 
 LadybugDB ingestion uses the isolated copy. Newer document-symbol, definition, and reference APIs added to `lsp_server/` are therefore not automatically available to the indexer.
 
@@ -196,7 +200,7 @@ It does not address staleness or incremental provenance. The isolated LSP pipeli
 
 ## Isolated First-Class LSP Schema Decision
 
-The isolated implementation under `lsp_kg_isolated/` now treats every standard
+The implementation under `indexer/` now treats every standard
 LSP `SymbolKind` as a physical LadybugDB node class. There is no catch-all
 `LspSymbol` table:
 
@@ -244,7 +248,9 @@ the resulting observation batches to this boundary.
 
 ### Principle
 
-Tree-sitter, LSP servers, framework extractors, and heuristic resolvers are evidence providers. They should not directly own canonical semantic truth.
+Protocol servers, artifact analyzers, framework extractors, and heuristic
+resolvers are evidence providers. They should not directly own canonical
+semantic truth.
 
 ```text
 Canonical Symbol
@@ -443,4 +449,5 @@ The integration should not be called complete until:
 
 ## Central Architectural Decision
 
-**Tree-sitter and LSP are evidence providers. LadybugDB must own canonical identity, provenance, reconciliation, completeness, and the derived semantic graph.**
+**Evidence providers do not own canonical truth. LadybugDB must own identity,
+provenance, reconciliation, completeness, and the derived semantic graph.**

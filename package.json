@@ -5,41 +5,21 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "lsp_server",
-    "gitnexus_ts_isolated",
-    "lsp_kg_isolated"
+    "indexer",
+    "lsp_server"
   ],
   "scripts": {
-    "analyze": "tsx gitnexus_ts_isolated/src/cli/analyze.ts",
-    "analyze:no-lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts analyze --no-lsp",
-    "analyze:treesitter": "tsx gitnexus_ts_isolated/src/cli/analyze.ts analyze --pipeline treesitter",
-    "analyze:lsp": "tsx gitnexus_ts_isolated/src/cli/analyze.ts analyze --pipeline lsp",
-    "compare": "uv run python analyzer/graph_comparator.py",
-    "flows": "uv run python analyzer/flows_inspector.py",
-    "boundaries": "uv run python analyzer/ingress_egress_analyzer.py",
-    "boundaries:links": "uv run python analyzer/ingress_egress_analyzer.py links",
-    "sdks:list": "uv run python analyzer/ingress_egress_analyzer.py list-sdks",
-    "egress": "uv run python analyzer/egress_inspector.py",
+    "index": "tsx indexer/src/cli/build.ts",
     "lbug:read": "uv run python analyzer/lbug_client.py",
-    "workflow:export": "uv run python analyzer/workflow_pipeline.py",
-    "visualize": "uv run python analyzer/visualizer/server.py",
-    "test:examples": "npm run boundaries -- examples/01_spring_boot_banking && npm run boundaries -- examples/02_python_fastapi_quant && npm run boundaries -- examples/03_typescript_express_gateway",
     "graph:summary": "uv run python analyzer/query_db.py",
     "mcp:analyzer": "uv run python analyzer/mcp_server.py",
+    "rules:analyze": "uv run python -m analyzer.rules.run",
     "query": "tsx lsp_server/query.ts",
-    "graph:lsp": "tsx lsp_server/build-lsp-graph.ts",
-    "lsp:kg:build": "npm run build --workspace lsp-kg-isolated",
-    "lsp:kg:test": "npm run test --workspace lsp-kg-isolated",
+    "indexer:build": "npm run build --workspace lsp-indexer",
+    "indexer:test": "npm run test --workspace lsp-indexer",
     "server": "tsx lsp_server/server_launcher.ts",
     "build": "npm --workspaces run build --if-present",
     "test": "npm --workspaces run test --if-present"
-  },
-  "dependencies": {
-    "graphology": "^0.26.0",
-    "graphology-indices": "^0.17.0",
-    "graphology-utils": "^2.3.0",
-    "mnemonist": "^0.40.3",
-    "pandemonium": "^2.4.0"
   },
   "overrides": {
     "vscode-languageserver-protocol": {
