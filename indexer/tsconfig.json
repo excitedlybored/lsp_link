@@ -12,6 +12,7 @@
   },
   "include": [
     "src/artifact/**/*.ts",
+    "src/derived/**/*.ts",
     "src/embeddings/**/*.ts",
     "src/ingest/**/*.ts",
     "src/lbug/**/*.ts",

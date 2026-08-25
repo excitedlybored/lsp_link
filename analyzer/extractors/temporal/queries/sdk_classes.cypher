@@ -1,5 +1,6 @@
-MATCH (class:JvmClass)
-WHERE class.binaryName STARTS WITH 'io.temporal.'
+MATCH (anchor:JvmClass), (class:JvmClass)
+WHERE anchor.binaryName = $workflowContractType
+  AND class.artifactId = anchor.artifactId
 RETURN class.id AS classId,
        class.artifactId AS artifactId,
        class.binaryName AS binaryName,

@@ -11,7 +11,8 @@ import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
 import { SpringBootLanguageServerAdapter } from '../adapters/java/spring-boot-adapter.js';
 import { springToolsEnabled } from '../adapters/java/spring-tools-runtime.js';
 import { BazelPreparationReport, prepareBazelProjectModels } from '../adapters/java/bazel-project-model.js';
-import { discoverJavaBuildRoots, JavaBuildRoot, ownerBuildRoot } from '../adapters/java/jdtls-runtime.js';
+import { discoverJavaBuildRoots, JavaBuildRoot, JdtlsWorkspace, ownerBuildRoot } from '../adapters/java/jdtls-runtime.js';
+import type { PreparedJdtlsShard } from '../adapters/java/jdtls-sharding.js';
 import { PyrightAdapter } from '../adapters/python/pyright-adapter.js';
 import { ClangdAdapter } from '../adapters/cpp/clangd-adapter.js';
 import { RustAnalyzerAdapter } from '../adapters/rust/rust-analyzer-adapter.js';
@@ -174,6 +175,67 @@ export class LspAdapterRegistry {
     }
   }
 
+  /** One long-lived JDT LS process serving several isolated Eclipse projects. */
+  public async getOrStartJavaShard(shard: PreparedJdtlsShard): Promise<ILspAdapter | null> {
+    const sessionKey = `java-shard:${shard.id}:${shard.workspacePath}`;
+    const active = this.activeAdapters.get(sessionKey);
+    if (active) return active;
+    const usesNativeImport = (root: JavaBuildRoot): boolean => {
+      if (root.systems.includes('bazel') || root.systems.length === 0) return false;
+      const workspace = JdtlsWorkspace.inspect(root.workspacePath, {
+        buildSystems: root.systems,
+        excludedRoots: root.excludedRoots,
+      });
+      return root.systems.some((kind) => kind !== 'bazel' && workspace.buildImportEnabled(kind));
+    };
+    const nativeBuildSystems = [...new Set(shard.roots
+      .filter(usesNativeImport)
+      .flatMap((root) => root.systems))];
+    const adapter = new JavaJdtlsAdapter({
+      processShardId: shard.id,
+      shardBuildRootIds: shard.roots.map((root) => root.id),
+      eclipseProjectPaths: shard.projectModels.map((model) =>
+        path.join(shard.workspacePath, 'projects', model.projectName)),
+      workspaceFolderPaths: [
+        ...shard.projectModels.map((model) =>
+          path.join(shard.workspacePath, 'projects', model.projectName)),
+        ...shard.roots.filter(usesNativeImport).map((root) => root.workspacePath),
+      ],
+      uriMappings: shard.projectModels.flatMap((model) =>
+        [...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort()
+          .map((sourcePath, index) => ({
+            sourcePath,
+            stagedPath: path.join(shard.workspacePath, 'projects', model.projectName, `source-${index}`),
+          }))),
+      buildSystems: nativeBuildSystems,
+      bazelModelPrepared: true,
+    });
+    try {
+      if (!(await adapter.isAvailable())) return null;
+      await adapter.start(shard.workspacePath);
+      await waitForImportedJavaProjects(adapter, shard.projectModels, shard.id);
+      this.activeAdapters.set(sessionKey, adapter);
+      if (springToolsEnabled()) {
+        const spring = new SpringBootLanguageServerAdapter(adapter, shard.id);
+        if (await spring.isAvailable()) {
+          try {
+            await spring.start(shard.workspacePath);
+            this.activeAdapters.set(`spring-shard:${shard.id}:${shard.workspacePath}`, spring);
+            this.javaCompanions.set(adapter, spring);
+          } catch (error) {
+            console.warn(`[LSP Registry] Spring Tools unavailable for ${shard.id}:`, error instanceof Error ? error.message : error);
+            try { await spring.shutdown(); } catch { /* partial startup */ }
+          }
+        }
+      }
+      return adapter;
+    } catch (error) {
+      console.warn(`[LSP Registry] Failed to start Java shard ${shard.id}:`, error instanceof Error ? error.message : error);
+      try { await adapter.shutdown(); } catch { /* partial startup */ }
+      return null;
+    }
+  }
+
   private createAdapter(language: string): ILspAdapter | undefined {
     switch (language) {
       case 'java': return new JavaJdtlsAdapter();
@@ -217,5 +279,42 @@ export class LspAdapterRegistry {
     this.javaLayouts.clear();
     this.preparedBazelRoots.clear();
     this.bazelPreparations.clear();
+  }
+}
+
+/**
+ * ServiceReady precedes completion of Eclipse project import. Requiring the
+ * project catalog and classpath commands prevents crawl results from depending
+ * on which shard happens to win an indexing race.
+ */
+async function waitForImportedJavaProjects(
+  adapter: ILspAdapter,
+  projectModels: PreparedJdtlsShard['projectModels'],
+  shardId: string,
+): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  const pending = new Map(projectModels
+    .filter((model) => model.representativeDocumentPath)
+    .map((model) => [model.buildRootId, model]));
+  do {
+    for (const [rootId, model] of pending) {
+      try {
+        const response = await adapter.request<{ classpaths?: unknown }>('workspace/executeCommand', {
+          command: 'java.project.getClasspaths',
+          arguments: [adapter.documentUri(model.representativeDocumentPath!), JSON.stringify({ scope: 'runtime' })],
+        });
+        const actual = new Set(Array.isArray(response.classpaths)
+          ? response.classpaths.filter((value): value is string => typeof value === 'string').map((value) => path.resolve(value))
+          : []);
+        if (model.languageServerClasspath.every((entry) => actual.has(path.resolve(entry)))) pending.delete(rootId);
+      } catch {
+        // Project import/indexing is still in flight.
+      }
+    }
+    if (pending.size === 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  } while (Date.now() < deadline);
+  if (pending.size > 0) {
+    console.warn(`[${shardId}] JDT classpath readiness incomplete for: ${[...pending.keys()].join(', ')}`);
   }
 }

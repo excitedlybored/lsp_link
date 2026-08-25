@@ -21,6 +21,11 @@ export class JvmArtifactRepository {
         for (const relation of chunk) await this.insertRelation(relation);
       });
     }
+    for (const chunk of chunks(batch.bindings)) {
+      await this.inTransaction(async () => {
+        for (const binding of chunk) await this.insertBinding(binding);
+      });
+    }
   }
 
   private async insertRowsInTransactions(table: JvmEntityKind, rows: Array<object>): Promise<void> {
@@ -53,6 +58,20 @@ export class JvmArtifactRepository {
     const statement = await this.prepare(
       `MATCH (source:${value.sourceKind} {id: $from}), (target:${value.targetKind} {id: $to}) ` +
       'CREATE (source)-[relation:JvmRelation {id: $id, kind: $kind, stageId: $stageId, status: $status, ordinal: $ordinal}]->(target)',
+    );
+    await closeResults(await this.connection.execute(statement, row));
+  }
+
+  private async insertBinding(value: JvmArtifactBatch['bindings'][number]): Promise<void> {
+    const row = {
+      from: value.sourceId, to: value.targetId, id: value.id, kind: value.kind,
+      stageId: value.stageId, status: value.status, confidence: value.confidence,
+      reason: value.reason,
+    };
+    const statement = await this.prepare(
+      `MATCH (source:${value.sourceKind} {id: $from}), (target:${value.targetKind} {id: $to}) ` +
+      'CREATE (source)-[binding:LspJvmBinding {id: $id, kind: $kind, stageId: $stageId, ' +
+      'status: $status, confidence: $confidence, reason: $reason}]->(target)',
     );
     await closeResults(await this.connection.execute(statement, row));
   }

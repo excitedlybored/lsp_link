@@ -28,6 +28,7 @@ test('retains normalized JARs outside ephemeral build output', (t) => {
   fs.rmSync(path.dirname(outputJar), { recursive: true, force: true });
   assert.ok(fs.existsSync(retained[0].classpathEntryPath));
   assert.equal(retained[0].classpathEntryPath, retained[0].binaryJarPath);
+  assert.deepEqual(retained[0].classpathEntryAliases, ['demo.jar']);
 });
 
 test('Bazel JavaInfo maps compile header JARs to authoritative runtime JARs', async (t) => {

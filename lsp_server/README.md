@@ -110,12 +110,18 @@ The registry discovers independent build roots before starting Java language ser
 - every nested Bazel `MODULE.bazel`, `WORKSPACE`, or `WORKSPACE.bazel`;
 - one unmanaged fallback root for Java files outside all detected builds.
 
-Each Java file is assigned to its nearest build root. JDT.LS sessions run sequentially per root with separate
-workspace data and nested foreign roots excluded from import. This bounds memory and prevents Maven, Gradle,
-or Bazel classpaths from leaking into one another. Persisted LSP relationships include structured build-root
-and build-system evidence.
+Each Java file is assigned to its nearest build root. The registry distributes roots over a bounded pool of
+persistent multi-project JDT.LS processes (four by default). Every Bazel root becomes a linked Eclipse project
+whose `.classpath` is generated from its exact `JavaInfo` model. Maven and Gradle roots remain native workspace
+folders while M2E or Buildship import is available; an existing Eclipse `.classpath` is the external-model
+fallback when native import is disabled. Unmanaged roots receive source-only Eclipse projects.
 
-Before those memory-bounded JDT sessions start, Bazel classpaths are prepared concurrently. The default pool
+Each logical `LspServer` remains root-scoped and records `processShardId`, while documents retain their original
+`buildRootId`. Before crawling, a shard waits for `java.project.getAll` to expose every expected project and
+resolves each runtime classpath. This preserves queryable project ownership even though several projects share
+one physical process, and avoids results depending on an unfinished JDT import.
+
+Before those memory-bounded JDT shards start, Bazel classpaths are prepared concurrently. The default pool
 contains four Bazel processes and the repository-wide preparation budget is ten minutes. Override these with
 `GITNEXUS_JDT_BAZEL_PREPARE_CONCURRENCY` and `GITNEXUS_JDT_BAZEL_PREPARE_TIMEOUT_MS`. A failed or timed-out
 root is recorded as failed without blocking successful roots, and cached roots normally complete immediately.

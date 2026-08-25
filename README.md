@@ -11,7 +11,7 @@ signature help have structured storage.
 ```text
 lsp_server/  language-server adapters, protocol contracts, and build import
 indexer/     crawl orchestration, artifact enrichment, and LadybugDB writes
-analyzer/    read-only Python queries and scalable rule packs
+analyzer/    read-only Python queries and semantic extractors
 ```
 
 The dependency direction is deliberate:
@@ -23,12 +23,22 @@ lsp_server -> protocol responses
 indexer -> normalized LSP/JVM observations -> *.lbug
                                               |
                                               v
-analyzer -> OpenCypher queries and rule-based interpretations
+analyzer -> evidence queries and semantic extraction
 ```
 
-Framework rules do not alter the canonical crawl. Temporal rules currently
-live under `analyzer/rules/packs/temporal`; Kafka and Spring rules can be added
-as sibling packs.
+Semantic extractors do not alter the canonical crawl. The Temporal extractor
+lives under `analyzer/extractors/temporal`; Kafka and Spring extractors can be
+added as siblings.
+
+Extractor inputs are restricted to LadybugDB. Detection uses stable framework
+class, annotation, and method identities; repository paths and fixed source
+coordinates are not valid semantic criteria.
+
+Semantic type declarations are resolved against `JvmClass` nodes from compiled
+dependency artifacts before extraction. `LspJvmBinding` relationships connect
+LSP hovers, symbols, and occurrences to those bytecode identities; extractors
+do not identify frameworks from hover text or URI substrings. Dependency
+sources are optional.
 
 ## Index a repository
 
@@ -36,7 +46,8 @@ as sibling packs.
 npm install
 npm run index -- build /path/to/repository \
   --output /tmp/repository.lbug \
-  --concurrency 4
+  --concurrency 4 \
+  --artifact-concurrency 4
 ```
 
 Java repositories may contain independent Bazel, Maven, Gradle, and unmanaged
@@ -51,12 +62,21 @@ binary, and source JARs and records bytecode-derived classes and calls in the
 The output path must not already exist. Build outputs are retained after each
 root finishes; cleanup is an explicit operator decision.
 
+The indexer writes atomic intermediate checkpoints beside the output (for
+example, `/tmp/repository.lbug.checkpoints`). Each completed build root, the
+merged LSP crawl, logical-call normalization, and JVM artifact enrichment are
+saved independently. Repeating the same command resumes compatible work and,
+after a database-open or persistence failure, retries only LadybugDB writing.
+Source and build-file changes invalidate stale crawl checkpoints. Use
+`--checkpoint-directory PATH` to relocate them or `--no-resume` to deliberately
+start a fresh run while still replacing checkpoints with the new results.
+
 ## Query and analyze
 
 ```bash
 uv pip install -r analyzer/requirements.txt
 npm run graph:summary -- /tmp/repository.lbug
-npm run rules:analyze -- /tmp/repository.lbug --pack temporal
+npm run extract -- /tmp/repository.lbug --extractor temporal
 LBUG_REPO=/tmp/repository.lbug npm run mcp:analyzer
 ```
 

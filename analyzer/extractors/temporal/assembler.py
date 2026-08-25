@@ -5,21 +5,15 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Mapping
 
-from analyzer.rules.core import QueryResult
+from analyzer.extractors.core import QueryResult
 
 
 def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[str, Any]]:
     sdk_rows = _rows(results, "sdk_classes")
     sdk_present = bool(sdk_rows)
 
-    workflow_contracts = _merge_contracts(
-        _rows(results, "workflow_contracts"),
-        _rows(results, "workflow_name_candidates") if sdk_present else [],
-    )
-    activity_contracts = _merge_contracts(
-        _rows(results, "activity_contracts"),
-        _rows(results, "activity_name_candidates") if sdk_present else [],
-    )
+    workflow_contracts = _contracts(_rows(results, "workflow_contracts"))
+    activity_contracts = _contracts(_rows(results, "activity_contracts"))
     workflow_ids = set(workflow_contracts)
     activity_ids = set(activity_contracts)
 
@@ -28,8 +22,17 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
         key = (method["methodId"], method["methodRole"])
         existing = methods_by_owner_and_key[method["ownerId"]].get(key)
         if existing is None:
+            semantic_key = _method_semantic_key(
+                method.get("packageName"),
+                method["ownerName"],
+                method["methodName"],
+                method.get("signature"),
+            )
             methods_by_owner_and_key[method["ownerId"]][key] = {
                 **method,
+                "id": semantic_key,
+                "semanticKey": semantic_key,
+                "lbugNodeId": method["methodId"],
                 "evidenceIds": [method["evidenceId"]],
             }
         elif method["evidenceId"] not in existing["evidenceIds"]:
@@ -52,11 +55,14 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
     for implementation in method_implementations:
         concrete_methods_by_contract_method[implementation["contractMethodId"]].append(implementation)
 
+    temporal_callsite_ids = {
+        row["callSiteId"] for row in _rows(results, "temporal_sdk_calls")
+    }
     calls_by_owner: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for call in _rows(results, "resolved_calls"):
         if call["callerOwnerId"] in implementation_ids:
             calls_by_owner[call["callerOwnerId"]].append(
-                _classify_call(call, activity_ids)
+                _classify_call(call, activity_ids, temporal_callsite_ids)
             )
 
     workflows = []
@@ -66,18 +72,43 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
         contract_methods = methods_by_owner.get(contract_id, [])
         implementations = []
         for implementation in implementations_by_contract.get(contract_id, []):
+            implementation_key = _type_semantic_key(
+                implementation.get("implementationPackageName"),
+                implementation["implementationName"],
+                "class",
+            )
             concrete_methods = []
             for contract_method in contract_methods:
                 concrete_methods.extend(
                     concrete_methods_by_contract_method.get(contract_method["methodId"], [])
                 )
             implementations.append({
-                "id": implementation["implementationId"],
+                "id": implementation_key,
+                "semanticKey": implementation_key,
+                "lbugNodeId": implementation["implementationId"],
                 "name": implementation["implementationName"],
                 "uri": implementation["implementationUri"],
                 "startLine": implementation["implementationStartLine"],
                 "confidence": implementation["confidence"],
-                "methods": concrete_methods,
+                "methods": [
+                    {
+                        **method,
+                        "id": _method_semantic_key(
+                            method.get("implementationPackageName"),
+                            method["implementationOwnerName"],
+                            method["implementationMethodName"],
+                            method.get("implementationSignature"),
+                        ),
+                        "semanticKey": _method_semantic_key(
+                            method.get("implementationPackageName"),
+                            method["implementationOwnerName"],
+                            method["implementationMethodName"],
+                            method.get("implementationSignature"),
+                        ),
+                        "lbugNodeId": method["implementationMethodId"],
+                    }
+                    for method in concrete_methods
+                ],
                 "calls": calls_by_owner.get(implementation["implementationId"], []),
             })
         workflows.append({
@@ -95,7 +126,17 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
             "methods": methods_by_owner.get(contract_id, []),
             "implementations": [
                 {
-                    "id": row["implementationId"],
+                    "id": _type_semantic_key(
+                        row.get("implementationPackageName"),
+                        row["implementationName"],
+                        "class",
+                    ),
+                    "semanticKey": _type_semantic_key(
+                        row.get("implementationPackageName"),
+                        row["implementationName"],
+                        "class",
+                    ),
+                    "lbugNodeId": row["implementationId"],
                     "name": row["implementationName"],
                     "uri": row["implementationUri"],
                     "confidence": row["confidence"],
@@ -110,25 +151,38 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
 
     confirmed_workflows = sum(item["detection"] == "confirmed" for item in workflows)
     confirmed_activities = sum(item["detection"] == "confirmed" for item in activities)
-    activity_invocations = sum(
-        call["classification"] == "activity"
+    activity_calls = [
+        call
         for workflow in workflows
         for implementation in workflow["implementations"]
         for call in implementation["calls"]
-    )
+        if call["classification"] == "activity"
+    ]
+    activity_observation_ids = {call["callSiteId"] for call in activity_calls}
+    activity_invocation_ids = {
+        call["logicalInvocationId"] for call in activity_calls
+        if call.get("logicalInvocationId")
+    }
+    runtime_observation_ids = {call["callSiteId"] for call in runtime_calls}
+    runtime_invocation_ids = {
+        call["logicalInvocationId"] for call in runtime_calls
+        if call.get("logicalInvocationId")
+    }
     summary = {
         "temporalSdkPresent": sdk_present,
         "temporalSdkClassCount": len(sdk_rows),
         "workflowCount": len(workflows),
         "confirmedWorkflowCount": confirmed_workflows,
-        "inferredWorkflowCount": len(workflows) - confirmed_workflows,
+        "inferredWorkflowCount": 0,
         "activityContractCount": len(activities),
         "confirmedActivityContractCount": confirmed_activities,
         "workflowImplementationCount": sum(len(item["implementations"]) for item in workflows),
         "activityImplementationCount": sum(len(item["implementations"]) for item in activities),
-        "activityInvocationCount": activity_invocations,
-        "temporalRuntimeCallCount": len(runtime_calls),
-        "ruleCounts": {key: len(value.rows) for key, value in results.items()},
+        "activityInvocationObservationCount": len(activity_observation_ids),
+        "activityInvocationCount": len(activity_invocation_ids),
+        "temporalRuntimeCallObservationCount": len(runtime_observation_ids),
+        "temporalRuntimeCallCount": len(runtime_invocation_ids),
+        "evidenceQueryCounts": {key: len(value.rows) for key, value in results.items()},
     }
     findings = {
         "workflows": workflows,
@@ -137,10 +191,6 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
         "dependencyEvidence": {
             "sdkClassCount": len(sdk_rows),
             "artifacts": sorted({row["artifactId"] for row in sdk_rows}),
-            "anchorClasses": sorted(
-                row["binaryName"] for row in sdk_rows
-                if row["binaryName"] in _TEMPORAL_ANCHOR_CLASSES
-            ),
         },
     }
     return summary, findings
@@ -150,38 +200,55 @@ def _rows(results: Mapping[str, QueryResult], key: str) -> list[dict[str, Any]]:
     return results[key].rows
 
 
-def _merge_contracts(
-    confirmed: list[dict[str, Any]], candidates: list[dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
+def _contracts(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     contracts: dict[str, dict[str, Any]] = {}
-    for row in candidates:
-        contracts[row["contractId"]] = {
-            "id": row["contractId"],
-            "name": row["contractName"],
-            "uri": row["uri"],
-            "startLine": row["startLine"],
-            "detection": "inferred",
-            "confidence": row["confidence"],
-            "evidence": [row["evidence"]],
-        }
-    for row in confirmed:
-        contracts[row["contractId"]] = {
-            "id": row["contractId"],
-            "name": row["contractName"],
-            "uri": row["uri"],
-            "startLine": row["startLine"],
-            "detection": "confirmed",
-            "confidence": row["confidence"],
-            "evidence": [row["evidence"], row["evidenceId"]],
-        }
+    for row in rows:
+        existing = contracts.get(row["contractId"])
+        if existing is None:
+            semantic_key = _type_semantic_key(
+                row.get("packageName"), row["contractName"], "interface"
+            )
+            contracts[row["contractId"]] = {
+                "id": semantic_key,
+                "semanticKey": semantic_key,
+                "lbugNodeId": row["contractId"],
+                "name": row["contractName"],
+                "uri": row["uri"],
+                "startLine": row["startLine"],
+                "detection": "confirmed",
+                "confidence": row["confidence"],
+                "evidence": [row["evidence"], row["evidenceId"]],
+            }
+            continue
+        for evidence in (row["evidence"], row["evidenceId"]):
+            if evidence not in existing["evidence"]:
+                existing["evidence"].append(evidence)
     return contracts
 
 
-def _classify_call(call: dict[str, Any], activity_ids: set[str]) -> dict[str, Any]:
-    target_uri = call.get("targetUri") or ""
+def _type_semantic_key(package: Any, name: str, kind: str) -> str:
+    qualified_name = f"{package}.{name}" if package else name
+    return f"java:{kind}:{qualified_name}"
+
+
+def _method_semantic_key(
+    package: Any,
+    owner_name: str,
+    method_name: str,
+    signature: Any,
+) -> str:
+    owner_key = _type_semantic_key(package, owner_name, "type")
+    return f"{owner_key}#method:{method_name}{signature or ''}"
+
+
+def _classify_call(
+    call: dict[str, Any],
+    activity_ids: set[str],
+    temporal_callsite_ids: set[str],
+) -> dict[str, Any]:
     if call.get("targetOwnerId") in activity_ids:
         classification = "activity"
-    elif "io.temporal" in target_uri or "temporal-sdk" in target_uri:
+    elif call.get("callSiteId") in temporal_callsite_ids:
         classification = "temporal_sdk"
     else:
         classification = "application"
@@ -211,14 +278,3 @@ def _runtime_operation(call: dict[str, Any]) -> str:
     if "start(" in name:
         return "start_workflow"
     return "temporal_api"
-
-
-_TEMPORAL_ANCHOR_CLASSES = {
-    "io.temporal.activity.ActivityInterface",
-    "io.temporal.client.WorkflowClient",
-    "io.temporal.worker.Worker",
-    "io.temporal.workflow.ActivityInterface",
-    "io.temporal.workflow.Workflow",
-    "io.temporal.workflow.WorkflowInterface",
-    "io.temporal.workflow.WorkflowMethod",
-}

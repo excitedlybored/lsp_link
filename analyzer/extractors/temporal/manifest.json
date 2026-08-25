@@ -1,0 +1,103 @@
+{
+  "id": "temporal",
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "description": "Temporal Java workflows identified only from persisted LSP and JVM artifact evidence.",
+  "dataSource": "ladybugdb-only",
+  "identityPolicy": "framework-semantic-identities",
+  "semanticTypes": {
+    "workflowContract": "io.temporal.workflow.WorkflowInterface",
+    "workflowEntryPoint": "io.temporal.workflow.WorkflowMethod",
+    "signalEntryPoint": "io.temporal.workflow.SignalMethod",
+    "queryEntryPoint": "io.temporal.workflow.QueryMethod",
+    "updateEntryPoint": "io.temporal.workflow.UpdateMethod",
+    "activityContract": "io.temporal.activity.ActivityInterface",
+    "workflowClient": "io.temporal.client.WorkflowClient",
+    "serviceClient": "io.temporal.serviceclient.WorkflowServiceStubs"
+  },
+  "assemblerModule": "analyzer.extractors.temporal.assembler",
+  "requiredTables": [
+    "LspDocument",
+    "LspInterfaceSymbol",
+    "LspClassSymbol",
+    "LspMethodSymbol",
+    "LspCallSite",
+    "LspHover",
+    "LspRelation",
+    "LspLogicalInvocation",
+    "DerivedCallRelation",
+    "JvmClass",
+    "LspJvmBinding"
+  ],
+  "queries": [
+    {
+      "id": "sdk_classes",
+      "category": "dependency",
+      "description": "Temporal SDK classes present in the artifact-enrichment stage.",
+      "file": "queries/sdk_classes.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"}
+      }
+    },
+    {
+      "id": "workflow_contracts",
+      "category": "contract",
+      "description": "Interfaces confirmed by LSP hover evidence for @WorkflowInterface or a contained @WorkflowMethod.",
+      "file": "queries/workflow_contracts.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"},
+        "workflowEntryPointType": {"semanticType": "workflowEntryPoint"}
+      }
+    },
+    {
+      "id": "activity_contracts",
+      "category": "contract",
+      "description": "Interfaces whose nearby LSP hover resolves @ActivityInterface.",
+      "file": "queries/activity_contracts.cypher",
+      "parameters": {
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
+      "id": "annotated_methods",
+      "category": "entrypoint",
+      "description": "Workflow, signal, query, update, and activity methods identified by resolved annotation hover.",
+      "file": "queries/annotated_methods.cypher",
+      "parameters": {
+        "workflowEntryPointType": {"semanticType": "workflowEntryPoint"},
+        "signalEntryPointType": {"semanticType": "signalEntryPoint"},
+        "queryEntryPointType": {"semanticType": "queryEntryPoint"},
+        "updateEntryPointType": {"semanticType": "updateEntryPoint"},
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
+      "id": "implementations",
+      "category": "implementation",
+      "description": "LSP textDocument/implementation relations between classes and interfaces.",
+      "file": "queries/implementations.cypher"
+    },
+    {
+      "id": "method_implementations",
+      "category": "implementation",
+      "description": "LSP implementation relations between concrete and interface methods.",
+      "file": "queries/method_implementations.cypher"
+    },
+    {
+      "id": "resolved_calls",
+      "category": "flow",
+      "description": "Ranged call sites with their LSP-resolved targets and containing symbols.",
+      "file": "queries/resolved_calls.cypher"
+    },
+    {
+      "id": "temporal_sdk_calls",
+      "category": "runtime",
+      "description": "Calls resolved into io.temporal APIs, including stubs, starts, workers, signals, and queries.",
+      "file": "queries/temporal_sdk_calls.cypher",
+      "parameters": {
+        "workflowClientType": {"semanticType": "workflowClient"},
+        "serviceClientType": {"semanticType": "serviceClient"}
+      }
+    }
+  ]
+}

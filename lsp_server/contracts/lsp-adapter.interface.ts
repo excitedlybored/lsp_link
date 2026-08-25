@@ -29,7 +29,13 @@ export interface ILspAdapter {
   readonly maxConcurrentRequests: number;
 
   /** Session identity used to preserve build-root and workspace provenance. */
-  getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] };
+  getSessionMetadata(): {
+    workspacePath?: string;
+    buildRootId?: string;
+    buildRootIds?: string[];
+    buildSystems?: string[];
+    processShardId?: string;
+  };
 
   isAvailable(): Promise<boolean>;
 

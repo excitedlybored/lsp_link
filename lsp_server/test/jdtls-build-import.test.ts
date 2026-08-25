@@ -8,9 +8,11 @@ import {
   discoverJavaBuildRoots,
   JdtlsRuntime,
   JdtlsWorkspace,
+  jdtlsResolutionClasspath,
   ownerBuildRoot,
 } from '../adapters/java/jdtls-runtime.js';
 import { ensureBazelProjectModel, prepareBazelProjectModels } from '../adapters/java/bazel-project-model.js';
+import { planJdtlsBuildRootShards, prepareJdtlsShardWorkspace } from '../adapters/java/jdtls-sharding.js';
 
 const runtime: JdtlsRuntime = {
   jdkJavaBin: '/jdk/25/bin/java',
@@ -85,6 +87,21 @@ test('loads an exact Bazel project model instead of guessing bazel-bin jars', ()
   assert.deepEqual(java.project.referencedLibraries.include, [path.join(root, 'bazel-out/lib/dependency.jar')]);
   assert.deepEqual(java.project.sourcePaths, ['src/main/java']);
   assert.equal(java.project.outputPath, 'bazel-out/classes');
+});
+
+test('uses full Bazel runtime binaries for JDT navigation while preserving compile headers', () => {
+  const root = fixture({
+    'lib/header_spring-context.jar': '',
+    'lib/processed_spring-context.jar': '',
+    'lib/compile-only.jar': '',
+  });
+  const header = path.join(root, 'lib/header_spring-context.jar');
+  const binary = path.join(root, 'lib/processed_spring-context.jar');
+  const compileOnly = path.join(root, 'lib/compile-only.jar');
+  assert.deepEqual(jdtlsResolutionClasspath({
+    classpath: [header, compileOnly],
+    runtimeClasspath: [binary],
+  }), [compileOnly, binary].sort());
 });
 
 test('generates and caches an exact Bazel JavaInfo classpath model', async () => {
@@ -256,4 +273,77 @@ test('discovers and routes a poly-build monorepo by independent build root', () 
     return launch.args[launch.args.indexOf('-data') + 1];
   });
   assert.notEqual(sessionDataDirs[0], sessionDataDirs[1]);
+});
+
+test('shards forty build roots across four persistent multi-project workspaces', (t) => {
+  const repository = fixture({});
+  t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  const roots = Array.from({ length: 40 }, (_, index) => {
+    const workspacePath = path.join(repository, `service-${String(index + 1).padStart(2, '0')}`);
+    fs.mkdirSync(path.join(workspacePath, 'src/main/java/example'), { recursive: true });
+    fs.writeFileSync(path.join(workspacePath, 'MODULE.bazel'), `module(name = "service_${index + 1}")`);
+    fs.writeFileSync(path.join(workspacePath, 'src/main/java/example/App.java'), `package example; class App${index + 1} {}`);
+    const jar = path.join(workspacePath, 'bazel-out/lib/dependency.jar');
+    fs.mkdirSync(path.dirname(jar), { recursive: true });
+    fs.writeFileSync(jar, '');
+    fs.mkdirSync(path.join(workspacePath, '.gitnexus/jdtls'), { recursive: true });
+    fs.writeFileSync(path.join(workspacePath, '.gitnexus/jdtls/bazel-project.json'), JSON.stringify({
+      javaMajor: index % 2 === 0 ? 21 : 25,
+      classpath: [jar],
+      runtimeClasspath: [jar],
+      sourcePaths: ['src/main/java'],
+      generatedSourcePaths: [],
+      configurationHash: `config-${index + 1}`,
+    }));
+    return {
+      id: `bazel:service-${String(index + 1).padStart(2, '0')}`,
+      workspacePath,
+      relativePath: `service-${String(index + 1).padStart(2, '0')}`,
+      systems: ['bazel'] as const,
+      excludedRoots: [],
+    };
+  });
+  const shards = planJdtlsBuildRootShards(roots, 4);
+  assert.equal(shards.length, 4);
+  assert.deepEqual(shards.map((shard) => shard.roots.length), [10, 10, 10, 10]);
+  assert.equal(new Set(shards.flatMap((shard) => shard.roots.map((root) => root.id))).size, 40);
+
+  const prepared = prepareJdtlsShardWorkspace(repository, shards[0]);
+  assert.equal(prepared.projectModels.length, 10);
+  for (const model of prepared.projectModels) {
+    assert.ok(model.buildRootId.startsWith('bazel:service-'));
+    assert.ok(model.projectName.startsWith('gitnexus-bazel-'));
+    assert.equal(model.sourcePaths.length, 1);
+    assert.equal(model.compileClasspath.length, 1);
+    assert.ok(model.javaMajor === 21 || model.javaMajor === 25);
+    const projectPath = path.join(prepared.workspacePath, 'projects', model.projectName);
+    const project = fs.readFileSync(path.join(projectPath, '.project'), 'utf8');
+    const classpath = fs.readFileSync(path.join(projectPath, '.classpath'), 'utf8');
+    assert.match(project, /<linkedResources><\/linkedResources>/);
+    assert.ok(fs.statSync(path.join(projectPath, 'source-0')).isDirectory());
+    assert.match(classpath, /kind="src"/);
+    assert.match(classpath, /kind="lib"/);
+    assert.match(fs.readFileSync(path.join(projectPath, '.gitnexus-project.json'), 'utf8'), new RegExp(model.buildRootId));
+  }
+});
+
+test('generates an Eclipse fallback project when native Gradle import is unavailable', (t) => {
+  const repository = fixture({
+    'gradle-app/build.gradle': 'plugins { id "java" }',
+    'gradle-app/src/main/java/example/App.java': 'package example; class App {}',
+    'gradle-app/lib/dependency.jar': '',
+    'gradle-app/.classpath': [
+      '<classpath>',
+      '  <classpathentry kind="src" path="src/main/java"/>',
+      '  <classpathentry kind="lib" path="lib/dependency.jar"/>',
+      '</classpath>',
+    ].join('\n'),
+  });
+  t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  const root = discoverJavaBuildRoots(repository)[0];
+  const prepared = prepareJdtlsShardWorkspace(repository, planJdtlsBuildRootShards([root], 1)[0]);
+  const model = prepared.projectModels[0];
+  assert.equal(model.modelSource, 'eclipse-classpath');
+  assert.deepEqual(model.sourcePaths, [path.join(root.workspacePath, 'src/main/java')]);
+  assert.deepEqual(model.compileClasspath, [path.join(root.workspacePath, 'lib/dependency.jar')]);
 });

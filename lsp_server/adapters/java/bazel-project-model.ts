@@ -14,6 +14,7 @@ interface GeneratedBazelModel {
   classpath: string[];
   runtimeClasspath: string[];
   sourcePaths: string[];
+  generatedSourcePaths: string[];
   generatedBy: 'gitnexus-bazel-cquery';
   generatedAt: string;
   configurationHash: string;
@@ -79,6 +80,8 @@ export async function ensureBazelProjectModel(
   if (
     existing?.configurationHash === configurationHash
     && arraysEqual(existing.sourcePaths, sourcePaths)
+    && Array.isArray(existing.generatedSourcePaths)
+    && existing.generatedSourcePaths.every(fs.existsSync)
     && existing.classpath.every(fs.existsSync)
     && Array.isArray(existing.runtimeClasspath)
     && existing.runtimeClasspath.every(fs.existsSync)
@@ -133,6 +136,7 @@ export async function ensureBazelProjectModel(
       classpath: configured.classpath,
       runtimeClasspath: runtime.classpath,
       sourcePaths,
+      generatedSourcePaths: discoverGeneratedSourcePaths(executionRoot),
       generatedBy: 'gitnexus-bazel-cquery',
       generatedAt: new Date().toISOString(),
       configurationHash,
@@ -263,6 +267,21 @@ function discoverSourcePaths(workspacePath: string): string[] {
     const normalized = file.split(path.sep).join('/');
     const conventional = normalized.match(/^(.*?src\/(?:main|test)\/java)(?:\/|$)/)?.[1];
     roots.add(conventional || path.posix.dirname(normalized));
+  }
+  return [...roots].sort();
+}
+
+/** JavaInfo materialization may create annotation-processor and Starlark-generated Java sources. */
+function discoverGeneratedSourcePaths(executionRoot: string): string[] {
+  const roots = new Set<string>();
+  for (const file of globSync('bazel-out/**/*.java', {
+    cwd: executionRoot,
+    nodir: true,
+    ignore: ['**/external/**'],
+  })) {
+    const normalized = file.split(path.sep).join('/');
+    const marker = normalized.match(/^(.*?\/(?:generated|gensrc|generated-sources)(?:\/|$))/)?.[1];
+    roots.add(path.resolve(executionRoot, marker ?? path.posix.dirname(normalized)));
   }
   return [...roots].sort();
 }

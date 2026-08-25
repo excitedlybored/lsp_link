@@ -73,6 +73,20 @@ test('normalizes hierarchy, call sites, occurrences, and run provenance into one
   const [type, method] = symbols.symbols;
   assert.equal(type.kindName, 'Class');
   assert.equal(method.kindName, 'Method');
+  const movedSymbols = ingestDocumentSymbols(context, [{
+    name: 'Service', kind: 5,
+    range: { start: { line: 10, character: 0 }, end: { line: 18, character: 1 } },
+    selectionRange: { start: { line: 10, character: 6 }, end: { line: 10, character: 13 } },
+    children: [{
+      name: 'save', detail: 'save(String)', kind: 6,
+      range: { start: { line: 12, character: 2 }, end: { line: 15, character: 3 } },
+      selectionRange: { start: { line: 12, character: 7 }, end: { line: 12, character: 11 } },
+    }],
+  }]).symbols;
+  assert.notEqual(type.id, movedSymbols[0].id);
+  assert.notEqual(method.id, movedSymbols[1].id);
+  assert.equal(type.stableKey, movedSymbols[0].stableKey);
+  assert.equal(method.stableKey, movedSymbols[1].stableKey);
   assert.deepEqual(symbols.relations.map((relation) => relation.kind), ['DEFINES', 'CONTAINS']);
 
   const calls = ingestCalls(

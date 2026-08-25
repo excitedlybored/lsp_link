@@ -160,6 +160,8 @@ export interface LspServer {
   status: LspRunStatus;
   capabilitiesJson: string;
   buildRootId?: string;
+  /** Physical persistent language-server process shared by logical root servers. */
+  processShardId?: string;
 }
 
 export interface LspBuildRoot {

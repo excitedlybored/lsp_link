@@ -17,6 +17,8 @@ export interface NormalizedArtifactDescriptor {
   binaryJarPath?: string;
   sourceJarPath?: string;
   coordinate?: string;
+  /** Original JAR basenames retained for resolving provider-specific external URIs. */
+  classpathEntryAliases?: string[];
 }
 
 export interface ArtifactClasspathBuildRoot {

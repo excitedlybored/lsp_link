@@ -57,6 +57,7 @@ class LspServerNode:
     status: str
     capabilities_json: str
     build_root_id: Optional[str]
+    process_shard_id: Optional[str]
 
 
 @dataclass
@@ -309,6 +310,7 @@ class JvmClassNode:
     is_seed: bool
     seed_uris: List[str]
     was_disassembled: bool
+    annotations: List[str]
 
 
 @dataclass
@@ -344,6 +346,7 @@ class JvmMethodNode:
     access: str
     has_code: bool
     is_external_placeholder: bool
+    annotations: List[str]
 
 
 @dataclass
@@ -356,6 +359,7 @@ class JvmFieldNode:
     descriptor: str
     declaration: str
     access: str
+    annotations: List[str]
 
 
 @dataclass
@@ -380,6 +384,66 @@ class JvmRelationRecord:
     stage_id: str
     status: str
     ordinal: Optional[int]
+
+
+@dataclass
+class LspJvmBindingRecord:
+    source_id: str
+    target_id: str
+    id: str
+    kind: str
+    stage_id: str
+    status: str
+    confidence: float
+    reason: str
+
+
+@dataclass
+class DerivedCallNormalizationRunNode:
+    id: str
+    lsp_run_id: str
+    status: str
+    algorithm_version: str
+    started_at: str
+    completed_at: str
+    observation_count: int
+    invocation_count: int
+    normalized_observation_count: int
+    ambiguous_observation_count: int
+    error_count: int
+
+
+@dataclass
+class LspLogicalInvocationNode:
+    id: str
+    stage_id: str
+    run_id: str
+    document_id: str
+    caller_symbol_id: str
+    caller_stable_key: str
+    target_family_id: str
+    target_family_stable_key: str
+    canonical_target_id: Optional[str]
+    canonical_target_kind: Optional[str]
+    range: LspRange
+    observation_count: int
+    directions: List[str]
+    capabilities: List[str]
+    stable_key: str
+    status: str
+    confidence: float
+    algorithm_version: str
+
+
+@dataclass
+class DerivedCallRelationRecord:
+    source_id: str
+    target_id: str
+    id: str
+    kind: str
+    stage_id: str
+    confidence: float
+    ordinal: int
 
 @dataclass
 class CodeRelation:

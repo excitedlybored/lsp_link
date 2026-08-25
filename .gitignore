@@ -22,7 +22,9 @@ build/
 .settings/
 bin/
 target/
+target_test-classes/
 .classpath
+.factorypath
 .project
 
 # Gradle & IDEs
@@ -30,6 +32,7 @@ target/
 .idea/
 .vscode/
 *.iml
+.DS_Store
 
 # Visualizer Outputs
 call_tree.html

@@ -121,7 +121,12 @@ export function ingestDocumentSymbols(
 
   const visit = (observation: DocumentSymbolObservation, parent?: LspSymbol): void => {
     const kindName = requireKindName(observation.kind);
-    const symbol = materializeSymbol(context.document, observation, kindName);
+    const symbol = materializeSymbol(
+      context.document,
+      observation,
+      kindName,
+      parent?.stableKey,
+    );
     batch.symbols.push(symbol);
     batch.relations.push(makeRelation(
       context,
@@ -228,11 +233,21 @@ export function materializeSymbol(
   document: LspDocument,
   observation: DocumentSymbolObservation,
   knownKindName?: LspSymbolKindName,
+  parentStableKey?: string,
 ): LspSymbol {
   const kindName = knownKindName ?? requireKindName(observation.kind);
   const id = stableId(
     'symbol', document.uri, kindName, observation.name,
     rangeKey(observation.selectionRange), observation.detail ?? '',
+  );
+  const semanticContainer = parentStableKey ?? observation.containerName ?? '';
+  const semanticKey = stableId(
+    'semantic-symbol',
+    document.uri,
+    semanticContainer,
+    kindName,
+    observation.name,
+    observation.detail ?? '',
   );
   return {
     id,
@@ -247,7 +262,7 @@ export function materializeSymbol(
     range: observation.range,
     selectionRange: observation.selectionRange,
     signature: observation.detail,
-    stableKey: id,
+    stableKey: semanticKey,
     isExternal: document.origin !== 'workspace',
   } as LspSymbol;
 }

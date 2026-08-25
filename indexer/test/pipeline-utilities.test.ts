@@ -6,6 +6,10 @@ import test from 'node:test';
 import { parseLspKnowledgeGraphBuildOptions } from '../src/pipeline/cli-options.js';
 import { mapConcurrently } from '../src/pipeline/concurrency.js';
 import { findJavaSourceFiles } from '../src/pipeline/java-source-files.js';
+import {
+  fingerprintPipelineInputs,
+  PipelineCheckpointStore,
+} from '../src/pipeline/checkpoints.js';
 
 test('parses knowledge-graph build options with explicit artifact manifests', () => {
   const options = parseLspKnowledgeGraphBuildOptions([
@@ -15,15 +19,43 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
     '3',
     '--artifact-max-classes',
     '50',
+    '--artifact-concurrency',
+    '6',
     '--artifact-classpath-manifest',
     '/manifests/artifacts.json',
     '--no-artifact-source-fetch',
+    '--checkpoint-directory',
+    '/checkpoints/run-1',
   ]);
   assert.equal(options.workspace, '/workspace');
   assert.equal(options.concurrency, 3);
   assert.equal(options.artifactMaxClasses, 50);
+  assert.equal(options.artifactConcurrency, 6);
   assert.deepEqual(options.artifactManifestPaths, ['/manifests/artifacts.json']);
   assert.equal(options.fetchArtifactSources, false);
+  assert.equal(options.checkpointDirectory, '/checkpoints/run-1');
+  assert.equal(options.resume, true);
+});
+
+test('defaults to resumable checkpoints beside the requested output', () => {
+  const options = parseLspKnowledgeGraphBuildOptions([
+    'build', '/workspace', '--output', '/tmp/result.lbug', '--no-resume',
+  ]);
+  assert.equal(options.checkpointDirectory, '/tmp/result.lbug.checkpoints');
+  assert.equal(options.resume, false);
+});
+
+test('writes atomic checkpoints and rejects incompatible input fingerprints', (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'kg-checkpoints-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const input = path.join(workspace, 'Example.java');
+  fs.writeFileSync(input, 'class Example {}');
+  const fingerprint = fingerprintPipelineInputs(workspace, [input], { language: 'java' });
+  const store = new PipelineCheckpointStore(path.join(workspace, 'checkpoints'));
+  store.save('lsp-crawl', fingerprint, { symbols: [1, 2, 3] });
+  assert.deepEqual(store.load('lsp-crawl', fingerprint), { symbols: [1, 2, 3] });
+  assert.equal(store.load('lsp-crawl', 'different'), undefined);
+  assert.deepEqual(fs.readdirSync(store.directory), ['lsp-crawl.checkpoint']);
 });
 
 test('rejects flags that omit their required value', () => {

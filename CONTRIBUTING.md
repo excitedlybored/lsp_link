@@ -38,7 +38,7 @@ npm run query -- context sample_projects/spring-boot-demo --symbol DemoWorkflow
 ### Analyzer MCP / Python (`analyzer/`)
 ```bash
 LBUG_REPO=/tmp/spring-demo.lbug npm run mcp:analyzer
-npm run rules:analyze -- /tmp/spring-demo.lbug --pack temporal
+npm run extract -- /tmp/spring-demo.lbug --extractor temporal
 ```
 
 Python only queries an existing `.lbug` database. Language adapters belong in

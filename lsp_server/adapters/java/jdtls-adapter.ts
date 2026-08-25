@@ -11,12 +11,19 @@ import {
   JdtlsWorkspace,
 } from './jdtls-runtime.js';
 import { ensureBazelProjectModel } from './bazel-project-model.js';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export interface JavaJdtlsAdapterOptions {
   buildRootId?: string;
   buildSystems?: JavaBuildSystemKind[];
   excludedRoots?: string[];
   bazelModelPrepared?: boolean;
+  processShardId?: string;
+  shardBuildRootIds?: string[];
+  eclipseProjectPaths?: string[];
+  workspaceFolderPaths?: string[];
+  uriMappings?: Array<{ sourcePath: string; stagedPath: string }>;
 }
 
 /** Tracks `language/status` until ServiceReady and Maven/Gradle import go quiet. */
@@ -67,12 +74,82 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
     super();
   }
 
-  public override getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] } {
-    return { ...super.getSessionMetadata(), buildRootId: this.options.buildRootId, buildSystems: this.options.buildSystems };
+  public override getSessionMetadata(): {
+    workspacePath?: string; buildRootId?: string; buildRootIds?: string[];
+    buildSystems?: string[]; processShardId?: string;
+  } {
+    return {
+      ...super.getSessionMetadata(),
+      buildRootId: this.options.buildRootId,
+      buildRootIds: this.options.shardBuildRootIds,
+      buildSystems: this.options.buildSystems,
+      processShardId: this.options.processShardId,
+    };
+  }
+
+  protected override initializeWorkspaceFolders(workspacePath: string): { uri: string; name: string }[] {
+    const folders = this.options.workspaceFolderPaths;
+    if (!folders?.length) return super.initializeWorkspaceFolders(workspacePath);
+    return folders.map((folderPath) => ({
+      uri: pathToFileURL(folderPath).href,
+      name: path.basename(folderPath),
+    }));
+  }
+
+  protected override initializeRootPath(workspacePath: string): string {
+    return path.resolve(this.options.workspaceFolderPaths?.[0] ?? workspacePath);
   }
 
   public async isAvailable(): Promise<boolean> {
     return JdtlsRuntimeLocator.isInstalled();
+  }
+
+  public override documentUri(filePath: string): string {
+    return jdtFileUri(this.mapFilePath(path.resolve(filePath), 'toStaged'));
+  }
+
+  public override async request<T>(method: string, params: unknown): Promise<T> {
+    const mappedParams = this.mapProtocolUris(params, 'toStaged');
+    const result = await super.request<unknown>(method, mappedParams);
+    return this.mapProtocolUris(result, 'toSource') as T;
+  }
+
+  public override takeNotifications<T>(method: string): T[] {
+    return super.takeNotifications<unknown>(method)
+      .map((value) => this.mapProtocolUris(value, 'toSource') as T);
+  }
+
+  private mapProtocolUris(value: unknown, direction: 'toStaged' | 'toSource'): unknown {
+    if (typeof value === 'string' && value.startsWith('file:')) {
+      try {
+        const mapped = this.mapFilePath(fileURLToPath(value), direction);
+        return direction === 'toStaged' ? jdtFileUri(mapped) : pathToFileURL(mapped).href;
+      } catch { return value; }
+    }
+    if (Array.isArray(value)) return value.map((entry) => this.mapProtocolUris(entry, direction));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .map(([key, entry]) => [key, this.mapProtocolUris(entry, direction)]));
+    }
+    return value;
+  }
+
+  private mapFilePath(filePath: string, direction: 'toStaged' | 'toSource'): string {
+    const mappings = this.options.uriMappings ?? [];
+    const ordered = [...mappings].sort((left, right) => {
+      const leftBase = direction === 'toStaged' ? left.sourcePath : left.stagedPath;
+      const rightBase = direction === 'toStaged' ? right.sourcePath : right.stagedPath;
+      return rightBase.length - leftBase.length;
+    });
+    for (const mapping of ordered) {
+      const from = path.resolve(direction === 'toStaged' ? mapping.sourcePath : mapping.stagedPath);
+      const relative = path.relative(from, path.resolve(filePath));
+      if (relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
+        const to = direction === 'toStaged' ? mapping.stagedPath : mapping.sourcePath;
+        return path.resolve(to, relative);
+      }
+    }
+    return filePath;
   }
 
   protected onServerNotification(method: string, params: unknown): void {
@@ -103,6 +180,7 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
     this.workspace = JdtlsWorkspace.inspect(workspacePath, {
       buildSystems: this.options.buildSystems,
       excludedRoots: this.options.excludedRoots,
+      eclipseProjectImport: Boolean(this.options.eclipseProjectPaths?.length),
     });
     if (this.workspace.usesBazel && this.workspace.buildImportEnabled('bazel') && !this.options.bazelModelPrepared) {
       const result = await ensureBazelProjectModel(workspacePath);
@@ -111,10 +189,28 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
         this.workspace = JdtlsWorkspace.inspect(workspacePath, {
           buildSystems: this.options.buildSystems,
           excludedRoots: this.options.excludedRoots,
+          eclipseProjectImport: Boolean(this.options.eclipseProjectPaths?.length),
         });
       }
     }
     const runtime = JdtlsRuntimeLocator.locate(this.workspace.requiredJavaMajor);
-    return createJdtlsProcessLaunch(workspacePath, this.workspace, runtime);
+    const launch = createJdtlsProcessLaunch(workspacePath, this.workspace, runtime);
+    // JDT LS builds Preferences.rootPaths from its own initialization option,
+    // not from the standard InitializeParams.workspaceFolders field. Keep both
+    // populated so every generated project is imported during initialisation.
+    const jdtWorkspaceFolders = this.initializeWorkspaceFolders(workspacePath)
+      .map((folder) => folder.uri);
+    return {
+      ...launch,
+      initializationOptions: {
+        ...launch.initializationOptions,
+        workspaceFolders: jdtWorkspaceFolders,
+      },
+    };
   }
+}
+
+function jdtFileUri(filePath: string): string {
+  const standard = pathToFileURL(filePath).href;
+  return process.platform === 'win32' ? standard : standard.replace(/^file:\/\/\//, 'file:/');
 }

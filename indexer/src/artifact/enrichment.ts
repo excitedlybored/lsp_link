@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { globSync } from 'glob';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import { stableId } from '../ingest/builders.js';
+import { symbolNodeTable } from '../model.js';
 import {
   emptyJvmArtifactBatch,
   type JvmArtifact,
@@ -23,6 +24,11 @@ import {
   type NormalizedArtifactDescriptor,
   type ArtifactClasspathProviderAttempt,
 } from './classpath/index.js';
+import {
+  disassembleClassQueue,
+  normalizeJarClassEntries,
+  type JavapDisassemblyProgress,
+} from './disassembly.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -33,7 +39,9 @@ export interface JvmArtifactEnrichmentInput {
   classpathAttempts?: ArtifactClasspathProviderAttempt[];
   lspBatch: LspObservationBatch;
   maxDisassembledClasses?: number;
+  javapConcurrency?: number;
   fetchSources?: boolean;
+  onProgress?: (progress: JavapDisassemblyProgress) => void;
 }
 
 export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Promise<JvmArtifactBatch> {
@@ -43,10 +51,17 @@ export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Pro
   const configuredMaximum = input.maxDisassembledClasses
     ?? positiveInteger(process.env.GITNEXUS_JVM_MAX_CLASSES);
   const maxClasses = configuredMaximum ?? Number.POSITIVE_INFINITY;
+  const javapConcurrency = input.javapConcurrency
+    ?? positiveInteger(process.env.GITNEXUS_JVM_CONCURRENCY)
+    ?? 4;
   const fetchSources = input.fetchSources ?? process.env.GITNEXUS_JVM_FETCH_SOURCES !== '0';
   const classpathAttempts = input.classpathAttempts ?? [];
   const classpathErrorCount = classpathAttempts.filter((value) => value.status === 'failed').length;
   let errors = 0;
+  const javapExecutable = findJavapExecutable();
+  let providerVersion: string | undefined;
+  try { providerVersion = String((await execFileAsync(javapExecutable, ['-version'])).stdout).trim(); } catch { errors += 1; }
+  const runtimeMajor = javaMajorFromVersion(providerVersion);
 
   const artifactsByJar = new Map<string, JvmArtifact>();
   const classByName = new Map<string, JvmClass>();
@@ -70,6 +85,9 @@ export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Pro
         existingArtifact.classpathScopes = [...new Set([...existingArtifact.classpathScopes, descriptor.scope])];
         existingArtifact.modulePath ||= descriptor.modulePath;
         indexArtifactJarPaths(artifactsByJar, existingArtifact, classpathEntryPath, headerJarPath, binaryJarPath);
+        indexArtifactJarPaths(
+          artifactsByJar, existingArtifact, ...(descriptor.classpathEntryAliases ?? []),
+        );
         continue;
       }
       const source = descriptor.sourceJarPath
@@ -88,11 +106,12 @@ export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Pro
       };
       batch.artifacts.push(artifact);
       indexArtifactJarPaths(artifactsByJar, artifact, classpathEntryPath, headerJarPath, binaryJarPath);
+      indexArtifactJarPaths(artifactsByJar, artifact, ...(descriptor.classpathEntryAliases ?? []));
       batch.relations.push(createJvmRelation(stageId, 'JvmArtifactEnrichmentRun', stageId,
         'JvmArtifact', artifact.id, 'HAS_ARTIFACT', batch.artifacts.length - 1));
 
       try {
-        const entries = await listJarClassEntries(crawlJarPath);
+        const entries = normalizeJarClassEntries(await listJarClassEntries(crawlJarPath), runtimeMajor);
         for (const entry of entries) {
           if (!entry.endsWith('.class') || /(?:module-info|package-info)\.class$/.test(entry)) continue;
           const binaryName = entry.slice(0, -6).replaceAll('/', '.');
@@ -104,7 +123,7 @@ export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Pro
             sourceEntry: sourceJarPath
               ? `${binaryName.replaceAll('.', '/').replace(/\$.*$/, '')}.java`
               : undefined,
-            isSeed: false, seedUris: [], wasDisassembled: false,
+            isSeed: false, seedUris: [], wasDisassembled: false, annotations: [],
           };
           if (batch.classes.some((value) => value.id === clazz.id)) continue;
           batch.classes.push(clazz);
@@ -130,7 +149,6 @@ export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Pro
   const queue = configuredMaximum === undefined
     ? [...seedNames, ...[...classByName.keys()].filter((name) => !seedNames.includes(name))]
     : seedNames;
-  const visited = new Set<string>();
   const classpathCache = path.join(
     input.cacheDirectory,
     'artifact-classpath',
@@ -140,29 +158,42 @@ export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Pro
       value.binaryJarPath ?? value.headerJarPath ?? value.classpathEntryPath, value.id, classpathCache,
     ))
     .join(path.delimiter);
-  const javapExecutable = findJavapExecutable();
-  let providerVersion: string | undefined;
-  try { providerVersion = String((await execFileAsync(javapExecutable, ['-version'])).stdout).trim(); } catch { errors += 1; }
-
-  while (queue.length > 0 && visited.size < maxClasses) {
-    const names = queue.splice(0, Math.min(25, maxClasses - visited.size))
-      .filter((name) => !visited.has(name));
-    if (names.length === 0) continue;
-    names.forEach((name) => visited.add(name));
-    try {
-      const { stdout } = await execFileAsync(javapExecutable, ['-classpath', classpath, '-p', '-s', '-c', ...names], {
-        maxBuffer: 64 * 1024 * 1024,
-      });
-      const targets = parseJavapClassOutput(String(stdout), stageId, batch, classByName);
-      for (const target of targets) if (classByName.has(target) && !visited.has(target)) queue.push(target);
-    } catch (error) {
+  const reportProgress = input.onProgress ?? logDisassemblyProgress;
+  const disassembly = await disassembleClassQueue({
+    initialNames: queue,
+    maxClasses,
+    concurrency: javapConcurrency,
+    executeBatch: async (names) => {
+      const { stdout } = await execFileAsync(
+        javapExecutable,
+        ['-classpath', classpath, '-v', '-p', '-s', '-c', ...names],
+        { maxBuffer: 64 * 1024 * 1024 },
+      );
+      return String(stdout);
+    },
+    consumeOutput: (output) => [...parseJavapClassOutput(output, stageId, batch, classByName)]
+      .filter((target) => classByName.has(target)),
+    onBatchFailure: (names, error) => {
       errors += names.length;
-      console.warn(`[stage:jvm-artifact-enrichment] javap failed for ${names.join(', ')}: ` +
-        `${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+      console.warn(
+        `[stage:jvm-artifact-enrichment] javap failed for ${names.length} classes `
+        + `(${names.slice(0, 3).join(', ')}${names.length > 3 ? ', ...' : ''}): ${conciseError(error)}`,
+      );
+    },
+    onProgress: reportProgress,
+  });
 
-  const truncated = queue.length > 0;
+  const truncated = disassembly.truncated;
+  const disassembledCount = batch.classes.filter((value) => value.wasDisassembled).length;
+  if (batch.classes.length > 0 && (disassembledCount === 0 || batch.methods.length === 0)) {
+    errors += 1;
+    console.warn(
+      '[stage:jvm-artifact-enrichment] integrity check failed: javap produced no parsed members',
+    );
+  }
+  appendInChunks(batch.bindings, buildLspJvmBindings(
+    input.lspBatch, stageId, artifactsByJar, classByArtifactAndName, batch.methods,
+  ));
   batch.runs.push({
     id: stageId, lspRunId: input.lspRunId,
     status: errors > 0 || classpathErrorCount > 0 || truncated ? 'partial' : 'complete', startedAt,
@@ -176,6 +207,13 @@ export async function enrichJvmArtifacts(input: JvmArtifactEnrichmentInput): Pro
   return dedupeArtifactBatch(batch);
 }
 
+/** Avoid V8's argument-count limit when a monorepo produces hundreds of thousands of bindings. */
+function appendInChunks<T>(target: T[], values: T[], chunkSize = 10_000): void {
+  for (let offset = 0; offset < values.length; offset += chunkSize) {
+    target.push(...values.slice(offset, offset + chunkSize));
+  }
+}
+
 function parseJavapClassOutput(
   output: string,
   stageId: string,
@@ -186,9 +224,14 @@ function parseJavapClassOutput(
   let clazz: JvmClass | undefined;
   let pending: { declaration: string; method: boolean } | undefined;
   let currentMethod: JvmMethod | undefined;
+  let currentField: JvmField | undefined;
+  let inClassBody = false;
+  let annotationTarget: JvmClass | JvmMethod | JvmField | undefined;
+  let annotationIndent = -1;
   for (const line of output.split(/\r?\n/)) {
     const trimmed = line.trim();
-    const classMatch = trimmed.match(/^(.*?)\b(class|interface|enum|record)\s+([\w.$]+)(.*)\{$/);
+    const indent = line.length - line.trimStart().length;
+    const classMatch = trimmed.match(/^(.*?)\b(class|interface|enum|record)\s+([\w.$]+)(.*?)(?:\s*\{)?$/);
     if (classMatch) {
       clazz = classByName.get(classMatch[3]);
       if (clazz) {
@@ -212,10 +255,32 @@ function parseJavapClassOutput(
           batch, stageId, clazz!, name, 'BYTECODE_INTERFACE', classByName, index,
         ));
       }
-      pending = undefined; currentMethod = undefined;
+      inClassBody = trimmed.endsWith('{');
+      pending = undefined; currentMethod = undefined; currentField = undefined;
+      annotationTarget = undefined; annotationIndent = -1;
       continue;
     }
     if (!clazz) continue;
+    if (trimmed === '{') { inClassBody = true; continue; }
+    if (trimmed === '}') {
+      inClassBody = false; pending = undefined; currentMethod = undefined; currentField = undefined;
+      annotationTarget = undefined; annotationIndent = -1;
+      continue;
+    }
+    if (/^Runtime(?:Visible|Invisible)Annotations:$/.test(trimmed)) {
+      annotationTarget = indent > 0 ? currentMethod ?? currentField ?? clazz : clazz;
+      annotationIndent = indent;
+      continue;
+    }
+    if (annotationTarget && indent > annotationIndent) {
+      const annotation = trimmed.match(/^([A-Za-z_$][\w.$]*)(?:\(|$)/)?.[1];
+      if (annotation && !/^(?:descriptor|flags|Code|Deprecated)$/.test(annotation)) {
+        if (!annotationTarget.annotations.includes(annotation)) annotationTarget.annotations.push(annotation);
+      }
+    } else if (annotationTarget && trimmed) {
+      annotationTarget = undefined; annotationIndent = -1;
+    }
+    if (!inClassBody) continue;
     const instruction = line.match(/^\s*(\d+):\s+(invoke\w+)\s+.*?\/\/\s+(?:InterfaceMethod|Method)\s+(?:([\w/$]+)\.)?"?([\w$<>]+)"?:(\S+)/);
     if (instruction && currentMethod) {
       const owner = instruction[3]?.replaceAll('/', '.') ?? clazz.binaryName;
@@ -240,7 +305,7 @@ function parseJavapClassOutput(
     if (/^(?:public|protected|private|static|final|abstract|native|synchronized|strictfp|transient|volatile|\w)[^=]*;$/.test(trimmed)
       && !trimmed.startsWith('descriptor:')) {
       pending = { declaration: trimmed, method: trimmed.includes('(') };
-      currentMethod = undefined;
+      currentMethod = undefined; currentField = undefined;
       continue;
     }
     const descriptor = trimmed.match(/^descriptor:\s+(\S+)/)?.[1];
@@ -256,13 +321,15 @@ function parseJavapClassOutput(
         const field: JvmField = {
           id: compactId('jvm-field', stageId, clazz.id, name, descriptor), stageId,
           classId: clazz.id, owner: clazz.binaryName, name, descriptor,
-          declaration: pending.declaration, access: memberAccess(pending.declaration),
+          declaration: pending.declaration, access: memberAccess(pending.declaration), annotations: [],
         };
-        if (!batch.fields.some((value) => value.id === field.id)) {
+        const existingField = batch.fields.find((value) => value.id === field.id);
+        if (!existingField) {
           batch.fields.push(field);
           batch.relations.push(createJvmRelation(stageId, 'JvmClass', clazz.id,
             'JvmField', field.id, 'DECLARES_FIELD', batch.fields.length - 1));
         }
+        currentField = existingField ?? field;
       }
       pending = undefined;
       continue;
@@ -302,6 +369,7 @@ function ensureReferencedMethod(
     id, stageId, classId: clazz.id, owner: clazz.binaryName, name, descriptor,
     declaration, access: declaration ? memberAccess(declaration) : undefined,
     hasCode: false, isExternalPlaceholder: placeholder,
+    annotations: [],
   };
   batch.methods.push(method);
   batch.relations.push(createJvmRelation(stageId, 'JvmClass', clazz.id,
@@ -314,15 +382,94 @@ function findExternalSeedClasses(
   byJar: Map<string, JvmArtifact>,
 ): Array<{ artifactId: string; binaryName: string; uri: string }> {
   const result = new Map<string, { artifactId: string; binaryName: string; uri: string }>();
-  for (const value of [...lsp.occurrences.map((item) => item.uri), ...lsp.documents.map((item) => item.uri)]) {
-    if (typeof value !== 'string') continue;
-    const match = value.match(/^jdt:\/\/contents\/([^/]+\.jar)\/([^?]+)\.java/);
-    const artifact = match ? byJar.get(match[1]) : undefined;
-    if (!match || !artifact) continue;
-    const binaryName = decodeURIComponent(match[2]).replaceAll('/', '.');
-    result.set(`${artifact.id}\0${binaryName}\0${value}`, { artifactId: artifact.id, binaryName, uri: value });
+  const values = [
+    ...lsp.occurrences.map((item) => item.uri), ...lsp.documents.map((item) => item.uri),
+    ...lsp.symbols.map((item) => item.uri), ...lsp.hovers.map((item) => item.contents),
+  ];
+  for (const value of values) {
+    for (const reference of resolveJdtReferences(value, byJar)) {
+      result.set(
+        `${reference.artifactId}\0${reference.binaryName}\0${reference.uri}`,
+        reference,
+      );
+    }
   }
   return [...result.values()];
+}
+
+function buildLspJvmBindings(
+  lsp: LspObservationBatch,
+  stageId: string,
+  byJar: Map<string, JvmArtifact>,
+  classByArtifactAndName: Map<string, JvmClass>,
+  methods: JvmMethod[],
+): JvmArtifactBatch['bindings'] {
+  const bindings: JvmArtifactBatch['bindings'] = [];
+  const methodsByClassAndName = new Map<string, JvmMethod[]>();
+  for (const method of methods) {
+    const key = `${method.classId}\0${method.name}`;
+    methodsByClassAndName.set(key, [...(methodsByClassAndName.get(key) ?? []), method]);
+  }
+  const append = (
+    sourceKind: JvmArtifactBatch['bindings'][number]['sourceKind'], sourceId: string,
+    value: string, kind: JvmArtifactBatch['bindings'][number]['kind'], memberName?: string,
+  ) => {
+    if (!sourceId) return;
+    for (const reference of resolveJdtReferences(value, byJar)) {
+      const clazz = classByArtifactAndName.get(`${reference.artifactId}\0${reference.binaryName}`);
+      if (!clazz) continue;
+      bindings.push({
+        id: compactId('lsp-jvm-binding', stageId, sourceId, clazz.id, kind),
+        sourceKind, sourceId, targetKind: 'JvmClass', targetId: clazz.id, kind, stageId,
+        status: 'resolved', confidence: 1,
+        reason: 'JDT dependency URI resolved to class in normalized artifact',
+      });
+      if (!memberName) continue;
+      const candidates = methodsByClassAndName.get(`${clazz.id}\0${memberName}`) ?? [];
+      if (candidates.length !== 1) continue;
+      const method = candidates[0]!;
+      bindings.push({
+        id: compactId('lsp-jvm-binding', stageId, sourceId, method.id, 'SYMBOL_IDENTITY'),
+        sourceKind, sourceId, targetKind: 'JvmMethod', targetId: method.id,
+        kind: 'SYMBOL_IDENTITY', stageId, status: 'resolved', confidence: 0.95,
+        reason: 'Unique JVM method with the LSP-resolved owner and member name',
+      });
+    }
+  };
+  for (const symbol of lsp.symbols) {
+    const isType = ['Class', 'Interface', 'Enum', 'Struct'].includes(symbol.kindName);
+    append(
+      symbolNodeTable(symbol.kindName), symbol.id, symbol.uri,
+      isType ? 'SYMBOL_IDENTITY' : 'SYMBOL_OWNER',
+      isType ? undefined : symbol.name.split('(')[0]?.trim(),
+    );
+  }
+  for (const hover of lsp.hovers) append('LspHover', hover.id, hover.contents, 'HOVER_TARGET');
+  for (const occurrence of lsp.occurrences) {
+    append('LspOccurrence', occurrence.id, occurrence.uri, 'OCCURRENCE_TARGET');
+  }
+  return bindings;
+}
+
+function resolveJdtReferences(
+  value: string,
+  byJar: Map<string, JvmArtifact>,
+): Array<{ artifactId: string; binaryName: string; uri: string }> {
+  if (typeof value !== 'string' || !value.includes('jdt://contents/')) return [];
+  const results = [];
+  const matches = value.matchAll(/jdt:\/\/contents\/([^/\s)]+\.jar)\/([^?\s)]+)\.java[^\s)]*/g);
+  for (const match of matches) {
+    const artifact = byJar.get(decodeURIComponent(match[1]!));
+    if (!artifact) continue;
+    const uri = match[0]!;
+    const decoded = decodeURIComponent(uri);
+    const exactClass = decoded.match(/<([\w.]+)\(([\w$]+)\.class/)?.slice(1);
+    const binaryName = exactClass
+      ? `${exactClass[0]}.${exactClass[1]}`
+      : decodeURIComponent(match[2]!).replaceAll('/', '.');
+    results.push({ artifactId: artifact.id, binaryName, uri });
+  }
+  return results;
 }
 
 async function listJarClassEntries(jarPath: string): Promise<string[]> {
@@ -432,6 +579,28 @@ function memberAccess(value: string): string | undefined {
 function positiveInteger(value: string | undefined): number | undefined {
   const parsed = Number(value); return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
+function javaMajorFromVersion(value: string | undefined): number | undefined {
+  const match = value?.match(/^(?:javap\s+)?(?:(?:1\.)?(\d+))/i);
+  return match ? Number(match[1]) : undefined;
+}
+function conciseError(error: unknown): string {
+  const stderr = (error as { stderr?: unknown } | null)?.stderr;
+  const detail = typeof stderr === 'string' || Buffer.isBuffer(stderr)
+    ? String(stderr).trim().split(/\r?\n/).find(Boolean)
+    : undefined;
+  const message = detail ?? (error instanceof Error ? error.name : String(error));
+  return message.length > 240 ? `${message.slice(0, 237)}...` : message;
+}
+function logDisassemblyProgress(progress: JavapDisassemblyProgress): void {
+  const elapsedSeconds = Math.max(progress.elapsedMs / 1_000, 0.001);
+  const rate = progress.completedClasses / elapsedSeconds;
+  console.log(
+    `[stage:jvm-artifact-enrichment] disassembly ${progress.done ? 'complete' : 'progress'}: `
+    + `${progress.completedClasses}/${progress.totalClasses} classes, `
+    + `${progress.failedClasses} failed, ${rate.toFixed(1)} classes/s, `
+    + `concurrency=${progress.concurrency}`,
+  );
+}
 function compactId(kind: string, ...parts: string[]): string {
   const hash = createHash('sha256');
   for (const part of parts) hash.update(part).update('\0');
@@ -441,7 +610,8 @@ function dedupeArtifactBatch(batch: JvmArtifactBatch): JvmArtifactBatch {
   for (const key of Object.keys(batch) as Array<keyof JvmArtifactBatch>) {
     const values = batch[key] as Array<{ id: string }>;
     const unique = [...new Map(values.map((value) => [value.id, value])).values()];
-    values.splice(0, values.length, ...unique);
+    values.length = 0;
+    appendInChunks(values, unique);
   }
   return batch;
 }

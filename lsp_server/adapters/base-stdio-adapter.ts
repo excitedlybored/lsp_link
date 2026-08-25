@@ -62,11 +62,25 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
 
   public abstract isAvailable(): Promise<boolean>;
 
-  public getSessionMetadata(): { workspacePath?: string; buildRootId?: string; buildSystems?: string[] } {
+  public getSessionMetadata(): {
+    workspacePath?: string; buildRootId?: string; buildRootIds?: string[];
+    buildSystems?: string[]; processShardId?: string;
+  } {
     return { workspacePath: this.sessionWorkspacePath };
   }
 
   protected abstract buildProcessLaunch(workspacePath: string): Promise<StdioProcessLaunch>;
+
+  /** Workspace folders advertised during initialize. Multi-project servers override this. */
+  protected initializeWorkspaceFolders(workspacePath: string): { uri: string; name: string }[] {
+    const resolvedRoot = path.resolve(workspacePath);
+    return [{ uri: pathToFileURL(resolvedRoot).toString(), name: path.basename(resolvedRoot) }];
+  }
+
+  /** Primary LSP root; multi-root adapters may anchor it to their first folder. */
+  protected initializeRootPath(workspacePath: string): string {
+    return path.resolve(workspacePath);
+  }
 
   public async start(workspacePath: string): Promise<void> {
     this.sessionWorkspacePath = path.resolve(workspacePath);
@@ -126,7 +140,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     try {
       await this.connection?.sendNotification('textDocument/didOpen', {
         textDocument: {
-          uri: this.toFileUri(absPath),
+          uri: this.documentUri(absPath),
           languageId: this.language,
           version: 1,
           text: fs.readFileSync(absPath, 'utf8'),
@@ -182,7 +196,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     if (!this.openedDocuments.has(absPath) || !this.connection) return;
     try {
       await this.connection.sendNotification('textDocument/didClose', {
-        textDocument: { uri: this.toFileUri(absPath) },
+        textDocument: { uri: this.documentUri(absPath) },
       });
     } catch {
       // Dead pipe
@@ -197,7 +211,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   ): Promise<CallHierarchyItem[]> {
     await this.openDocument(filePath);
     const result = await this.sendQuery<CallHierarchyItem[]>('textDocument/prepareCallHierarchy', {
-      textDocument: { uri: this.toFileUri(filePath) },
+      textDocument: { uri: this.documentUri(filePath) },
       position: { line, character },
     });
     return result || [];
@@ -224,7 +238,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   ): Promise<LspImplementationResult[]> {
     await this.openDocument(filePath);
     const result = await this.sendQuery<unknown>('textDocument/implementation', {
-      textDocument: { uri: this.toFileUri(filePath) },
+      textDocument: { uri: this.documentUri(filePath) },
       position: { line, character },
     });
 
@@ -245,7 +259,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     const result = await this.sendQuery<{ contents?: unknown; range?: LspHoverResult['range'] }>(
       'textDocument/hover',
       {
-        textDocument: { uri: this.toFileUri(filePath) },
+        textDocument: { uri: this.documentUri(filePath) },
         position: { line, character },
       }
     );
@@ -256,7 +270,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   public async documentSymbols(filePath: string): Promise<LspDocumentSymbol[]> {
     await this.openDocument(filePath);
     const result = await this.sendQuery<unknown>('textDocument/documentSymbol', {
-      textDocument: { uri: this.toFileUri(filePath) },
+      textDocument: { uri: this.documentUri(filePath) },
     });
     return flattenDocumentSymbols(result);
   }
@@ -268,7 +282,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   ): Promise<LspLocation[]> {
     await this.openDocument(filePath);
     const result = await this.sendQuery<unknown>('textDocument/definition', {
-      textDocument: { uri: this.toFileUri(filePath) },
+      textDocument: { uri: this.documentUri(filePath) },
       position: { line, character },
     });
     return normalizeLocations(result);
@@ -281,7 +295,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   ): Promise<LspLocation[]> {
     await this.openDocument(filePath);
     const result = await this.sendQuery<unknown>('textDocument/references', {
-      textDocument: { uri: this.toFileUri(filePath) },
+      textDocument: { uri: this.documentUri(filePath) },
       position: { line, character },
       context: { includeDeclaration: true },
     });
@@ -380,9 +394,9 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       throw new Error(`${this.id} has no JSON-RPC connection`);
     }
 
-    const resolvedRoot = path.resolve(workspacePath);
+    const resolvedRoot = this.initializeRootPath(workspacePath);
     const rootUri = pathToFileURL(resolvedRoot).toString();
-    this.workspaceFolderList = [{ uri: rootUri, name: path.basename(resolvedRoot) }];
+    this.workspaceFolderList = this.initializeWorkspaceFolders(workspacePath);
     const initParams = {
       processId: process.pid,
       rootUri,
@@ -473,22 +487,10 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   private async sendQuery<T>(method: string, params: unknown): Promise<T | undefined> {
-    if (!this.connection) return undefined;
-    const timeoutMs = this.queryTimeoutMs();
-    const source = new rpc.CancellationTokenSource();
-    const timer = setTimeout(() => {
-      try {
-        source.cancel();
-      } catch {
-        // cancel() may throw if the pipe already closed
-      }
-    }, timeoutMs);
     try {
-      return (await this.connection.sendRequest(method, params, source.token)) as T;
+      return await this.request<T>(method, params);
     } catch {
       return undefined;
-    } finally {
-      clearTimeout(timer);
     }
   }
 

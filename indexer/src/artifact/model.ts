@@ -1,3 +1,5 @@
+import type { LspSymbolNodeTable } from '../model.js';
+
 export type JvmArtifactStageStatus = 'complete' | 'partial' | 'failed';
 
 export interface JvmArtifactEnrichmentRun {
@@ -52,6 +54,7 @@ export interface JvmClass {
   isSeed: boolean;
   seedUris: string[];
   wasDisassembled: boolean;
+  annotations: string[];
 }
 
 export interface JvmMethod {
@@ -65,6 +68,7 @@ export interface JvmMethod {
   access?: string;
   hasCode: boolean;
   isExternalPlaceholder: boolean;
+  annotations: string[];
 }
 
 export interface JvmField {
@@ -76,6 +80,7 @@ export interface JvmField {
   descriptor: string;
   declaration?: string;
   access?: string;
+  annotations: string[];
 }
 
 export interface JvmCallSite {
@@ -108,6 +113,21 @@ export interface JvmRelation {
   ordinal?: number;
 }
 
+export type LspJvmBindingSourceKind = 'LspHover' | 'LspOccurrence' | LspSymbolNodeTable;
+
+export interface LspJvmBinding {
+  id: string;
+  sourceKind: LspJvmBindingSourceKind;
+  sourceId: string;
+  targetKind: 'JvmClass' | 'JvmMethod';
+  targetId: string;
+  kind: 'HOVER_TARGET' | 'SYMBOL_OWNER' | 'SYMBOL_IDENTITY' | 'OCCURRENCE_TARGET';
+  stageId: string;
+  status: 'resolved';
+  confidence: number;
+  reason: string;
+}
+
 export interface JvmArtifactBatch {
   runs: JvmArtifactEnrichmentRun[];
   artifacts: JvmArtifact[];
@@ -116,8 +136,12 @@ export interface JvmArtifactBatch {
   fields: JvmField[];
   callSites: JvmCallSite[];
   relations: JvmRelation[];
+  bindings: LspJvmBinding[];
 }
 
 export function emptyJvmArtifactBatch(): JvmArtifactBatch {
-  return { runs: [], artifacts: [], classes: [], methods: [], fields: [], callSites: [], relations: [] };
+  return {
+    runs: [], artifacts: [], classes: [], methods: [], fields: [], callSites: [],
+    relations: [], bindings: [],
+  };
 }

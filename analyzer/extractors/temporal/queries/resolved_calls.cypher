@@ -4,9 +4,15 @@ MATCH (callerOwner)-[ownsCaller:LspRelation]->(caller:LspMethodSymbol),
 WHERE ownsCaller.kind = 'CONTAINS'
   AND hasSite.kind = 'HAS_CALLSITE'
   AND resolves.kind = 'RESOLVES_TO'
+OPTIONAL MATCH (site)-[normalizes:DerivedCallRelation]->(logical:LspLogicalInvocation)
+WHERE normalizes.kind = 'NORMALIZES_TO'
 OPTIONAL MATCH (calleeOwner)-[ownsCallee:LspRelation]->(callee)
 WHERE ownsCallee.kind = 'CONTAINS'
 RETURN DISTINCT site.id AS callSiteId,
+       logical.id AS logicalInvocationId,
+       logical.stableKey AS logicalInvocationStableKey,
+       logical.observationCount AS logicalObservationCount,
+       logical.confidence AS logicalConfidence,
        callerOwner.id AS callerOwnerId,
        callerOwner.name AS callerOwnerName,
        caller.id AS callerId,

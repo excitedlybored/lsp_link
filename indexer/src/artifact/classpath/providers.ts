@@ -104,7 +104,9 @@ export class ExplicitClasspathManifestProvider implements ArtifactClasspathProvi
     const descriptors: NormalizedArtifactDescriptor[] = [];
     const existingManifests = collectArtifactManifestPaths(context).filter(fs.existsSync);
     for (const manifestPath of existingManifests) {
-      descriptors.push(...readArtifactManifest(manifestPath, context.root.id, this.id));
+      for (const descriptor of readArtifactManifest(manifestPath, context.root.id, this.id)) {
+        descriptors.push(descriptor);
+      }
     }
     return descriptors;
   }

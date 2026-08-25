@@ -13,13 +13,14 @@
     "lbug:read": "uv run python analyzer/lbug_client.py",
     "graph:summary": "uv run python analyzer/query_db.py",
     "mcp:analyzer": "uv run python analyzer/mcp_server.py",
-    "rules:analyze": "uv run python -m analyzer.rules.run",
+    "extract": "uv run --with-requirements analyzer/requirements.txt python -m analyzer.extractors.run",
+    "test:extractors": "uv run --with-requirements analyzer/requirements.txt python -m unittest analyzer.extractors.test_core",
     "query": "tsx lsp_server/query.ts",
     "indexer:build": "npm run build --workspace lsp-indexer",
     "indexer:test": "npm run test --workspace lsp-indexer",
     "server": "tsx lsp_server/server_launcher.ts",
     "build": "npm --workspaces run build --if-present",
-    "test": "npm --workspaces run test --if-present"
+    "test": "npm --workspaces run test --if-present && npm run test:extractors"
   },
   "overrides": {
     "vscode-languageserver-protocol": {

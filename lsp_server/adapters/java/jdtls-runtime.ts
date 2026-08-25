@@ -39,8 +39,42 @@ export interface BazelProjectModel {
   classpath: string[];
   runtimeClasspath?: string[];
   sourcePaths: string[];
+  generatedSourcePaths?: string[];
   outputPath?: string;
   javaMajor?: number;
+}
+
+/**
+ * JDT needs full class files for navigation. Bazel compile classpaths commonly
+ * contain interface/header JARs, so replace each header with its matching
+ * runtime binary while retaining compile-only entries that have no match.
+ */
+export function jdtlsResolutionClasspath(model: Pick<BazelProjectModel, 'classpath' | 'runtimeClasspath'>): string[] {
+  const runtime = model.runtimeClasspath ?? [];
+  const runtimeByDirectoryAndIdentity = new Map(runtime.map((jar) => [
+    `${path.dirname(jar)}\0${jarIdentity(jar)}`, jar,
+  ]));
+  const runtimeByIdentity = new Map<string, string[]>();
+  for (const jar of runtime) {
+    const identity = jarIdentity(jar);
+    const values = runtimeByIdentity.get(identity) ?? [];
+    values.push(jar);
+    runtimeByIdentity.set(identity, values);
+  }
+  return [...new Set(model.classpath.map((compileJar) => {
+    const identity = jarIdentity(compileJar);
+    return runtimeByDirectoryAndIdentity.get(`${path.dirname(compileJar)}\0${identity}`)
+      ?? (runtimeByIdentity.get(identity)?.length === 1 ? runtimeByIdentity.get(identity)![0] : undefined)
+      ?? compileJar;
+  }))].sort();
+}
+
+function jarIdentity(jarPath: string): string {
+  return path.basename(jarPath)
+    .replace(/^header_/, '')
+    .replace(/^processed_/, '')
+    .replace(/-hjar(?=\.jar$)/, '')
+    .replace(/\.ijar(?=\.jar$)/, '');
 }
 
 export interface JavaBuildImportStatus {
@@ -61,6 +95,7 @@ export interface JavaBuildRoot {
 export interface JdtlsWorkspaceOptions {
   buildSystems?: JavaBuildSystemKind[];
   excludedRoots?: string[];
+  eclipseProjectImport?: boolean;
 }
 
 const JAVA_IGNORE = ['**/node_modules/**', '**/build/**', '**/target/**', '**/.git/**'];
@@ -161,6 +196,7 @@ export class JdtlsWorkspace {
   readonly usesGradleIsolatedProjects: boolean;
   readonly bazelProjectModel?: BazelProjectModel;
   readonly importExclusions: string[];
+  readonly eclipseProjectImport: boolean;
 
   private constructor(
     sourceFileCount: number,
@@ -168,7 +204,8 @@ export class JdtlsWorkspace {
     requiredJavaMajor?: number,
     usesGradleIsolatedProjects = false,
     bazelProjectModel?: BazelProjectModel,
-    importExclusions: string[] = []
+    importExclusions: string[] = [],
+    eclipseProjectImport = false,
   ) {
     this.sourceFileCount = sourceFileCount;
     this.buildSystems = buildSystems;
@@ -176,6 +213,7 @@ export class JdtlsWorkspace {
     this.usesGradleIsolatedProjects = usesGradleIsolatedProjects;
     this.bazelProjectModel = bazelProjectModel;
     this.importExclusions = importExclusions;
+    this.eclipseProjectImport = eclipseProjectImport;
   }
 
   get usesMaven(): boolean { return this.hasBuildSystem('maven'); }
@@ -217,7 +255,8 @@ export class JdtlsWorkspace {
       (options.excludedRoots ?? []).map((root) => {
         const relative = path.relative(workspacePath, root).split(path.sep).join('/');
         return relative ? `${relative}/**` : '';
-      }).filter(Boolean)
+      }).filter(Boolean),
+      options.eclipseProjectImport ?? false,
     );
   }
 
@@ -268,7 +307,7 @@ export class JdtlsWorkspace {
 
   /** Import build-tool models by default so semantic LSP results have a classpath. */
   importBuildTools(): boolean {
-    return this.buildImportStatuses().some((provider) => provider.status === 'ready');
+    return this.eclipseProjectImport || this.buildImportStatuses().some((provider) => provider.status === 'ready');
   }
 
   /** Buildship's import init scripts are not compatible with Gradle isolated projects. */
@@ -354,8 +393,11 @@ export function createJdtlsProcessLaunch(
             importOnFirstTimeStartup: workspace.importBuildTools() ? 'automatic' : 'disabled',
             resourceFilters: ['node_modules', '.git', 'build', 'target', '.gradle', 'bazel-.*'],
             ...(workspace.bazelProjectModel ? {
-              referencedLibraries: { include: workspace.bazelProjectModel.classpath },
-              sourcePaths: workspace.bazelProjectModel.sourcePaths,
+              referencedLibraries: { include: jdtlsResolutionClasspath(workspace.bazelProjectModel) },
+              sourcePaths: [
+                ...workspace.bazelProjectModel.sourcePaths,
+                ...(workspace.bazelProjectModel.generatedSourcePaths ?? []),
+              ],
               ...(workspace.bazelProjectModel.outputPath ? { outputPath: workspace.bazelProjectModel.outputPath } : {}),
             } : {}),
           },
@@ -595,6 +637,7 @@ function readBazelProjectModel(workspacePath: string): BazelProjectModel | undef
     classpath?: unknown;
     runtimeClasspath?: unknown;
     sourcePaths?: unknown;
+    generatedSourcePaths?: unknown;
     outputPath?: unknown;
     javaMajor?: unknown;
   };
@@ -619,6 +662,9 @@ function readBazelProjectModel(workspacePath: string): BazelProjectModel | undef
       ? { runtimeClasspath: parsed.runtimeClasspath.map(resolveClasspath) }
       : {}),
     sourcePaths: parsed.sourcePaths.map((entry) => resolveWorkspaceRelative(entry, 'sourcePaths')),
+    ...(Array.isArray(parsed.generatedSourcePaths) && parsed.generatedSourcePaths.every((entry) => typeof entry === 'string')
+      ? { generatedSourcePaths: parsed.generatedSourcePaths.map(resolveClasspath) }
+      : {}),
     ...(typeof parsed.outputPath === 'string' ? { outputPath: resolveWorkspaceRelative(parsed.outputPath, 'outputPath') } : {}),
     ...(typeof parsed.javaMajor === 'number' ? { javaMajor: parsed.javaMajor } : {}),
   };

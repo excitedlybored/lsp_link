@@ -48,6 +48,12 @@ Ladybug's relationship group is correspondingly expanded over all legal
 concrete endpoint pairs. This is intentionally more DDL: direct database class
 identity takes precedence over schema compactness.
 
+`id` identifies one ranged protocol observation and may change when source
+moves. `stableKey` deliberately excludes source coordinates and derives from
+the document URI, containment chain, symbol kind, name, and signature. Moving
+a class or method within its file therefore preserves semantic identity while
+retaining the new observed range.
+
 All positions remain zero-based LSP positions. `LspAnalysisRun.positionEncoding`
 records the negotiated unit (`utf-8`, `utf-16`, or `utf-32`). Projection code is
 responsible for converting them to another coordinate convention.
@@ -136,8 +142,24 @@ that are not document symbols are still crawled.
 ```bash
 npm run index -- build /path/to/repository \
   --output /path/to/new/lsp-lbug \
-  --concurrency 4
+  --concurrency 4 \
+  --artifact-concurrency 4
 ```
+
+`--concurrency` controls persistent JDT LS shards. The separate
+`--artifact-concurrency` option bounds concurrent `javap` batches during JVM
+artifact enrichment. Enrichment reports processed, failed, and total class
+counts periodically. `--artifact-max-classes N` can cap disassembly when a
+complete dependency-bytecode crawl is not required.
+
+Intermediate output is durable and resumable. By default it is written to
+`<output>.checkpoints`: one atomic checkpoint per completed build root, then
+one for each complete LSP crawl, call-normalization, and JVM-enrichment stage.
+The input fingerprint covers Java sources, Bazel/Maven/Gradle build files,
+explicit artifact manifests, discovered roots, and stage-affecting options.
+Worker-count changes do not invalidate results because they alter scheduling,
+not graph semantics. `--checkpoint-directory PATH` relocates the files;
+`--no-resume` ignores existing files but records fresh checkpoints.
 
 The output path must not already exist. Every standard semantic capability has
 an `LspCoverage` outcome, including unsupported, excluded, empty, partial,
@@ -163,10 +185,47 @@ For every Bazel header JAR on a prepared build-root classpath, the stage:
    into the build model's `artifact-sources` cache;
 3. creates one `JvmArtifact` and one `JvmClass` per dependency class;
 4. seeds `javap` from external JDT URIs observed during stage 1;
-5. creates separate `JvmMethod`, `JvmField`, and `JvmCallSite` nodes, plus
-   superclass, interface, declaration, and resolved bytecode-call relations;
+5. creates separate `JvmMethod`, `JvmField`, and `JvmCallSite` nodes, preserving
+   bytecode annotations plus superclass, interface, declaration, and resolved
+   bytecode-call relations;
 6. disassembles every unique dependency class, prioritizing stage-1 seeds, and
    records the dependency logic graph.
+
+`JvmClass` represents a class supplied by a compiled dependency artifact, not
+source owned by the indexed repository. The crawler inventories its `.class`
+entry from the JAR; `javap` then statically observes the compiled bytecode and
+metadata to recover its methods, fields, annotations, inheritance, and
+bytecode-level calls. Those recovered facts connect dependency classes to one
+another, while LSP bindings connect repository symbols and annotation uses to
+their canonical dependency `JvmClass` or `JvmMethod` identity. `javap` reads
+the artifact only; it does not execute dependency code.
+
+The combination supplies the cross-boundary link required for framework-aware
+analysis: LSP establishes what the repository source references, and JVM
+enrichment establishes the identity and structure of the referenced compiled
+framework API. A framework extractor can then derive higher-level concepts
+such as Temporal workflows, Spring services, and Kafka consumers without
+relying on annotation names alone.
+
+```mermaid
+flowchart LR
+  S["Repository source\nannotations and calls"] --> L["JDT / LSP crawl\nsymbols, hovers, resolutions"]
+  L --> B["LspJvmBinding\ncanonical cross-boundary link"]
+  J["Dependency JARs"] --> V["javap bytecode enrichment"]
+  V --> C["JvmClass"] --> M["JvmMethod / JvmField\nannotations, inheritance, calls"]
+  B --> C
+  B --> M
+  L --> F["Framework semantic extractor"]
+  C --> F
+  M --> F
+  F --> G["Application graph\nworkflows, services, consumers"]
+```
+
+Original classpath JAR basenames remain as artifact aliases after files move to
+the content-addressed cache. This allows JDT external URIs to resolve to the
+correct `JvmClass`. `LspJvmBinding` then links hovers, external symbols, and
+occurrences to `JvmClass` or an unambiguous `JvmMethod` without mixing derived
+artifact evidence into `LspRelation`.
 
 The default is a complete dependency-class crawl. For exceptionally large
 repositories, opt into a bounded seed-reachable logic crawl with
@@ -178,8 +237,8 @@ Source acquisition is on by default and can be disabled for an offline run with
 discard the binary graph.
 
 Seed classes retain the exact stage-1 external URIs in `JvmClass.seedUris`.
-This provides an auditable join back to the LSP observation without putting a
-bytecode-derived edge in the LSP relationship table.
+This provides an auditable join back to the LSP observation; the structural
+join is persisted separately as `LspJvmBinding`, never as `LspRelation`.
 
 ### General artifact-classpath boundary
 

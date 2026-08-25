@@ -19,6 +19,7 @@ import {
 } from './rows.js';
 import { LSP_RELATION_TABLE, LSP_SCHEMA_QUERIES } from './schema.js';
 import { JvmArtifactRepository } from '../artifact/repository.js';
+import { DerivedCallNormalizationRepository } from '../derived/call-normalization/repository.js';
 
 export interface LbugQueryResultLike {
   close?(): void | Promise<void>;
@@ -51,6 +52,7 @@ export interface LadybugModuleLike {
 export interface LspDatabaseHandle {
   repository: LspLadybugRepository;
   artifactRepository: JvmArtifactRepository;
+  callNormalizationRepository: DerivedCallNormalizationRepository;
   close(): Promise<void>;
 }
 
@@ -67,6 +69,7 @@ export function openLspLadybugDatabase(
   return {
     repository: new LspLadybugRepository(connection),
     artifactRepository: new JvmArtifactRepository(connection),
+    callNormalizationRepository: new DerivedCallNormalizationRepository(connection),
     async close(): Promise<void> {
       await connection.close?.();
       await database.close?.();

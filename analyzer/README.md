@@ -25,13 +25,15 @@ rejected, and LadybugDB is opened in read-only mode.
 ```bash
 npm run graph:summary -- /tmp/repository.lbug
 npm run lbug:read -- /tmp/repository.lbug
-npm run rules:analyze -- /tmp/repository.lbug --pack temporal
+npm run extract -- /tmp/repository.lbug --extractor temporal
 ```
 
 The typed client exposes exact symbol kinds and ranges, individual
 `LspCallSite` observations, occurrence mappings, capability coverage, and the
-separate JVM artifact-enrichment model.
+separate JVM artifact-enrichment model, including typed `LspJvmBinding`
+relationships between protocol observations and compiled artifact identities.
 
-Framework-specific interpretation belongs in [`rules`](rules/README.md). Each
-technology is an isolated rule pack containing its OpenCypher queries and
-Python mapping logic; Temporal is the first implementation.
+Framework-specific interpretation belongs in
+[`extractors`](extractors/README.md). Each technology is an isolated semantic
+extractor containing evidence queries and Python assembly logic; Temporal is
+the first implementation.

@@ -12,7 +12,8 @@ try:
         BaseNode, ClassNode, InterfaceNode, MethodNode, FunctionNode, RouteNode,
         ProcessNode, CommunityNode, FileNode, FolderNode, CodeRelation, ProcessStep,
         JvmArtifactEnrichmentRunNode, JvmArtifactNode, JvmCallSiteNode, JvmClassNode,
-        JvmFieldNode, JvmMethodNode, JvmRelationRecord, LspAnalysisRunNode,
+        JvmFieldNode, JvmMethodNode, JvmRelationRecord, LspJvmBindingRecord, LspAnalysisRunNode,
+        DerivedCallNormalizationRunNode, DerivedCallRelationRecord, LspLogicalInvocationNode,
         LspBuildRootNode, LspCallSiteNode, LspCallTarget, LspCoverageNode,
         LspDiagnosticNode, LspDocumentNode, LspHoverNode, LspOccurrenceMapping,
         LspOccurrenceNode, LspParameterNode, LspPosition, LspRange, LspRelationRecord,
@@ -25,7 +26,8 @@ except ImportError:  # Direct execution: python analyzer/lbug_client.py
         BaseNode, ClassNode, InterfaceNode, MethodNode, FunctionNode, RouteNode,
         ProcessNode, CommunityNode, FileNode, FolderNode, CodeRelation, ProcessStep,
         JvmArtifactEnrichmentRunNode, JvmArtifactNode, JvmCallSiteNode, JvmClassNode,
-        JvmFieldNode, JvmMethodNode, JvmRelationRecord, LspAnalysisRunNode,
+        JvmFieldNode, JvmMethodNode, JvmRelationRecord, LspJvmBindingRecord, LspAnalysisRunNode,
+        DerivedCallNormalizationRunNode, DerivedCallRelationRecord, LspLogicalInvocationNode,
         LspBuildRootNode, LspCallSiteNode, LspCallTarget, LspCoverageNode,
         LspDiagnosticNode, LspDocumentNode, LspHoverNode, LspOccurrenceMapping,
         LspOccurrenceNode, LspParameterNode, LspPosition, LspRange, LspRelationRecord,
@@ -127,7 +129,7 @@ class LadybugClient:
         self._require_lsp()
         rows = self.query(
             "MATCH (n:LspServer) RETURN n.id, n.runId, n.name, n.version, n.languageId, "
-            "n.command, n.status, n.capabilitiesJson, n.buildRootId"
+            "n.command, n.status, n.capabilitiesJson, n.buildRootId, n.processShardId"
         )
         return [LspServerNode(*r) for r in rows]
 
@@ -386,7 +388,7 @@ class LadybugClient:
         rows = self.query(
             "MATCH (n:JvmClass)" + name_filter + " RETURN n.id, n.stageId, n.artifactId, "
             "n.binaryName, n.packageName, n.simpleName, n.kind, n.access, n.superName, "
-            "n.interfaces, n.sourceEntry, n.isSeed, n.seedUris, n.wasDisassembled",
+            "n.interfaces, n.sourceEntry, n.isSeed, n.seedUris, n.wasDisassembled, n.annotations",
             {"name": name} if name else None,
         )
         return [JvmClassNode(
@@ -394,6 +396,7 @@ class LadybugClient:
             simple_name=r[5], kind=r[6], access=r[7], super_name=r[8],
             interfaces=list(r[9] or []), source_entry=r[10], is_seed=bool(r[11]),
             seed_uris=list(r[12] or []), was_disassembled=bool(r[13]),
+            annotations=list(r[14] or []),
         ) for r in rows]
 
     def get_jvm_enrichment_runs(self) -> List[JvmArtifactEnrichmentRunNode]:
@@ -419,12 +422,13 @@ class LadybugClient:
             return []
         rows = self.query(
             "MATCH (n:JvmMethod) RETURN n.id, n.stageId, n.classId, n.owner, n.name, "
-            "n.descriptor, n.declaration, n.access, n.hasCode, n.isExternalPlaceholder"
+            "n.descriptor, n.declaration, n.access, n.hasCode, n.isExternalPlaceholder, "
+            "n.annotations"
         )
         return [JvmMethodNode(
             id=r[0], stage_id=r[1], class_id=r[2], owner=r[3], name=r[4], descriptor=r[5],
             declaration=r[6], access=r[7], has_code=bool(r[8]),
-            is_external_placeholder=bool(r[9]),
+            is_external_placeholder=bool(r[9]), annotations=list(r[10] or []),
         ) for r in rows]
 
     def get_jvm_fields(self) -> List[JvmFieldNode]:
@@ -432,9 +436,9 @@ class LadybugClient:
             return []
         rows = self.query(
             "MATCH (n:JvmField) RETURN n.id, n.stageId, n.classId, n.owner, n.name, "
-            "n.descriptor, n.declaration, n.access"
+            "n.descriptor, n.declaration, n.access, n.annotations"
         )
-        return [JvmFieldNode(*r) for r in rows]
+        return [JvmFieldNode(*r[:8], annotations=list(r[8] or [])) for r in rows]
 
     def get_jvm_call_sites(self) -> List[JvmCallSiteNode]:
         if "JvmCallSite" not in self.tables:
@@ -460,6 +464,78 @@ class LadybugClient:
         return [JvmRelationRecord(
             source_id=r[0], target_id=r[1], id=r[2], kind=r[3], stage_id=r[4],
             status=r[5], ordinal=r[6],
+        ) for r in rows]
+
+    def get_lsp_jvm_bindings(self, kind: Optional[str] = None) -> List[LspJvmBindingRecord]:
+        if "LspJvmBinding" not in self.tables:
+            return []
+        kind_filter = " WHERE binding.kind = $kind" if kind else ""
+        rows = self.query(
+            "MATCH (source)-[binding:LspJvmBinding]->(target)" + kind_filter + " "
+            "RETURN source.id, target.id, binding.id, binding.kind, binding.stageId, "
+            "binding.status, binding.confidence, binding.reason",
+            {"kind": kind} if kind else None,
+        )
+        return [LspJvmBindingRecord(
+            source_id=r[0], target_id=r[1], id=r[2], kind=r[3], stage_id=r[4],
+            status=r[5], confidence=float(r[6]), reason=r[7],
+        ) for r in rows]
+
+    def get_call_normalization_runs(self) -> List[DerivedCallNormalizationRunNode]:
+        if "DerivedCallNormalizationRun" not in self.tables:
+            return []
+        rows = self.query(
+            "MATCH (n:DerivedCallNormalizationRun) RETURN n.id, n.lspRunId, n.status, "
+            "n.algorithmVersion, n.startedAt, n.completedAt, n.observationCount, "
+            "n.invocationCount, n.normalizedObservationCount, "
+            "n.ambiguousObservationCount, n.errorCount"
+        )
+        return [DerivedCallNormalizationRunNode(
+            id=r[0], lsp_run_id=r[1], status=r[2], algorithm_version=r[3],
+            started_at=r[4], completed_at=r[5], observation_count=int(r[6]),
+            invocation_count=int(r[7]), normalized_observation_count=int(r[8]),
+            ambiguous_observation_count=int(r[9]), error_count=int(r[10]),
+        ) for r in rows]
+
+    def get_logical_invocations(self) -> List[LspLogicalInvocationNode]:
+        if "LspLogicalInvocation" not in self.tables:
+            return []
+        rows = self.query(
+            "MATCH (n:LspLogicalInvocation) RETURN n.id, n.stageId, n.runId, n.documentId, "
+            "n.callerSymbolId, n.callerStableKey, n.targetFamilyId, n.targetFamilyStableKey, "
+            "n.canonicalTargetId, n.canonicalTargetKind, n.startLine, n.startCharacter, "
+            "n.endLine, n.endCharacter, n.observationCount, n.directions, n.capabilities, "
+            "n.stableKey, n.status, n.confidence, n.algorithmVersion"
+        )
+        return [LspLogicalInvocationNode(
+            id=r[0], stage_id=r[1], run_id=r[2], document_id=r[3],
+            caller_symbol_id=r[4], caller_stable_key=r[5], target_family_id=r[6],
+            target_family_stable_key=r[7], canonical_target_id=r[8],
+            canonical_target_kind=r[9],
+            range=LspRange(
+                start=LspPosition(line=int(r[10]), character=int(r[11])),
+                end=LspPosition(line=int(r[12]), character=int(r[13])),
+            ),
+            observation_count=int(r[14]), directions=list(r[15] or []),
+            capabilities=list(r[16] or []), stable_key=r[17], status=r[18],
+            confidence=float(r[19]), algorithm_version=r[20],
+        ) for r in rows]
+
+    def get_derived_call_relations(
+        self, kind: Optional[str] = None,
+    ) -> List[DerivedCallRelationRecord]:
+        if "DerivedCallRelation" not in self.tables:
+            return []
+        kind_filter = " WHERE relation.kind = $kind" if kind else ""
+        rows = self.query(
+            "MATCH (source)-[relation:DerivedCallRelation]->(target)" + kind_filter + " "
+            "RETURN source.id, target.id, relation.id, relation.kind, relation.stageId, "
+            "relation.confidence, relation.ordinal",
+            {"kind": kind} if kind else None,
+        )
+        return [DerivedCallRelationRecord(
+            source_id=r[0], target_id=r[1], id=r[2], kind=r[3], stage_id=r[4],
+            confidence=float(r[5]), ordinal=int(r[6]),
         ) for r in rows]
 
     def get_classes(self) -> List[ClassNode]:

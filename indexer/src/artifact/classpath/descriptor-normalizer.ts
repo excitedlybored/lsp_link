@@ -48,6 +48,10 @@ export function mergeArtifactDescriptors(
     existing.modulePath ||= descriptor.modulePath;
     existing.sourceJarPath ??= descriptor.sourceJarPath;
     existing.coordinate ??= descriptor.coordinate;
+    existing.classpathEntryAliases = [...new Set([
+      ...(existing.classpathEntryAliases ?? []),
+      ...(descriptor.classpathEntryAliases ?? []),
+    ])];
     if (existing.scope === 'unknown') existing.scope = descriptor.scope;
   }
   return [...mergedByArtifact.values()];
@@ -105,6 +109,12 @@ export function retainArtifactClasspathEntries(
 ): NormalizedArtifactDescriptor[] {
   fs.mkdirSync(cacheDirectory, { recursive: true });
   return descriptors.map((descriptor) => {
+    const classpathEntryAliases = [...new Set([
+      ...(descriptor.classpathEntryAliases ?? []),
+      descriptor.classpathEntryPath,
+      descriptor.headerJarPath,
+      descriptor.binaryJarPath,
+    ].filter((value): value is string => Boolean(value)).map((value) => path.basename(value)))];
     const retainedPaths = new Map<string, string>();
     const retain = (value: string | undefined): string | undefined => {
       if (!value) return undefined;
@@ -130,6 +140,7 @@ export function retainArtifactClasspathEntries(
       headerJarPath: retain(descriptor.headerJarPath),
       binaryJarPath: retain(descriptor.binaryJarPath),
       sourceJarPath: retain(descriptor.sourceJarPath),
+      classpathEntryAliases,
     };
   });
 }

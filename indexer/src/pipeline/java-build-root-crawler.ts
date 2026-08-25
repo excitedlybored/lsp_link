@@ -8,6 +8,7 @@ import type { LspAnalysisRun, LspBuildRoot, LspServer } from '../model.js';
 import { JdtlsWorkspace, type JavaBuildRoot } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
 import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
 import type { JavaBuildRootCrawlResult, JavaBuildRootPreparation } from './types.js';
+import type { ILspAdapter } from '../../../lsp_server/contracts/lsp-adapter.interface.js';
 
 export async function crawlJavaBuildRoot(
   adapterRegistry: LspAdapterRegistry,
@@ -18,9 +19,12 @@ export async function crawlJavaBuildRoot(
   files: string[],
   preparation?: JavaBuildRootPreparation,
   artifactManifestPaths: string[] = [],
+  sharedAdapter?: ILspAdapter,
+  processShardId?: string,
+  requireSharedAdapter = false,
 ): Promise<JavaBuildRootCrawlResult> {
   const buildRoot = createBuildRoot(run, root, preparation);
-  const server = createLspServer(run, root);
+  const server = createLspServer(run, root, processShardId);
   const documents = files.map((file) => workspaceDocument(file, root.id));
 
   if (root.systems.includes('bazel') && preparation?.status === 'failed') {
@@ -37,7 +41,7 @@ export async function crawlJavaBuildRoot(
     );
   }
 
-  const adapter = await adapterRegistry.getOrStartJavaBuildRoot(root);
+  const adapter = sharedAdapter ?? (requireSharedAdapter ? null : await adapterRegistry.getOrStartJavaBuildRoot(root));
   if (!adapter) {
     return failedBuildRootResult(
       artifactClasspathResolver,
@@ -103,7 +107,7 @@ export async function crawlJavaBuildRoot(
       timeoutCount: error instanceof Error && /timeout|timed out/i.test(error.message) ? 1 : 0,
     };
   } finally {
-    await adapterRegistry.shutdownAdapter(adapter);
+    if (!sharedAdapter) await adapterRegistry.shutdownAdapter(adapter);
   }
 }
 
@@ -133,7 +137,7 @@ function createBuildRoot(
   };
 }
 
-function createLspServer(run: LspAnalysisRun, root: JavaBuildRoot): LspServer {
+function createLspServer(run: LspAnalysisRun, root: JavaBuildRoot, processShardId?: string): LspServer {
   return {
     id: `server:${run.id}:${root.id}`,
     runId: run.id,
@@ -142,6 +146,7 @@ function createLspServer(run: LspAnalysisRun, root: JavaBuildRoot): LspServer {
     status: 'partial',
     capabilitiesJson: '{}',
     buildRootId: root.id,
+    processShardId,
   };
 }
 

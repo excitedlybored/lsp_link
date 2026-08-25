@@ -1,3 +1,11 @@
+import { LSP_SYMBOL_NODE_TABLES } from '../model.js';
+
+const LSP_JVM_BINDING_SOURCES = ['LspHover', 'LspOccurrence', ...LSP_SYMBOL_NODE_TABLES];
+const LSP_JVM_BINDING_ENDPOINTS = LSP_JVM_BINDING_SOURCES.flatMap((source) => [
+  `    FROM ${source} TO JvmClass`,
+  `    FROM ${source} TO JvmMethod`,
+]).join(',\n');
+
 export const JVM_ARTIFACT_SCHEMA_QUERIES = [
   `CREATE NODE TABLE JvmArtifactEnrichmentRun (
     id STRING, lspRunId STRING, status STRING, startedAt STRING, completedAt STRING,
@@ -14,14 +22,14 @@ export const JVM_ARTIFACT_SCHEMA_QUERIES = [
     id STRING, stageId STRING, artifactId STRING, binaryName STRING,
     packageName STRING, simpleName STRING, kind STRING, access STRING,
     superName STRING, interfaces STRING[], sourceEntry STRING, isSeed BOOLEAN,
-    seedUris STRING[], wasDisassembled BOOLEAN, PRIMARY KEY (id))`,
+    seedUris STRING[], wasDisassembled BOOLEAN, annotations STRING[], PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmMethod (
     id STRING, stageId STRING, classId STRING, owner STRING, name STRING,
     descriptor STRING, declaration STRING, access STRING, hasCode BOOLEAN,
-    isExternalPlaceholder BOOLEAN, PRIMARY KEY (id))`,
+    isExternalPlaceholder BOOLEAN, annotations STRING[], PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmField (
     id STRING, stageId STRING, classId STRING, owner STRING, name STRING,
-    descriptor STRING, declaration STRING, access STRING, PRIMARY KEY (id))`,
+    descriptor STRING, declaration STRING, access STRING, annotations STRING[], PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmCallSite (
     id STRING, stageId STRING, callerMethodId STRING, bytecodeOffset INT64,
     opcode STRING, targetOwner STRING, targetName STRING,
@@ -35,4 +43,8 @@ export const JVM_ARTIFACT_SCHEMA_QUERIES = [
     FROM JvmMethod TO JvmCallSite,
     FROM JvmCallSite TO JvmMethod,
     id STRING, kind STRING, stageId STRING, status STRING, ordinal INT32)`,
+  `CREATE REL TABLE LspJvmBinding (
+${LSP_JVM_BINDING_ENDPOINTS},
+    id STRING, kind STRING, stageId STRING, status STRING,
+    confidence DOUBLE, reason STRING)`,
 ] as const;

@@ -41,7 +41,7 @@ export class ArtifactClasspathResolver {
   ): Promise<void> {
     try {
       const resolved = await provider.resolveArtifacts(context);
-      artifacts.push(...resolved);
+      for (const artifact of resolved) artifacts.push(artifact);
       attempts.push(createProviderAttempt(provider.id, resolved.length));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
