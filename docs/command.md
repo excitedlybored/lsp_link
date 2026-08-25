@@ -1,7 +1,8 @@
 # Command reference
 
 Run all commands from the repository root after `./install.sh` unless noted.
-Use Node.js 20.17+ or 22.9+ with npm 9.2+.
+Use Node.js 20.17+ or 22.9+ with npm 9.2+. Python analyzer setup requires
+`uv` and `python3.12` on `PATH`.
 
 ## Install
 

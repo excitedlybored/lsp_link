@@ -32,20 +32,34 @@ if [ -z "$jdtls_launcher" ]; then
 fi
 echo "  Eclipse JDT.LS 1.57.0 OK"
 
-# 4. Python virtual environment for analyzer tooling. vendor/python seeds the
-#    install, but uv may use its configured Python index for missing wheels.
+# 4. Python virtual environment for analyzer tooling. Use the locally installed
+#    python3.12 explicitly; do not let uv select or download a different Python.
 echo "[4/4] Initializing Python .venv..."
-if command -v uv >/dev/null 2>&1; then
-  if [ ! -d ".venv" ]; then
-    uv venv --python 3.12 .venv
-  fi
-  if [ -d "vendor/python" ]; then
-    uv pip install --find-links vendor/python -r analyzer/requirements.lock.txt
-  else
-    uv pip install -r analyzer/requirements.txt
+if ! command -v uv >/dev/null 2>&1; then
+  echo "  'uv' is required for Python analyzer setup. Install uv, then re-run this script." >&2
+  exit 1
+fi
+if ! command -v python3.12 >/dev/null 2>&1; then
+  echo "  'python3.12' is required for Python analyzer setup. Install Python 3.12, then re-run this script." >&2
+  exit 1
+fi
+
+python312_bin=$(command -v python3.12)
+venv_python=".venv/bin/python"
+if [ -e "$venv_python" ]; then
+  venv_version=$($venv_python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+  if [ "$venv_version" != "3.12" ]; then
+    echo "  Existing .venv uses Python $venv_version; remove .venv and re-run to create a Python 3.12 environment." >&2
+    exit 1
   fi
 else
-  echo "  'uv' not found, skipping Python setup (install uv, then re-run this script, if you need it)."
+  uv venv --python "$python312_bin" .venv
+fi
+
+if [ -d "vendor/python" ]; then
+  uv pip install --python "$venv_python" --find-links vendor/python -r analyzer/requirements.lock.txt
+else
+  uv pip install --python "$venv_python" -r analyzer/requirements.lock.txt
 fi
 
 echo ""
