@@ -1,6 +1,22 @@
-# Set 1: Standalone LSP Server Daemon (`lsp_server/`)
+# Standalone LSP Server (`lsp_server/`)
 
-This directory contains the standalone server launcher for **Eclipse JDT Language Server (`eclipse.jdt.ls`)**.
+This directory contains the standalone server launcher for **Eclipse JDT Language Server (`eclipse.jdt.ls`)** and adapters for TypeScript, Python, C++, Rust, C#, and COBOL.
+
+## Install after cloning
+
+All Node-based LSP dependencies, including the `tsx`/esbuild binaries for
+supported host platforms, are vendored in the repository-level `vendor/npm/`.
+A fresh clone therefore installs without contacting npmjs or an enterprise
+Artifactory:
+
+```bash
+./install.sh
+```
+
+The root `.npmrc` enforces offline installation and `./install.sh` runs `npm ci
+--offline`. Do not commit an Artifactory URL or authentication token in this
+repository. Java JDT.LS, clangd, rust-analyzer, and the other non-Node language
+servers remain separately installed system/runtime prerequisites.
 
 ---
 
@@ -11,7 +27,7 @@ This directory contains the standalone server launcher for **Eclipse JDT Languag
 
 ## 2. Start via TypeScript
 ```bash
-npx tsx lsp_server/server_launcher.ts sample_projects/spring-boot-demo
+npm run server -- ../sample_projects/spring-boot-demo
 ```
 
 ---
@@ -23,7 +39,7 @@ You can query the LSP server directly from this folder without going through Git
 cd lsp_server
 
 # 1. Outgoing / Incoming Call Hierarchy Tree:
-npx tsx query.ts calls ../sample_projects/spring-boot-demo --symbol showExecutionHistory
+npm run query -- calls ../sample_projects/spring-boot-demo --symbol showExecutionHistory
 
 # 2. Interface to Concrete Implementations:
 npx tsx query.ts impl ../sample_projects/spring-boot-demo --symbol DemoWorkflow
