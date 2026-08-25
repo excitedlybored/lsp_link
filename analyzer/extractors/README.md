@@ -61,6 +61,11 @@ The Temporal extractor combines independent evidence:
 Use `--include-raw` to include every evidence-query row. Without it, the report
 contains assembled workflows and an `evidenceQueryCounts` audit trail.
 
+The extractor does not treat a partial analysis-run label as proof that a
+workflow is absent. Consumers should inspect `LspCoverage` for the capabilities
+their conclusion depends on. Empty results, unmapped results, provider failures,
+and timeouts have distinct meanings.
+
 ## Adding an extractor
 
 Create `<name>/manifest.json`, place each query in `queries/*.cypher`, and

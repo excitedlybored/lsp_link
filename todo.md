@@ -61,8 +61,10 @@
 
 - Persist completed roots into staging tables immediately instead of retaining
   the entire monorepo crawl in memory.
-- Record resumable checkpoints so a failed run can continue from completed
-  roots.
+- [x] Record atomic resumable checkpoints for every completed build root and
+  for the merged LSP, call-normalization, and artifact-enrichment stages.
+- [x] Validate checkpoint compatibility against source/build inputs and
+  stage-affecting configuration.
 - Finalize and deduplicate the canonical LadybugDB graph after all roots finish.
 
 ### 8. Benchmark before raising process concurrency

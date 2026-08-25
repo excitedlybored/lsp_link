@@ -9,6 +9,7 @@ artifact enrichment, and persistence.
 Language servers
   -> protocol observations
   -> normalized protocol observations
+  -> logical-call normalization (derived provenance)
   -> JVM artifact enrichment (separate provenance)
   -> *.lbug
 ```
@@ -98,8 +99,9 @@ Relation kinds have explicit legal endpoint classes. For example,
 `IMPLEMENTATION_OF` permits concrete symbol-class pairs. A physically valid but
 semantically invalid pair is rejected before persistence.
 
-The current schema contains 38 node tables (26 symbol classes plus 12 protocol
-observation/support classes) and one relationship table.
+The LSP schema contains 38 node tables (26 symbol classes plus 12 protocol
+observation/support classes) and one relationship table. Logical-call and JVM
+artifact stages use their own node and relationship tables.
 
 ## Ingestion and persistence
 
@@ -130,14 +132,20 @@ npm test
 ## Complete JDT LS crawl
 
 The production crawler uses language-server protocol responses directly. It
-discovers Java build roots, prepares up to four Bazel project models concurrently, then runs
-up to four independent JDT LS processes. Requests inside each process remain
-serialized so one compiler is never flooded.
+discovers Java build roots, prepares Bazel project models concurrently, and
+distributes roots across a bounded pool of persistent multi-project JDT LS
+processes. `--concurrency` selects the shard count. Requests inside each process
+remain serialized so one compiler is never flooded.
 
 JDT `documentSymbol` supplies declaration nodes and hierarchy. JDT semantic
 tokens then seed usage-level definition, declaration, type-definition,
 implementation, and hover requests, so imported types and dependency usages
 that are not document symbols are still crawled.
+
+Java primitives and synthetic array `length` have no navigable type
+declaration. When JDT LS returns its known malformed empty envelope for those
+positions, the Java adapter converts only that exact response to a nullable
+empty result. It is counted as successful/empty, not as a capability failure.
 
 ```bash
 npm run index -- build /path/to/repository \
@@ -170,7 +178,15 @@ delimiters, not an AST. Every location observation retains both the request
 URI/position and the response URI/ranges, while each call-hierarchy
 `fromRange` remains a separate `LspCallSite`.
 
-## Stage 2: JVM artifact enrichment
+## Stage 2: logical-call normalization
+
+Incoming and outgoing call hierarchy can report the same invocation more than
+once. This derived stage groups observations by caller, target implementation
+family, document, and exact source range. It writes
+`LspLogicalInvocation`/`DerivedCallRelation` records while preserving every raw
+`LspCallSite`. Ambiguous observations remain explicit rather than being merged.
+
+## Stage 3: JVM artifact enrichment
 
 Artifact enrichment runs only after the LSP crawl has finished. It has its own
 `JvmArtifactEnrichmentRun` provenance node, five JVM entity tables, and a

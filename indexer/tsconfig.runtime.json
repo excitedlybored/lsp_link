@@ -10,7 +10,6 @@
     "test/**/*.ts"
   ],
   "exclude": [
-    "../lsp_server/node_modules",
-    "../lsp_server/vendor"
+    "../lsp_server/node_modules"
   ]
 }

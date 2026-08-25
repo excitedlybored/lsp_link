@@ -2,13 +2,21 @@
 
 ## Status
 
-This document records the assumptions that motivated the LSP-native redesign.
-The legacy parser-owned graph described below has now been removed. The active
-implementation is split across `lsp_server/`, `indexer/`, and `analyzer/`.
+This is a historical design audit. It records assumptions that motivated the
+LSP-native redesign; statements in the numbered findings describe the removed
+parser-owned implementation, not the current repository. The active system is
+split across `lsp_server/`, `indexer/`, and `analyzer/` and is documented in
+their package READMEs.
 
-Until the integration is redesigned and coverage can be measured, descriptions such as "compiler ground truth", "compiler-verified graph", and "100% compiler precision" should be treated as unproven.
+The redesign now provides direct symbol classes, call-site nodes, structured
+capability observations, per-capability coverage, build-root/server provenance,
+logical-call normalization, JVM artifact evidence, LSP-to-JVM bindings,
+persistent JDT shards, and resumable stage checkpoints. Claims such as
+"compiler ground truth" or universal precision remain inappropriate: negotiated
+capabilities, mapping coverage, diagnostics, and extractor evidence must be
+reported for each run.
 
-## Current Data Flow
+## Historical Data Flow (removed)
 
 ```text
 Legacy parser crawl
@@ -19,11 +27,11 @@ Legacy parser crawl
   -> graph.json and LadybugDB
 ```
 
-The intended model should instead treat protocol servers, artifact analyzers,
-and framework analyzers as evidence providers. Canonical identity,
-reconciliation, provenance, and completeness belong to the knowledge base.
+The active model now treats protocol servers, artifact analyzers, and framework
+extractors as separate evidence providers. Raw LSP facts, derived calls, and
+bytecode facts use separate provenance and relationship tables.
 
-## Confirmed Invalid or Incomplete Assumptions
+## Historical Invalid or Incomplete Assumptions
 
 ### 1. One canonical LSP implementation exists
 
@@ -196,7 +204,10 @@ It does not. Deleting a heuristic relationship when LSP produces a different res
 
 ### 17. Full database replacement provides adequate LSP lifecycle semantics
 
-It does not address staleness or incremental provenance. The isolated LSP pipeline loads `.gitnexus/graph.json`, enriches it, and rewrites LadybugDB, but there is no persisted LSP run identity or per-observation validity boundary.
+The former implementation did not address staleness or incremental provenance.
+The active pipeline has persisted run identity and atomic stage/root
+checkpoints. Document-level incremental recrawling and streamed canonical
+database finalization remain future work.
 
 ## Isolated First-Class LSP Schema Decision
 
@@ -224,9 +235,10 @@ Capability results remain first-class nodes rather than inferred symbol
 properties: call sites, occurrences, diagnostics, hover responses, semantic
 tokens, signature-help responses, signatures, parameters, and coverage.
 
-This isolated database remains a protocol-observation store. Projection into
-GitNexus `Class`, `Method`, `CALLS`, `IMPLEMENTS`, and downstream analysis
-classes is a separate reconciliation stage.
+The LSP tables remain a protocol-observation store. Logical calls are derived
+into separate `LspLogicalInvocation` nodes, while JVM artifacts and semantic
+extractors retain separate evidence boundaries rather than projecting into the
+removed legacy `Class`/`Method` graph.
 
 The isolated package now also provides the write path rather than DDL alone:
 

@@ -8,7 +8,7 @@ on:
 
 jobs:
   test-and-build:
-    name: Build & ingest (Node ${{ matrix.node-version }})
+    name: Offline install and test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
 
     strategy:
@@ -31,11 +31,16 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
 
-      - name: Install workspaces
-        run: npm install
+      - name: Set up uv and Python 3.12
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
 
-      - name: AST-only analyze (spring-boot-demo)
-        run: npm run analyze:no-lsp -- sample_projects/spring-boot-demo
+      - name: Install workspaces
+        run: npm ci --offline
+
+      - name: Build and test
+        run: npm test
 
       - name: Query CLI help
         run: npm run query -- --help

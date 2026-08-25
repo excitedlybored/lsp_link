@@ -10,11 +10,11 @@
     "test": "npm run build && node --test test/*.test.mjs && tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@ladybugdb/core": "0.19.1",
-    "glob": "file:../lsp_server/vendor/glob-13.0.6.tgz",
-    "tsx": "file:../lsp_server/vendor/tsx-4.23.12.tgz"
+    "@ladybugdb/core": "file:../vendor/npm/ladybugdb-core-0.19.1.tgz",
+    "glob": "file:../vendor/npm/glob-13.0.6.tgz",
+    "tsx": "file:../vendor/npm/tsx-4.23.12.tgz"
   },
   "devDependencies": {
-    "typescript": "file:../lsp_server/vendor/typescript-5.9.3.tgz"
+    "typescript": "file:../vendor/npm/typescript-5.9.3.tgz"
   }
 }

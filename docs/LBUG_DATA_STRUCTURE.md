@@ -24,12 +24,23 @@ is modeled as:
 Lsp*Symbol -[HAS_CALLSITE]-> LspCallSite -[RESOLVES_TO]-> Lsp*Symbol
 ```
 
+## Derived logical-call model
+
+Incoming and outgoing call-hierarchy responses may observe the same source
+invocation independently. The post-crawl normalization stage writes
+`DerivedCallNormalizationRun`, `LspLogicalInvocation`, and
+`DerivedCallRelation` without altering raw `LspCallSite` observations. Stable
+logical identity includes the caller, target implementation family, source
+document, and exact invocation range. Provider disagreement remains visible.
+
 ## JVM artifact model
 
 The post-crawl artifact stage writes `JvmArtifactEnrichmentRun`, `JvmArtifact`,
 `JvmClass`, `JvmMethod`, `JvmField`, and `JvmCallSite` nodes. `JvmRelation`
 stores containment, inheritance, interface, declaration, and bytecode-call
 facts. Artifact-derived evidence is never written as an `LspRelation`.
+`LspJvmBinding` connects LSP observations to exact `JvmClass` or `JvmMethod`
+identities without representing bytecode evidence as an LSP response.
 
 ## Example queries
 
@@ -50,5 +61,11 @@ MATCH (artifact:JvmArtifact)-[:JvmRelation {kind: 'CONTAINS_CLASS'}]->(class:Jvm
 RETURN artifact.coordinate, class.binaryName;
 ```
 
-Schema DDL lives in `indexer/src/lbug/schema.ts` and
+```cypher
+MATCH (site:LspCallSite)-[:DerivedCallRelation {kind: 'NORMALIZES_TO'}]->(call:LspLogicalInvocation)
+RETURN call.stableKey, call.observationCount, call.status;
+```
+
+Schema DDL lives in `indexer/src/lbug/schema.ts`,
+`indexer/src/derived/call-normalization/schema.ts`, and
 `indexer/src/artifact/schema.ts`. The analyzer opens the database read-only.

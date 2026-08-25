@@ -1,8 +1,0 @@
-spring:
-  temporal:
-    test-server:
-      enabled: true
-    workersAutoDiscovery:
-      packages: com.temporal
-  main:
-    allow-bean-definition-overriding: true

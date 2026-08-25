@@ -8,14 +8,16 @@ Thank you for your interest in contributing to **LSP-Link**! This guide outlines
 
 ### Prerequisites
 - **Node.js**: v20+ or v22+
-- **Java**: OpenJDK 21 LTS (recommended for Eclipse JDT.LS)
-- **Optional Language Runtimes**: Python 3.10+, LLVM `clangd`, Rust toolchain (`cargo`, `rust-analyzer`)
+- **Java**: OpenJDK 21+ for Eclipse JDT.LS; Java 25 is supported and may be
+  selected when required by a project model
+- **Analyzer tooling**: `uv` with Python 3.12
+- **Optional Language Runtimes**: LLVM `clangd`, Rust toolchain (`cargo`, `rust-analyzer`)
 
 ### Clone & install
 ```bash
 git clone git@github.com:excitedlybored/lsp_link.git
 cd lsp_link
-npm install
+./install.sh
 ```
 
 ---
@@ -27,6 +29,10 @@ npm install
 npm run index -- build sample_projects/spring-boot-demo --output /tmp/spring-demo.lbug
 npm run graph:summary -- /tmp/spring-demo.lbug
 ```
+
+Long crawls write resumable checkpoints beside the requested output. Keep
+these files while diagnosing or retrying a failed run; deleting them forces the
+corresponding LSP or artifact stage to execute again.
 
 ### LSP query CLI (`lsp_server/`)
 ```bash
@@ -50,7 +56,7 @@ Python only queries an existing `.lbug` database. Language adapters belong in
 ## 3. Adding a New Language Adapter
 
 To add a Language Server adapter:
-1. Add a class extending `BaseStdioAdapter` in `lsp_server/adapters/<lang>/`.
-2. Implement `isAvailable()` and `getLaunchConfig(workspacePath)`.
+1. Add a class extending `BaseStdioLspAdapter` in `lsp_server/adapters/<lang>/`.
+2. Implement availability and process-launch configuration.
 3. Register it in `lsp_server/registry/lsp-adapter-registry.ts` and map the file extension.
 4. Run `npm test`.

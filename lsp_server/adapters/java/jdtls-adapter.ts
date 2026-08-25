@@ -110,8 +110,18 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
 
   public override async request<T>(method: string, params: unknown): Promise<T> {
     const mappedParams = this.mapProtocolUris(params, 'toStaged');
-    const result = await super.request<unknown>(method, mappedParams);
-    return this.mapProtocolUris(result, 'toSource') as T;
+    try {
+      const result = await super.request<unknown>(method, mappedParams);
+      return this.mapProtocolUris(result, 'toSource') as T;
+    } catch (error) {
+      // JDT LS emits an invalid JSON-RPC envelope with neither `result` nor
+      // `error` for typeDefinition on Java primitives and synthetic array
+      // properties such as `array.length`. The protocol result is nullable;
+      // normalize only this exact provider quirk to the semantically correct
+      // empty result while preserving every genuine transport/server error.
+      if (isJdtlsEmptyTypeDefinitionResponse(method, error)) return null as T;
+      throw error;
+    }
   }
 
   public override takeNotifications<T>(method: string): T[] {
@@ -208,6 +218,12 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
       },
     };
   }
+}
+
+export function isJdtlsEmptyTypeDefinitionResponse(method: string, error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return method === 'textDocument/typeDefinition'
+    && message.includes('The received response has neither a result nor an error property.');
 }
 
 function jdtFileUri(filePath: string): string {

@@ -37,3 +37,8 @@ Framework-specific interpretation belongs in
 [`extractors`](extractors/README.md). Each technology is an isolated semantic
 extractor containing evidence queries and Python assembly logic; Temporal is
 the first implementation.
+
+The tested 40-root Bazel fixture produced 40/40 confirmed Temporal workflow
+contracts and 37/37 source implementations with no missing or extra workflow
+files. This is a fixture result, not a universal accuracy claim; every report
+retains its evidence-query counts and underlying LadybugDB node identifiers.

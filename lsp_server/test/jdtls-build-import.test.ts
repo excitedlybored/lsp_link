@@ -13,6 +13,7 @@ import {
 } from '../adapters/java/jdtls-runtime.js';
 import { ensureBazelProjectModel, prepareBazelProjectModels } from '../adapters/java/bazel-project-model.js';
 import { planJdtlsBuildRootShards, prepareJdtlsShardWorkspace } from '../adapters/java/jdtls-sharding.js';
+import { isJdtlsEmptyTypeDefinitionResponse } from '../adapters/java/jdtls-adapter.js';
 
 const runtime: JdtlsRuntime = {
   jdkJavaBin: '/jdk/25/bin/java',
@@ -20,6 +21,18 @@ const runtime: JdtlsRuntime = {
   equinoxLauncherJar: '/jdtls/launcher.jar',
   osgiConfigDir: '/jdtls/config',
 };
+
+test('normalizes only JDT LS empty type-definition envelopes to nullable results', () => {
+  const emptyEnvelope = new Error(
+    'Request textDocument/typeDefinition failed: '
+    + 'The received response has neither a result nor an error property.',
+  );
+  assert.equal(isJdtlsEmptyTypeDefinitionResponse('textDocument/typeDefinition', emptyEnvelope), true);
+  assert.equal(isJdtlsEmptyTypeDefinitionResponse('textDocument/definition', emptyEnvelope), false);
+  assert.equal(isJdtlsEmptyTypeDefinitionResponse(
+    'textDocument/typeDefinition', new Error('Request failed: project unavailable'),
+  ), false);
+});
 
 function fixture(files: Record<string, string>): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jdtls-build-import-'));

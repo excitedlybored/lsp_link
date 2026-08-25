@@ -1,6 +1,13 @@
 # Ingress & Egress Boundary Architecture Specification
 
-This specification documents the **SDK-Driven Boundary Taxonomy & Graph Linking Engine** implemented in **LSP-Link**.
+> **Status: archived specification.** The legacy `Route`, `Method`, `Class`,
+> `Process`, regex registry, and commands below are not implemented by the
+> active LSP-native pipeline. The document is retained as a proposed taxonomy.
+> A current implementation should be a LadybugDB-only extractor under
+> `analyzer/extractors/` and must use structured LSP/JVM identities.
+
+This specification documents the former proposal for an **SDK-Driven Boundary
+Taxonomy & Graph Linking Engine**.
 
 ---
 
@@ -26,9 +33,10 @@ flowchart LR
 
 ---
 
-## 2. LadybugDB Node Linkage
+## 2. Historical proposed LadybugDB node linkage
 
-GitNexus graph nodes directly link to Ingress and Egress points in LadybugDB (`.gitnexus/lbug`):
+The removed legacy model proposed linking ingress and egress points through the
+following tables. These are not the active `Lsp*`, `Jvm*`, and derived schemas:
 
 | Node Type | Graph Label | Boundary Role | Connected Relationships |
 | :--- | :--- | :--- | :--- |
@@ -39,7 +47,7 @@ GitNexus graph nodes directly link to Ingress and Egress points in LadybugDB (`.
 
 ---
 
-## 3. SDK Boundary Registry: [`sdk_registry.json`](file:///Users/zijie-machine/code_ai/ide_link/analyzer/sdk_registry.json)
+## 3. Proposed SDK boundary registry (`sdk_registry.json`)
 
 The registry defines declarative regex signatures for all tracked third-party SDKs:
 
@@ -81,28 +89,3 @@ The registry defines declarative regex signatures for all tracked third-party SD
 ```
 
 ---
-
-## 4. CLI Usage & Commands
-
-```bash
-# 1. Run Ingress & Egress Boundary Analysis:
-npm run boundaries -- sample_projects/spring-boot-demo
-
-# 2. View Live GitNexus Node Links:
-npm run boundaries:links -- sample_projects/spring-boot-demo
-
-# 3. List All Tracked Ingress & Egress SDKs:
-npm run sdks:list
-
-# 4. Add / Update a Custom SDK Rule:
-uv run python analyzer/ingress_egress_analyzer.py add-sdk \
-  --boundary egress \
-  --id swift_gateway \
-  --lang java \
-  --category "Outbound Banking Gateway" \
-  --pattern "\bcom\.swift\.iso20022\b" \
-  --desc "SWIFT ISO 20022 Payment Gateway"
-
-# 5. Remove an SDK Rule:
-uv run python analyzer/ingress_egress_analyzer.py remove-sdk --boundary egress --id swift_gateway
-```

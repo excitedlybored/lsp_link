@@ -64,7 +64,9 @@ export async function buildLspKnowledgeGraph(
     workspacePath,
     collectCrawlInputPaths(workspacePath, javaFiles, options.artifactManifestPaths),
     {
-      stageVersion: 1,
+      // Increment whenever crawl semantics change so a checkpoint cannot hide
+      // a newly fixed or newly collected LSP observation.
+      stageVersion: 2,
       buildRoots: activeRoots.map(({ id, relativePath, systems }) => ({ id, relativePath, systems })),
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
     },

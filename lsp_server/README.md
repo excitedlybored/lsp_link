@@ -40,6 +40,12 @@ npx tsx query.ts context ../sample_projects/spring-boot-demo --symbol DemoWorkfl
 - **Compiler Backends**: native Gradle and Maven import; Bazel external project models
 - **Standard Protocol**: LSP 3.16+ (`documentSymbol`, `prepareCallHierarchy`, `implementation`, `hover`)
 
+JDT LS has one normalized protocol quirk: for `typeDefinition` on Java
+primitives and synthetic `array.length`, some versions emit a response with
+neither `result` nor `error`. These constructs have no navigable declaration,
+so the Java adapter converts that exact envelope to the valid nullable result
+`null`. It does not suppress any other JDT LS errors.
+
 ## Java build import
 
 ### Spring Tools

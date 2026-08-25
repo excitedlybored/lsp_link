@@ -41,11 +41,11 @@ call_tree.md
 # Local-only clones (keep on disk; do not publish)
 gitnexus/
 sample_projects/cas/
-language_specs/01_language_server_protocol/eclipse.jdt.ls/
-language_specs/01_language_server_protocol/lsp4j/
-language_specs/02_ast_analysis/javaparser/
-language_specs/03_framework_metamodel_spring/spring-tools4/
-language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/
+docs/language_specs/01_language_server_protocol/eclipse.jdt.ls/
+docs/language_specs/01_language_server_protocol/lsp4j/
+docs/language_specs/02_ast_analysis/javaparser/
+docs/language_specs/03_framework_metamodel_spring/spring-tools4/
+docs/language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/
 
 # One-off scratch
 python_lbug/

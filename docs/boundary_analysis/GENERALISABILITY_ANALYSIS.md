@@ -1,13 +1,22 @@
 # Generalisability Analysis: Ingress & Egress Boundary Detection
 
-**Grade**: **A- (Highly Generalisable)**  
-**Target Scope**: Polyglot Distributed Architectures, Monoliths, Microservices, and Banking Core Systems.
+> **Status: archived design proposal.** The registry/regex boundary engine and
+> commands described below are not part of the active LSP-first pipeline. This
+> document must not be used as an accuracy or production-readiness claim. New
+> boundary support should be implemented as a LadybugDB-only semantic extractor
+> under `analyzer/extractors/`, using exact `JvmClass`/`JvmMethod` identities and
+> structured LSP evidence.
+
+**Former target scope**: polyglot distributed architectures, monoliths,
+microservices, and banking systems.
 
 ---
 
 ## 1. Executive Summary
 
-This document evaluates the generalisability of the **SDK-Driven Boundary Taxonomy + Graph-Based Post-Analysis** architecture implemented in **LSP-Link**.
+This document records the proposed **SDK-Driven Boundary Taxonomy +
+Graph-Based Post-Analysis** architecture. It is retained for design context;
+the described engine is not implemented in the current repository.
 
 The system detects:
 1. **Ingress Boundaries**: External HTTP/REST routes, message consumers, gRPC handlers, workflow triggers, and CLI entry points.
@@ -42,30 +51,36 @@ flowchart TD
 
 ## 2. Core Generalisability Pillars
 
-### Pillar 1: Declarative SDK Configuration ([`sdk_registry.json`](file:///Users/zijie-machine/code_ai/ide_link/analyzer/sdk_registry.json))
-* **Zero Engine Code Changes**: Adding support for a new framework (e.g. Go Gin, Python Django, Rust Axum, or proprietary banking SDKs) requires only adding a JSON entry.
-* **Regular Expression Signatures**: Matches explicit imports, wildcards (`.*`), and language-specific namespace keywords (`using`, `from ... import`, `import static`).
+### Pillar 1: Proposed declarative SDK configuration (`sdk_registry.json`)
+The proposal assumed that frameworks could be added through regex signatures.
+The active extractor contract instead requires exact framework identities from
+`JvmClass`/`JvmMethod` plus portable evidence queries; regex-only identity is
+not accepted.
 
 ### Pillar 2: Uniform Graph Storage & Topology
-* **Schema Neutrality**: Regardless of whether a project is written in Java, Python, or C#, LadybugDB persists an abstract schema (`Method`, `Class`, `Route`, `Interface`, `Process`) and uniform relationships (`CALLS`, `IMPLEMENTS`, `STEP_IN_PROCESS`).
-* **Topology-Based Fallbacks**: Ingress is mathematically recognized by `in_degree == 0` with route bindings; Egress is recognized by `out_degree == 0` with driver I/O calls.
+The proposal used the removed abstract `Method`, `Class`, `Route`, and `Process`
+schema. The active database retains direct `Lsp*` observations, derived logical
+calls, and `Jvm*` artifact evidence. Boundary semantics would require a separate
+extractor output rather than being inserted into the raw graph.
 
 ### Pillar 3: Decoupled Post-Analysis Performance
-* **Instant Re-computation (~15ms)**: Boundary detection runs as an offline post-analysis query directly on the `.gitnexus/lbug` database. Re-configuring SDK rules does not require re-running the 4-second compiler indexing pipeline.
+Read-only post-analysis remains the intended boundary: changing extractor
+queries does not require an LSP recrawl when the required evidence already
+exists. No current boundary benchmark or latency guarantee has been measured.
 
 ---
 
 ## 3. Polyglot Matrix & Compatibility
 
-| Language | Ingress Support | Egress Support | Compiler Resolution |
-| :--- | :--- | :--- | :--- |
-| **Java** | Spring Web (`@RestController`), JAX-RS, Kafka (`@KafkaListener`), Temporal (`@WorkflowMethod`) | Spring Data (`JpaRepository`), `RestTemplate`, `KafkaTemplate`, Temporal Activities | **Eclipse JDT.LS (100%)** |
-| **Python** | FastAPI (`@app.get`), Flask, Django, `aiokafka`, Celery tasks | SQLAlchemy, HTTPX, Requests, `kafka-python`, Boto3 S3/DynamoDB | **Pyright (100%)** |
-| **TypeScript** | Express, Koa, NestJS (`@Controller`), Fastify, WebSocket | Axios, Prisma, TypeORM, Mongoose, Node-Fetch | **TS Language Server (100%)** |
-| **C# (.NET)** | ASP.NET Core MVC (`[HttpGet]`, `[HttpPost]`), SignalR | Entity Framework Core (`DbContext`), Dapper, `HttpClient` | **csharp-ls (100%)** |
-| **C / C++** | Crow, Drogon, gRPC stubs, POSIX Socket Listeners | libcurl, PostgreSQL `libpq`, SQLite, Kafka `librdkafka` | **Clangd (100%)** |
-| **Rust** | Axum, Actix-Web, Rocket, Tokio `TcpListener` | Reqwest, SQLx, Diesel, Tokio `rdkafka` | **Rust-Analyzer (100%)** |
-| **COBOL** | CICS Web Services (`EXEC CICS WEB`), BMS Maps | DB2 SQL (`EXEC SQL INSERT/UPDATE`), MQSeries (`MQPUT`) | **Broadcom Code4z (100%)** |
+| Language | Proposed examples | Current evidence status |
+| :--- | :--- | :--- |
+| Java | Spring Web, Kafka, Temporal, persistence | LSP/JVM substrate implemented; Temporal extractor tested |
+| Python | FastAPI, Celery, SQLAlchemy | Adapter exists; no boundary extractor validated |
+| TypeScript | Express, NestJS, Prisma | Adapter exists; no boundary extractor validated |
+| C# | ASP.NET Core, EF Core | Adapter exists; no boundary extractor validated |
+| C/C++ | gRPC, sockets, database clients | Adapter exists; no boundary extractor validated |
+| Rust | Axum, Tokio, SQLx | Adapter exists; no boundary extractor validated |
+| COBOL | CICS, DB2, MQ | Adapter exists; no boundary extractor validated |
 
 ---
 
@@ -73,18 +88,27 @@ flowchart TD
 
 ### 1. Internal Corporate SDK Wrappers
 * **Challenge**: Large enterprise banks wrap open-source drivers in internal packages (e.g. `com.bank.framework.eventbus.EventPublisher`).
-* **Mitigation**: Add the corporate wrapper regex pattern to `analyzer/sdk_registry.json` using `uv run python analyzer/ingress_egress_analyzer.py add-sdk`.
+* **Proposed direction**: add the wrapper's compiled semantic identities and
+  portable evidence queries to a dedicated extractor manifest.
 
 ### 2. Dynamic Dependency Injection & Interface Proxies
 * **Challenge**: Dynamic runtime proxies (e.g. Spring `@Autowired PaymentGateway gateway`) cannot be resolved by static string heuristics.
-* **Mitigation**: **Live LSP Ground Truth**: The language server analyzes compiler symbols and bytecode, resolving interface bindings with `confidence: 1.0`.
+* **Proposed direction**: combine observed LSP implementation/type evidence,
+  bytecode identities, and framework-specific evidence while reporting
+  coverage and confidence separately.
 
 ### 3. Multi-Repo Microservice Crossings
 * **Challenge**: Service A emits a Kafka event that Service B consumes.
-* **Mitigation**: Cross-repository graph bridging (`group_sync`) connects `Egress(Producer, Topic: payments)` in Repo A to `Ingress(Consumer, Topic: payments)` in Repo B.
+* **Proposed direction**: derive stable protocol/topic identities in each
+  repository, then reconcile those outputs in a separate cross-repository
+  stage. No such stage is currently implemented.
 
 ---
 
-## 5. Summary Recommendation
+## 5. Current recommendation
 
-The architecture is **production-ready and fully generalisable**. The combination of declarative JSON registries, compiler-verified AST graphs, and fast OpenCypher post-analysis queries satisfies enterprise multi-language banking and microservice requirements.
+Treat this taxonomy as input to future extractor design, not as implemented
+functionality. Each new extractor needs portable OpenCypher queries,
+LadybugDB-only inputs, exact framework identities, fixture-based precision and
+recall checks, and explicit dependence on `LspCoverage`. No universal compiler
+or framework accuracy percentage is currently claimed.

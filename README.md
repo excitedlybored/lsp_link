@@ -1,95 +1,63 @@
 # LSP Link
 
-LSP Link crawls source repositories through language servers and persists the
-observed semantic model in LadybugDB. Protocol observations remain first-class:
-symbols use the 26 standard LSP symbol kinds, call-site ranges are retained,
-and definitions, implementations, diagnostics, hover, semantic tokens, and
-signature help have structured storage.
+LSP Link crawls source repositories through language servers and writes an
+evidence-backed knowledge graph to LadybugDB (`.lbug`). The protocol crawl,
+derived call normalization, and JVM artifact enrichment are separate stages.
 
-## Packages
+## Quick start
 
-```text
-lsp_server/  language-server adapters, protocol contracts, and build import
-indexer/     crawl orchestration, artifact enrichment, and LadybugDB writes
-analyzer/    read-only Python queries and semantic extractors
-```
+Requirements:
 
-The dependency direction is deliberate:
+- Node.js 20 or 22
+- A JDK: Java 21 or Java 25
+- `uv` and Python 3.12 only when using the Python analyzer
 
-```text
-lsp_server -> protocol responses
-                  |
-                  v
-indexer -> normalized LSP/JVM observations -> *.lbug
-                                              |
-                                              v
-analyzer -> evidence queries and semantic extraction
-```
-
-Semantic extractors do not alter the canonical crawl. The Temporal extractor
-lives under `analyzer/extractors/temporal`; Kafka and Spring extractors can be
-added as siblings.
-
-Extractor inputs are restricted to LadybugDB. Detection uses stable framework
-class, annotation, and method identities; repository paths and fixed source
-coordinates are not valid semantic criteria.
-
-Semantic type declarations are resolved against `JvmClass` nodes from compiled
-dependency artifacts before extraction. `LspJvmBinding` relationships connect
-LSP hovers, symbols, and occurrences to those bytecode identities; extractors
-do not identify frameworks from hover text or URI substrings. Dependency
-sources are optional.
-
-## Index a repository
+Clone and install. npm dependencies are bundled in this repository; the
+installer runs without contacting npm or a configured Artifactory registry.
 
 ```bash
-npm install
+git clone <repository-url>
+cd ide_link
+./install.sh
+```
+
+Index a repository. The output path must not already exist.
+
+```bash
 npm run index -- build /path/to/repository \
   --output /tmp/repository.lbug \
   --concurrency 4 \
   --artifact-concurrency 4
 ```
 
-Java repositories may contain independent Bazel, Maven, Gradle, and unmanaged
-build roots. Each source is assigned to its nearest root and each root gets an
-isolated language-server session. Bazel classpaths are derived from `JavaInfo`;
-Maven and Gradle use the models imported by M2E and Buildship.
-
-After the protocol crawl, a separate JVM artifact stage associates header,
-binary, and source JARs and records bytecode-derived classes and calls in the
-`Jvm*` schema. It never represents artifact evidence as an LSP response.
-
-The output path must not already exist. Build outputs are retained after each
-root finishes; cleanup is an explicit operator decision.
-
-The indexer writes atomic intermediate checkpoints beside the output (for
-example, `/tmp/repository.lbug.checkpoints`). Each completed build root, the
-merged LSP crawl, logical-call normalization, and JVM artifact enrichment are
-saved independently. Repeating the same command resumes compatible work and,
-after a database-open or persistence failure, retries only LadybugDB writing.
-Source and build-file changes invalidate stale crawl checkpoints. Use
-`--checkpoint-directory PATH` to relocate them or `--no-resume` to deliberately
-start a fresh run while still replacing checkpoints with the new results.
-
-## Query and analyze
+Inspect the resulting graph or run a semantic extractor:
 
 ```bash
-uv pip install -r analyzer/requirements.txt
 npm run graph:summary -- /tmp/repository.lbug
 npm run extract -- /tmp/repository.lbug --extractor temporal
-LBUG_REPO=/tmp/repository.lbug npm run mcp:analyzer
 ```
 
-The analyzer opens LadybugDB read-only. Its OpenCypher entry point rejects
-write clauses.
+The indexer saves resumable checkpoints beside the output. Re-run the same
+command to resume compatible work. Use `--no-resume` for a deliberately fresh
+crawl, or `--checkpoint-directory PATH` to store checkpoints elsewhere.
 
-## Development
+## Repository layout
 
-```bash
-npm run build
-npm test
-```
+| Directory | Purpose |
+| --- | --- |
+| [`lsp_server/`](lsp_server/) | Language-server adapters and build import |
+| [`indexer/`](indexer/) | Crawl orchestration, normalization, artifact enrichment, and LadybugDB writes |
+| [`analyzer/`](analyzer/) | Read-only graph queries and semantic extractors |
+| [`sample_projects/`](sample_projects/) | Runnable fixtures and larger test repositories |
+| [`docs/`](docs/) | Architecture, schema, commands, and reference notes |
 
-See [`indexer/README.md`](indexer/README.md),
-[`lsp_server/README.md`](lsp_server/README.md), and
-[`analyzer/README.md`](analyzer/README.md) for package-specific details.
+## Documentation
+
+- [Command reference](docs/command.md)
+- [Indexer details](indexer/README.md)
+- [Language-server and build-import architecture](docs/LSP_SERVER_ARCHITECTURE.md)
+- [LadybugDB data model](docs/LBUG_DATA_STRUCTURE.md)
+- [Analyzer and extractors](analyzer/README.md)
+- [Sample projects](sample_projects/README.md)
+
+Run `npm test` before contributing changes.
