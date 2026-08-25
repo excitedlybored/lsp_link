@@ -1,19 +1,43 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+
+ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+LSP_ONLY=false
+
+case "${1:-}" in
+  "") ;;
+  --lsp-only) LSP_ONLY=true ;;
+  -h|--help)
+    echo "Usage: ./install.sh [--lsp-only]"
+    echo "  --lsp-only  Install only the fully vendored LSP workspace."
+    exit 0
+    ;;
+  *)
+    echo "Unknown option: $1" >&2
+    echo "Usage: ./install.sh [--lsp-only]" >&2
+    exit 2
+    ;;
+esac
+
+cd "$ROOT_DIR"
+
+if [ "$LSP_ONLY" = true ]; then
+  TOTAL_STEPS=2
+else
+  TOTAL_STEPS=4
+fi
 
 echo "=================================================="
 echo "LSP-Link Install"
 echo "=================================================="
 
-# 1. Node.js dependencies. The LSP packages (pyright, typescript-language-server,
-#    vscode-jsonrpc/languageserver-protocol/types, glob and its transitive deps)
-#    are pinned to file: tarballs in lsp_server/vendor/, so this step never
-#    touches any npm registry for them regardless of what registry is configured.
-echo "[1/3] Installing Node.js packages (LSP deps resolve from lsp_server/vendor/, no registry needed)..."
-npm install
+# 1. The LSP workspace is self-contained. Its .npmrc enforces offline mode and
+#    package-lock.json resolves every package to lsp_server/vendor/.
+echo "[1/$TOTAL_STEPS] Installing vendored LSP packages (offline; no registry needed)..."
+npm --prefix "$ROOT_DIR/lsp_server" install
 
-echo "[2/3] Verifying vendored LSP packages installed correctly..."
-node -e "
+echo "[2/$TOTAL_STEPS] Verifying vendored LSP packages installed correctly..."
+(cd "$ROOT_DIR/lsp_server" && node -e "
 const fs = require('fs');
 const path = require('path');
 const pkgs = ['pyright', 'typescript-language-server', 'vscode-jsonrpc', 'vscode-languageserver-protocol', 'vscode-languageserver-types', 'glob'];
@@ -22,11 +46,23 @@ for (const p of pkgs) {
   const v = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8')).version;
   console.log('  ' + p + '@' + v + ' OK');
 }
-"
+")
+
+if [ "$LSP_ONLY" = true ]; then
+  echo ""
+  echo "LSP-only install complete."
+  exit 0
+fi
+
+# The root analyzer dependencies are deliberately not vendored. They resolve
+# through the user's configured enterprise Artifactory, while --workspaces=false
+# keeps npm from reinstalling the already-isolated LSP workspace.
+echo "[3/4] Installing root analyzer packages using the configured npm registry..."
+npm install --workspaces=false
 
 # 3. Python virtual environment for the analyzer tooling (unrelated to the LSP
 #    npm dependency chain, uses the existing vendor/python offline wheel cache).
-echo "[3/3] Initializing Python .venv..."
+echo "[4/4] Initializing Python .venv..."
 if command -v uv >/dev/null 2>&1; then
   if [ ! -d ".venv" ]; then
     uv venv .venv
