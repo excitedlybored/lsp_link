@@ -202,11 +202,26 @@ export class LspAdapterRegistry {
         ...shard.roots.filter(usesNativeImport).map((root) => root.workspacePath),
       ],
       uriMappings: shard.projectModels.flatMap((model) =>
-        [...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort()
-          .map((sourcePath, index) => ({
+        [
+          ...[...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort()
+            .map((sourcePath, index) => ({
             sourcePath,
             stagedPath: path.join(shard.workspacePath, 'projects', model.projectName, `source-${index}`),
-          }))),
+            })),
+          ...model.sourceMappings.map((mapping) => {
+            const allRoots = [...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort();
+            const rootIndex = allRoots.indexOf(mapping.sourceRoot);
+            return {
+              sourcePath: mapping.sourcePath,
+              stagedPath: rootIndex < 0
+                ? mapping.analysisPath
+                : path.join(
+                  shard.workspacePath, 'projects', model.projectName, `source-${rootIndex}`,
+                  path.relative(mapping.sourceRoot, mapping.analysisPath),
+                ),
+            };
+          }),
+        ]),
       buildSystems: nativeBuildSystems,
       bazelModelPrepared: true,
     });

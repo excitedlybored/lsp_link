@@ -2,6 +2,10 @@ import type { NormalizedArtifactDescriptor, ArtifactClasspathProviderAttempt } f
 import type { JvmArtifactBatch } from '../artifact/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
+import type {
+  BazelCrawlSource,
+  BazelSourceInventoryComparison,
+} from '../../../lsp_server/adapters/java/bazel-source-inventory.js';
 
 export interface LspKnowledgeGraphBuildOptions {
   workspace: string;
@@ -27,6 +31,10 @@ export interface JavaBuildRootPreparation {
   configurationHash?: string;
   reason?: string;
   modelPath?: string;
+  sourceInventoryPath?: string;
+  sourceInventoryHash?: string;
+  crawlSources?: BazelCrawlSource[];
+  sourceInventoryComparison?: BazelSourceInventoryComparison;
 }
 
 export interface JavaBuildRootCrawlResult {

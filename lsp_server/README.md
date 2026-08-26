@@ -96,15 +96,18 @@ so GitNexus runs a configured `bazel cquery`, selects every target exposing
   "sourcePaths": ["src/main/java"],
   "classpath": ["bazel-out/path/to/compile-time.jar"],
   "runtimeClasspath": ["bazel-out/path/to/full-runtime.jar"],
-  "outputPath": "bazel-out/classes"
+  "sourceInventoryPath": ".gitnexus/jdtls/bazel-source-inventory.json"
 }
 ```
 
 Classpath entries may be absolute or relative to the workspace; source and output paths must stay inside the
 workspace. The classpath must contain the exact compile-time jars
 reported by Bazel's `JavaInfo`; scanning every jar under `bazel-bin` is intentionally unsupported because it
-produces an inaccurate dependency graph. The generated model is reused until a `MODULE.bazel`, workspace,
-BUILD, or `.bazelrc` file changes. Set `GITNEXUS_JDT_BAZEL_PROJECT_MODEL` to use a pre-generated manifest.
+produces an inaccurate dependency graph. Source analysis is refreshed through a Bazel aspect on every
+preparation (Bazel keeps the work incremental), and the sidecar records configured target ownership,
+generated/source-JAR sources, content deduplication, and repository-only files. Crawling uses the union of
+that configured inventory and every checked-in Java file. Set `GITNEXUS_JDT_BAZEL_PROJECT_MODEL` to use a
+pre-generated classpath manifest; GitNexus leaves it unchanged and generates the source sidecar beside it.
 
 Imports are enabled by default. Use `GITNEXUS_JDT_IMPORT=0` globally, or
 `GITNEXUS_JDT_GRADLE_IMPORT`, `GITNEXUS_JDT_MAVEN_IMPORT`, and `GITNEXUS_JDT_BAZEL_IMPORT`

@@ -31,8 +31,9 @@ import {
 } from '../pipeline/checkpoints.js';
 import { mapConcurrently } from '../pipeline/concurrency.js';
 import { crawlJavaBuildRoot } from '../pipeline/java-build-root-crawler.js';
-import { findJavaSourceFiles } from '../pipeline/java-source-files.js';
+import { addConfiguredJavaSources, findJavaSourceFiles } from '../pipeline/java-source-files.js';
 import type {
+  JavaBuildRootPreparation,
   JavaBuildRootCrawlResult,
   LspKnowledgeGraphBuildOptions,
   LspKnowledgeGraphBuildResult,
@@ -49,15 +50,30 @@ export async function buildLspKnowledgeGraph(
   adapterRegistry = new LspAdapterRegistry(),
 ): Promise<LspKnowledgeGraphBuildResult> {
   const workspacePath = path.resolve(options.workspace);
-  const javaFiles = findJavaSourceFiles(workspacePath);
-  if (javaFiles.length === 0) throw new Error(`No Java files found under ${workspacePath}`);
-
   const discoveredRoots = adapterRegistry.getJavaBuildRoots(workspacePath);
-  const filesByRoot = assignFilesToBuildRoots(javaFiles, discoveredRoots);
-  const activeRoots = discoveredRoots.filter((root) => (filesByRoot.get(root.id)?.length ?? 0) > 0);
-  if (activeRoots.length === 0) {
-    throw new Error('Java files were found but none belongs to a discovered build root');
+  const repositoryJavaFiles = findJavaSourceFiles(workspacePath);
+  const preparation = await adapterRegistry.prepareJavaBuildRoots(workspacePath);
+  logBuildRootPreparation(preparation.roots);
+  const filesByRoot = addConfiguredJavaSources(
+    assignFilesToBuildRoots(repositoryJavaFiles, discoveredRoots),
+    preparation.roots,
+  );
+  for (const result of preparation.roots) {
+    if (result.crawlSources) logSourceInventory(
+      result.rootId,
+      result.crawlSources,
+      result.sourceInventoryComparison,
+      result.sourceInventoryPath,
+    );
   }
+  const preparationByRoot = new Map(preparation.roots.map((result) => [result.rootId, result]));
+  const activeRoots = discoveredRoots.filter((root) =>
+    (filesByRoot.get(root.id)?.length ?? 0) > 0 || preparationByRoot.get(root.id)?.status === 'failed'
+  );
+  if (activeRoots.length === 0) {
+    throw new Error(`No repository or configured Java sources found under ${workspacePath}`);
+  }
+  const javaFiles = [...new Set([...filesByRoot.values()].flat())].sort();
 
   const checkpointStore = new PipelineCheckpointStore(options.checkpointDirectory, options.resume);
   const crawlFingerprint = fingerprintPipelineInputs(
@@ -66,7 +82,7 @@ export async function buildLspKnowledgeGraph(
     {
       // Increment whenever crawl semantics change so a checkpoint cannot hide
       // a newly fixed or newly collected LSP observation.
-      stageVersion: 2,
+      stageVersion: 3,
       buildRoots: activeRoots.map(({ id, relativePath, systems }) => ({ id, relativePath, systems })),
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
     },
@@ -90,7 +106,7 @@ export async function buildLspKnowledgeGraph(
       ({ lspBatch, artifacts, classpathAttempts } = completedCrawl);
     } else {
       const crawl = await crawlWorkspace(
-        options, adapterRegistry, workspacePath, activeRoots, filesByRoot, checkpointStore,
+        options, adapterRegistry, workspacePath, activeRoots, filesByRoot, preparation, checkpointStore,
         crawlFingerprint,
       );
       ({ lspBatch, artifacts, classpathAttempts } = crawl);
@@ -147,6 +163,7 @@ async function crawlWorkspace(
   workspacePath: string,
   activeRoots: JavaBuildRoot[],
   filesByRoot: Map<string, string[]>,
+  preparation: Awaited<ReturnType<LspAdapterRegistry['prepareJavaBuildRoots']>>,
   checkpointStore: PipelineCheckpointStore,
   crawlFingerprint: string,
 ): Promise<LspCrawlCheckpoint> {
@@ -173,12 +190,9 @@ async function crawlWorkspace(
     return assembleCrawlCheckpoint(run, [...cachedByRoot.values()]);
   }
 
-  const preparation = await adapterRegistry.prepareJavaBuildRoots(
-    workspacePath, activeRoots.map((root) => root.id),
-  );
-  logBuildRootPreparation(preparation.roots);
   const preparationsByRoot = new Map(preparation.roots.map((result) => [result.rootId, result]));
-  const shardPlans = planJdtlsBuildRootShards(activeRoots, options.concurrency)
+  const sourceCounts = new Map(activeRoots.map((root) => [root.id, filesByRoot.get(root.id)?.length ?? 0]));
+  const shardPlans = planJdtlsBuildRootShards(activeRoots, options.concurrency, sourceCounts)
     .filter((plan) => plan.roots.some((root) => !cachedByRoot.has(root.id)));
   console.log(
     `[stage:lsp-crawl] starting ${shardPlans.length} persistent JDT LS shards: `
@@ -345,6 +359,24 @@ function logBuildRootPreparation(
       : preparation.reason ?? 'no detail';
     console.log(`[${preparation.rootId}] Bazel model ${preparation.status}: ${detail}`);
   }
+}
+
+function logSourceInventory(
+  rootId: string,
+  sources: NonNullable<JavaBuildRootPreparation['crawlSources']>,
+  comparison?: JavaBuildRootPreparation['sourceInventoryComparison'],
+  inventoryPath?: string,
+): void {
+  const repository = sources.filter((source) => source.origin === 'repository').length;
+  const generated = sources.filter((source) => source.origin === 'generated').length;
+  const sourceJarOnly = sources.filter((source) => source.origin === 'source_jar').length;
+  console.log(
+    `[${rootId}] Bazel sources: repository=${repository}, `
+    + `configured=${comparison?.configuredRepositorySources ?? 0}, generated=${generated}, `
+    + `source-jar-only=${sourceJarOnly}, unowned=${comparison?.unownedRepositorySources.length ?? 0}, `
+    + `deduplicated=${comparison?.duplicateSources ?? 0}, crawl=${sources.length}`
+    + (inventoryPath ? ` (${inventoryPath})` : ''),
+  );
 }
 
 function logArtifactEnrichment(artifactBatch: LspKnowledgeGraphBuildResult['artifactBatch']): void {

@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ArtifactClasspathResolver } from '../artifact/classpath/index.js';
 import { mergeObservationBatches, type LspObservationBatch } from '../ingest/batch.js';
@@ -25,7 +26,11 @@ export async function crawlJavaBuildRoot(
 ): Promise<JavaBuildRootCrawlResult> {
   const buildRoot = createBuildRoot(run, root, preparation);
   const server = createLspServer(run, root, processShardId);
-  const documents = files.map((file) => workspaceDocument(file, root.id));
+  const documents = files.map((file) => workspaceDocument(
+    file,
+    root.id,
+    isGeneratedCrawlFile(file, root.workspacePath) ? 'generated' : 'workspace',
+  ));
 
   if (root.systems.includes('bazel') && preparation?.status === 'failed') {
     console.warn(`[${root.id}] refusing semantic crawl without Bazel classpath: ${preparation.reason}`);
@@ -109,6 +114,13 @@ export async function crawlJavaBuildRoot(
   } finally {
     if (!sharedAdapter) await adapterRegistry.shutdownAdapter(adapter);
   }
+}
+
+function isGeneratedCrawlFile(filePath: string, workspacePath: string): boolean {
+  const relative = path.relative(workspacePath, path.resolve(filePath));
+  const parts = relative.split(path.sep);
+  return path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)
+    || parts.includes('.gitnexus') || parts.some((part) => part === 'bazel-out' || part.startsWith('bazel-out-'));
 }
 
 function createBuildRoot(

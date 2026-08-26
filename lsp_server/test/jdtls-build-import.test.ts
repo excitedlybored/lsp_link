@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,6 +16,11 @@ import {
 import { ensureBazelProjectModel, prepareBazelProjectModels } from '../adapters/java/bazel-project-model.js';
 import { planJdtlsBuildRootShards, prepareJdtlsShardWorkspace } from '../adapters/java/jdtls-sharding.js';
 import { isJdtlsEmptyTypeDefinitionResponse } from '../adapters/java/jdtls-adapter.js';
+import {
+  createBazelSourceInventory,
+  sourceInventoryHash,
+  validateBazelSourceJarEntry,
+} from '../adapters/java/bazel-source-inventory.js';
 
 const runtime: JdtlsRuntime = {
   jdkJavaBin: '/jdk/25/bin/java',
@@ -117,23 +124,29 @@ test('uses full Bazel runtime binaries for JDT navigation while preserving compi
   }), [compileOnly, binary].sort());
 });
 
-test('generates and caches an exact Bazel JavaInfo classpath model', async () => {
+test('generates and refreshes an exact Bazel JavaInfo classpath and source model', async () => {
   const root = fixture({
     'MODULE.bazel': 'module(name = "sample")',
     'BUILD.bazel': 'java_library(name = "app", srcs = glob(["src/main/java/**/*.java"]))',
     'src/main/java/example/Sample.java': 'package example; class Sample {}',
   });
   const fakeBazel = path.join(root, 'fake-bazel');
+  const cqueryLog = path.join(root, 'cquery.log');
   fs.writeFileSync(fakeBazel, [
     '#!/bin/sh',
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${path.join(root, 'execroot')}'`,
     'elif [ "$1" = "cquery" ]; then',
-    "  printf '//:app\\texternal/maven/spring-context.jar\\tbazel-out/app.jar\\n'",
+    `  printf '%s\\n' "$*" >> '${cqueryLog}'`,
+    '  case "$*" in',
+    '    *source_jars*) printf "//:app\\n" ;;',
+    "    *) printf '//:app\\texternal/maven/spring-context.jar\\tbazel-out/app.jar\\n' ;;",
+    '  esac',
     'elif [ "$1" = "build" ]; then',
     `  mkdir -p '${path.join(root, 'execroot/external/maven')}' '${path.join(root, 'execroot/bazel-out')}'`,
     `  : > '${path.join(root, 'execroot/external/maven/spring-context.jar')}'`,
     `  : > '${path.join(root, 'execroot/bazel-out/app.jar')}'`,
+    `  printf '%s\n' '{"label":"//:app","sources":[{"path":"src/main/java/example/Sample.java","shortPath":"src/main/java/example/Sample.java","isSource":true}]}' > '${path.join(root, 'execroot/bazel-out/app.gitnexus-sources.json')}'`,
     'else',
     '  exit 2',
     'fi',
@@ -152,14 +165,338 @@ test('generates and caches an exact Bazel JavaInfo classpath model', async () =>
     ]);
     assert.deepEqual(model.runtimeClasspath, model.classpath);
     assert.deepEqual(model.sourcePaths, ['src/main/java']);
+    assert.ok(generated.sourceInventoryPath);
+    const inventory = JSON.parse(fs.readFileSync(generated.sourceInventoryPath, 'utf8'));
+    assert.equal(inventory.comparison.repositorySources, 1);
+    assert.equal(inventory.comparison.configuredRepositorySources, 1);
+    assert.equal(generated.crawlSources?.length, 1);
+    assert.ok(fs.readFileSync(cqueryLog, 'utf8').trim().split('\n').every((command) =>
+      command.includes('if len(') && command.includes('else ""')
+    ));
 
-    fs.writeFileSync(fakeBazel, '#!/bin/sh\nexit 99\n');
-    const cached = await ensureBazelProjectModel(root);
-    assert.equal(cached.status, 'cached');
-    assert.equal(cached.classpathEntries, 2);
+    const refreshed = await ensureBazelProjectModel(root);
+    assert.equal(refreshed.status, 'generated');
+    assert.equal(refreshed.classpathEntries, 2);
   } finally {
     delete process.env.GITNEXUS_BAZEL_BIN;
   }
+});
+
+test('builds a repository-union Bazel source inventory and content-deduplicates source JARs', async (t) => {
+  const root = fixture({
+    'src/main/java/example/Original.java': 'package example; class Original {}\n',
+    'execroot/bazel-out/generated/example/Generated.java': 'package example; class Generated {}\n',
+    'jar-input/example/Original.java': 'package example; class Original {}\n',
+    'jar-input/example/Generated.java': 'package example; class Generated {}\n',
+    'jar-input/example/JarOnly.java': 'package example; class JarOnly {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sourceJar = path.join(root, 'sources-src.jar');
+  execFileSync('zip', ['-q', '-r', sourceJar, '.'], { cwd: path.join(root, 'jar-input') });
+  const original = path.join(root, 'src/main/java/example/Original.java');
+  const generated = path.join(root, 'execroot/bazel-out/generated/example/Generated.java');
+  const inventory = await createBazelSourceInventory({
+    workspacePath: root,
+    configurationHash: 'configuration',
+    targetQuery: '//...',
+    repositorySources: [original],
+    targets: [{
+      label: '//:lib',
+      directSources: [
+        { path: original, shortPath: 'src/main/java/example/Original.java', isSource: true },
+        { path: generated, isSource: false },
+      ],
+      sourceJars: [sourceJar],
+    }],
+    extractionRoot: path.join(root, '.gitnexus/jdtls/bazel-sources/configuration'),
+  });
+  assert.equal(inventory.comparison.repositorySources, 1);
+  assert.equal(inventory.comparison.configuredRepositorySources, 1);
+  assert.equal(inventory.comparison.generatedSources, 1);
+  assert.equal(inventory.comparison.sourceJarOnlySources, 1);
+  assert.equal(inventory.comparison.duplicateSources, 2);
+  assert.equal(inventory.sources.length, 3);
+  assert.ok(inventory.sources.every((source) => source.targetLabels.includes('//:lib')));
+  assert.match(inventory.sources.find((source) => source.path === original)!.analysisPath, /bazel-sources/);
+  const jarHash = createHash('sha256').update(fs.readFileSync(sourceJar)).digest('hex').slice(0, 24);
+  assert.ok(inventory.sources.some((source) => source.analysisPath.includes(jarHash)));
+});
+
+test('retains every repository, configured-source, and source-JAR association after deduplication', async (t) => {
+  const java = 'package example; class Same {}\n';
+  const root = fixture({
+    'one/Same.java': java,
+    'two/Same.java': java,
+    'jar-one/example/Same.java': java,
+    'jar-two/example/Same.java': java,
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const jarOne = path.join(root, 'one.srcjar');
+  const jarTwo = path.join(root, 'two.srcjar');
+  execFileSync('zip', ['-q', '-r', jarOne, '.'], { cwd: path.join(root, 'jar-one') });
+  execFileSync('zip', ['-q', '-r', jarTwo, '.'], { cwd: path.join(root, 'jar-two') });
+  const repositoryOne = path.join(root, 'one/Same.java');
+  const repositoryTwo = path.join(root, 'two/Same.java');
+  const inventory = await createBazelSourceInventory({
+    workspacePath: root,
+    configurationHash: 'configuration',
+    targetQuery: '//...',
+    repositorySources: [repositoryOne, repositoryTwo],
+    targets: [
+      {
+        label: '//:one',
+        directSources: [{ path: repositoryOne, isSource: true }],
+        sourceJars: [jarOne],
+      },
+      {
+        label: '//:two',
+        directSources: [{ path: repositoryTwo, isSource: true }],
+        sourceJars: [jarTwo],
+      },
+    ],
+    extractionRoot: path.join(root, '.gitnexus/jdtls/bazel-sources/configuration'),
+  });
+  assert.equal(inventory.sources.length, 1);
+  assert.deepEqual(inventory.sources[0].originalRepositoryPaths, [repositoryOne, repositoryTwo]);
+  assert.equal(inventory.sources[0].configuredSourceAssociations.length, 2);
+  assert.equal(inventory.sources[0].sourceJarAssociations.length, 2);
+  assert.deepEqual(inventory.sources[0].targetLabels, ['//:one', '//:two']);
+
+  const changed = structuredClone(inventory);
+  changed.generatedAt = new Date(Date.now() + 1_000).toISOString();
+  assert.equal(sourceInventoryHash(changed), sourceInventoryHash(inventory));
+  changed.sources[0].sourceJarAssociations[0].targetLabels.push('//:changed');
+  assert.notEqual(sourceInventoryHash(changed), sourceInventoryHash(inventory));
+});
+
+test('discovers Java from a configured source JAR when the repository has no checked-in Java', async (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "generated_only")',
+    'BUILD.bazel': 'java_library(name = "generated", srcs = [":generated.srcjar"])',
+    '.gitnexus/jar-input/example/GeneratedOnly.java': 'package example; class GeneratedOnly {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const executionRoot = path.join(root, 'execroot');
+  fs.mkdirSync(path.join(executionRoot, 'bazel-out'), { recursive: true });
+  const sourceJar = path.join(executionRoot, 'bazel-out/generated-src.jar');
+  execFileSync('zip', ['-q', '-r', sourceJar, '.'], { cwd: path.join(root, '.gitnexus/jar-input') });
+  fs.writeFileSync(path.join(executionRoot, 'bazel-out/generated.jar'), '');
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    'if [ "$1" = "info" ]; then',
+    `  printf '%s\\n' '${executionRoot}'`,
+    'elif [ "$1" = "cquery" ]; then',
+    '  case "$*" in',
+    '    *source_jars*) printf "//:generated\\tbazel-out/generated-src.jar\\n" ;;',
+    '    *) printf "//:generated\\tbazel-out/generated.jar\\n" ;;',
+    '  esac',
+    'elif [ "$1" = "build" ]; then',
+    `  printf '%s\\n' '{"label":"//:generated","sources":[]}' > '${path.join(executionRoot, 'bazel-out/generated.gitnexus-sources.json')}'`,
+    '  exit 0',
+    'else',
+    '  exit 2',
+    'fi',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  try {
+    const result = await ensureBazelProjectModel(root);
+    assert.equal(result.status, 'generated');
+    assert.equal(result.crawlSources?.length, 1);
+    assert.equal(result.crawlSources?.[0]?.origin, 'source_jar');
+    assert.equal(result.crawlSources?.[0]?.sourceJarAssociations[0]?.sourceJarEntry, 'example/GeneratedOnly.java');
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+  }
+});
+
+test('preserves a custom Bazel classpath model while generating its source sidecar', async (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "custom")',
+    'BUILD.bazel': 'java_library(name = "app", srcs = ["App.java"])',
+    'App.java': 'class App {}\n',
+    'custom-model.json': JSON.stringify({ classpath: ['custom.jar'], sourcePaths: ['.'] }),
+    'custom.jar': '',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const originalModel = fs.readFileSync(path.join(root, 'custom-model.json'), 'utf8');
+  const executionRoot = path.join(root, 'execroot');
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    'if [ "$1" = "info" ]; then',
+    `  printf '%s\\n' '${executionRoot}'`,
+    'elif [ "$1" = "cquery" ]; then',
+    '  case "$*" in',
+    '    *source_jars*) printf "//:app\\n" ;;',
+    '    *) printf "//:app\\tbazel-out/app.jar\\n" ;;',
+    '  esac',
+    'elif [ "$1" = "build" ]; then',
+    `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
+    `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
+    `  printf '%s\\n' '{"label":"//:app","sources":[{"path":"App.java","shortPath":"App.java","isSource":true}]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    'else',
+    '  exit 2',
+    'fi',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL = 'custom-model.json';
+  try {
+    const result = await ensureBazelProjectModel(root);
+    assert.equal(result.status, 'cached');
+    assert.equal(fs.readFileSync(path.join(root, 'custom-model.json'), 'utf8'), originalModel);
+    assert.ok(result.sourceInventoryPath && fs.existsSync(result.sourceInventoryPath));
+    assert.equal(result.crawlSources?.[0]?.targetLabels[0], '//:app');
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+    delete process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL;
+  }
+});
+
+test('includes Git-tracked unowned Java even under an ignored build directory', async (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "tracked_ignored")',
+    'BUILD.bazel': 'java_library(name = "app")',
+    '.gitignore': 'build/\n',
+    'build/Tracked.java': 'class Tracked {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q'], { cwd: root });
+  execFileSync('git', ['add', 'MODULE.bazel', 'BUILD.bazel', '.gitignore'], { cwd: root });
+  execFileSync('git', ['add', '-f', 'build/Tracked.java'], { cwd: root });
+  const executionRoot = path.join(root, 'execroot');
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    'if [ "$1" = "info" ]; then',
+    `  printf '%s\\n' '${executionRoot}'`,
+    'elif [ "$1" = "cquery" ]; then',
+    '  case "$*" in',
+    '    *source_jars*) printf "//:app\\n" ;;',
+    '    *) printf "//:app\\tbazel-out/app.jar\\n" ;;',
+    '  esac',
+    'elif [ "$1" = "build" ]; then',
+    `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
+    `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
+    `  printf '%s\\n' '{"label":"//:app","sources":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    'else',
+    '  exit 2',
+    'fi',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  try {
+    const result = await ensureBazelProjectModel(root);
+    assert.equal(result.status, 'generated');
+    assert.deepEqual(result.sourceInventoryComparison?.unownedRepositorySources, ['build/Tracked.java']);
+    assert.equal(result.crawlSources?.[0]?.path, path.join(root, 'build/Tracked.java'));
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+  }
+});
+
+test('rejects unsafe and corrupt Bazel source JARs', async (t) => {
+  assert.throws(() => validateBazelSourceJarEntry('../Escape.java', 'unsafe.srcjar'), /Unsafe entry/);
+  assert.throws(() => validateBazelSourceJarEntry('/absolute/Escape.java', 'unsafe.srcjar'), /Unsafe entry/);
+  assert.throws(() => validateBazelSourceJarEntry('dir\\Escape.java', 'unsafe.srcjar'), /Unsafe entry/);
+  assert.throws(() => validateBazelSourceJarEntry('safe/../', 'unsafe.srcjar'), /Unsafe entry/);
+  assert.throws(() => validateBazelSourceJarEntry('safe//', 'unsafe.srcjar'), /Unsafe entry/);
+  assert.throws(() => validateBazelSourceJarEntry('safe/./', 'unsafe.srcjar'), /Unsafe entry/);
+  const root = fixture({ 'broken-src.jar': 'not a zip archive' });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  await assert.rejects(createBazelSourceInventory({
+    workspacePath: root,
+    configurationHash: 'configuration',
+    targetQuery: '//...',
+    repositorySources: [],
+    targets: [{ label: '//:broken', directSources: [], sourceJars: [path.join(root, 'broken-src.jar')] }],
+    extractionRoot: path.join(root, '.gitnexus/jdtls/bazel-sources/configuration'),
+  }), /Invalid Bazel source JAR/);
+});
+
+test('rejects Java symlinks when source-JAR extraction falls back to unzip', async (t) => {
+  const root = fixture({ 'Outside.java': 'class Outside {}\n' });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const input = path.join(root, 'input');
+  fs.mkdirSync(input);
+  fs.symlinkSync(path.join(root, 'Outside.java'), path.join(input, 'Linked.java'));
+  const sourceJar = path.join(root, 'symlink.srcjar');
+  execFileSync('zip', ['-q', '-y', sourceJar, 'Linked.java'], { cwd: input });
+  const commandBin = path.join(root, 'bin');
+  fs.mkdirSync(commandBin);
+  fs.symlinkSync(execFileSync('which', ['unzip'], { encoding: 'utf8' }).trim(), path.join(commandBin, 'unzip'));
+  const previousPath = process.env.PATH;
+  const previousJavaHome = process.env.JAVA_HOME;
+  const previousJdtJavaHome = process.env.GITNEXUS_JDT_JAVA_HOME;
+  process.env.PATH = commandBin;
+  delete process.env.JAVA_HOME;
+  delete process.env.GITNEXUS_JDT_JAVA_HOME;
+  const extractionRoot = path.join(root, 'extracted');
+  try {
+    await assert.rejects(createBazelSourceInventory({
+      workspacePath: root,
+      configurationHash: 'configuration',
+      targetQuery: '//...',
+      repositorySources: [],
+      targets: [{ label: '//:unsafe', directSources: [], sourceJars: [sourceJar] }],
+      extractionRoot,
+    }), /not safely extracted/);
+    const jarHash = createHash('sha256').update(fs.readFileSync(sourceJar)).digest('hex').slice(0, 24);
+    assert.equal(fs.existsSync(path.join(extractionRoot, jarHash)), false);
+  } finally {
+    if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+    if (previousJavaHome === undefined) delete process.env.JAVA_HOME; else process.env.JAVA_HOME = previousJavaHome;
+    if (previousJdtJavaHome === undefined) delete process.env.GITNEXUS_JDT_JAVA_HOME;
+    else process.env.GITNEXUS_JDT_JAVA_HOME = previousJdtJavaHome;
+  }
+});
+
+test('uses package-correct roots for unconventional Bazel repository sources', (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "unconventional")',
+    'odd/com/acme/A.java': 'package com.acme; class A { B value; }\n',
+    'odd/com/acme/B.java': 'package com.acme; class B {}\n',
+    'odd/Misaligned.java': 'package com.acme; class Misaligned {}\n',
+    '.gitnexus/jdtls/bazel-project.json': JSON.stringify({
+      classpath: [], runtimeClasspath: [], sourcePaths: ['odd/com/acme'], generatedSourcePaths: [],
+      sourceInventoryPath: '.gitnexus/jdtls/bazel-source-inventory.json',
+    }),
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sources = ['A.java', 'B.java'].map((name) => {
+    const sourcePath = path.join(root, 'odd/com/acme', name);
+    return {
+      path: sourcePath, analysisPath: sourcePath, origin: 'repository',
+      contentHash: name, targetLabels: [], originalRepositoryPaths: [sourcePath],
+      configuredSourceAssociations: [], sourceJarAssociations: [],
+    };
+  });
+  sources.push({
+    path: path.join(root, 'odd/Misaligned.java'), analysisPath: path.join(root, 'odd/Misaligned.java'),
+    origin: 'repository', contentHash: 'Misaligned.java', targetLabels: [],
+    originalRepositoryPaths: [path.join(root, 'odd/Misaligned.java')],
+    configuredSourceAssociations: [], sourceJarAssociations: [],
+  });
+  fs.writeFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-inventory.json'), JSON.stringify({
+    schemaVersion: 1, workspacePath: root, configurationHash: 'configuration', targetQuery: '//...',
+    generatedAt: new Date().toISOString(), targets: [], sources,
+    comparison: {
+      repositorySources: 3, configuredRepositorySources: 0, generatedSources: 0,
+      sourceJarOnlySources: 0,
+      unownedRepositorySources: ['odd/Misaligned.java', 'odd/com/acme/A.java', 'odd/com/acme/B.java'],
+      duplicateSources: 0, crawlSources: 3,
+    },
+  }));
+  const discovered = discoverJavaBuildRoots(root)[0];
+  const prepared = prepareJdtlsShardWorkspace(root, planJdtlsBuildRootShards([discovered], 1)[0]);
+  assert.ok(prepared.projectModels[0].sourcePaths.includes(path.join(root, 'odd')));
+  assert.equal(prepared.projectModels[0].sourceMappings.length, 3);
+  assert.match(
+    prepared.projectModels[0].sourceMappings.find((mapping) => mapping.sourcePath.endsWith('Misaligned.java'))!.analysisPath,
+    /package-corrected.*com[/\\]acme[/\\]Misaligned\.java/,
+  );
 });
 
 test('prepares many Bazel roots with bounded concurrency and per-root results', async () => {

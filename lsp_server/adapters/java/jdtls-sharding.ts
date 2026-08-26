@@ -4,6 +4,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { globSync } from 'glob';
 import { jdtlsResolutionClasspath, JdtlsWorkspace, type JavaBuildRoot } from './jdtls-runtime.js';
+import { readBazelSourceInventory, type BazelCrawlSource } from './bazel-source-inventory.js';
+
+export interface JdtlsSourceMapping {
+  sourcePath: string;
+  analysisPath: string;
+  sourceRoot: string;
+}
 
 export interface JdtlsProjectModel {
   buildRootId: string;
@@ -11,6 +18,7 @@ export interface JdtlsProjectModel {
   buildRootPath: string;
   sourcePaths: string[];
   generatedSourcePaths: string[];
+  sourceMappings: JdtlsSourceMapping[];
   compileClasspath: string[];
   runtimeClasspath: string[];
   languageServerClasspath: string[];
@@ -36,6 +44,7 @@ export interface PreparedJdtlsShard extends JdtlsBuildRootShard {
 export function planJdtlsBuildRootShards(
   roots: JavaBuildRoot[],
   shardCount = 4,
+  sourceCounts?: Map<string, number>,
 ): JdtlsBuildRootShard[] {
   if (!Number.isInteger(shardCount) || shardCount < 1) throw new Error('JDT LS shard count must be positive');
   const count = Math.min(shardCount, Math.max(roots.length, 1));
@@ -44,7 +53,7 @@ export function planJdtlsBuildRootShards(
     roots: [],
     sourceFileCount: 0,
   }));
-  const weighted = roots.map((root) => ({ root, weight: countJavaSources(root) }))
+  const weighted = roots.map((root) => ({ root, weight: sourceCounts?.get(root.id) ?? countJavaSources(root) }))
     .sort((left, right) => right.weight - left.weight || left.root.id.localeCompare(right.root.id));
   for (const item of weighted) {
     const shard = [...shards].sort((left, right) =>
@@ -88,11 +97,23 @@ export function prepareJdtlsShardWorkspace(
 }
 
 function loadProjectModel(root: JavaBuildRoot): JdtlsProjectModel {
-  const bazelModelPath = path.join(root.workspacePath, '.gitnexus', 'jdtls', 'bazel-project.json');
+  const bazelModelPath = path.resolve(
+    root.workspacePath,
+    process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL ?? '.gitnexus/jdtls/bazel-project.json',
+  );
   const bazel = readJson(bazelModelPath) as {
     sourcePaths?: unknown; generatedSourcePaths?: unknown; classpath?: unknown; runtimeClasspath?: unknown;
-    javaMajor?: unknown; configurationHash?: unknown;
+    javaMajor?: unknown; configurationHash?: unknown; sourceInventoryPath?: unknown;
   } | undefined;
+  const configuredInventoryPath = typeof bazel?.sourceInventoryPath === 'string'
+    ? path.resolve(root.workspacePath, bazel.sourceInventoryPath)
+    : path.join(root.workspacePath, '.gitnexus', 'jdtls', 'bazel-source-inventory.json');
+  const sourceInventory = readBazelSourceInventory(configuredInventoryPath);
+  const sourceMappings = sourceInventory?.sources.map((source) => sourceMapping(
+    source,
+    sourceInventory.workspacePath,
+    sourceInventory.configurationHash,
+  )) ?? [];
   const sourcePaths = stringArray(bazel?.sourcePaths).map((entry) => path.resolve(root.workspacePath, entry));
   const eclipse = readEclipseClasspath(root.workspacePath);
   const discovered = discoverSourcePaths(root.workspacePath);
@@ -114,13 +135,19 @@ function loadProjectModel(root: JavaBuildRoot): JdtlsProjectModel {
     buildSystems: root.systems,
     excludedRoots: root.excludedRoots,
   }).requiredJavaMajor;
-  const effectiveSourcePaths = unique(sourcePaths.length > 0 ? sourcePaths : eclipse.sources.length > 0 ? eclipse.sources : discovered.sourcePaths);
+  const inventorySourcePaths = unique(sourceMappings.map((mapping) => mapping.sourceRoot));
+  const effectiveSourcePaths = unique(inventorySourcePaths.length > 0
+    ? inventorySourcePaths
+    : sourcePaths.length > 0 ? sourcePaths : eclipse.sources.length > 0 ? eclipse.sources : discovered.sourcePaths);
   return {
     buildRootId: root.id,
     projectName,
     buildRootPath: root.workspacePath,
     sourcePaths: effectiveSourcePaths,
-    generatedSourcePaths: unique([...generatedSourcePaths, ...discovered.generatedSourcePaths]),
+    generatedSourcePaths: sourceInventory
+      ? []
+      : unique([...generatedSourcePaths, ...discovered.generatedSourcePaths]),
+    sourceMappings,
     compileClasspath: unique(compileClasspath),
     runtimeClasspath: unique(runtimeClasspath),
     languageServerClasspath: unique(languageServerClasspath),
@@ -137,6 +164,61 @@ function loadProjectModel(root: JavaBuildRoot): JdtlsProjectModel {
     ...(representativeJavaDocument(effectiveSourcePaths) ? {
       representativeDocumentPath: representativeJavaDocument(effectiveSourcePaths),
     } : {}),
+  };
+}
+
+function sourceMapping(
+  source: BazelCrawlSource,
+  workspacePath: string,
+  configurationHash: string,
+): JdtlsSourceMapping {
+  let analysisPath = path.resolve(source.analysisPath);
+  const sourceJarEntry = source.sourceJarAssociations[0]?.sourceJarEntry;
+  if (sourceJarEntry) {
+    const components = sourceJarEntry.split('/').filter(Boolean);
+    let sourceRoot = analysisPath;
+    for (let index = 0; index < components.length; index += 1) sourceRoot = path.dirname(sourceRoot);
+    return { sourcePath: path.resolve(source.path), analysisPath, sourceRoot };
+  }
+  const layout = packageSourceLayout(analysisPath);
+  if (!layout.matchesPhysicalPath && layout.packageName) {
+    const sourceRoot = path.join(
+      workspacePath, '.gitnexus', 'jdtls', 'bazel-sources', configurationHash,
+      'package-corrected', source.contentHash.slice(0, 24),
+    );
+    const destination = path.join(sourceRoot, ...layout.packageName.split('.'), path.basename(analysisPath));
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    if (!fs.existsSync(destination) || !fs.readFileSync(destination).equals(fs.readFileSync(analysisPath))) {
+      fs.copyFileSync(analysisPath, destination);
+    }
+    analysisPath = destination;
+    return { sourcePath: path.resolve(source.path), analysisPath, sourceRoot };
+  }
+  return { sourcePath: path.resolve(source.path), analysisPath, sourceRoot: layout.sourceRoot };
+}
+
+function packageSourceLayout(javaFile: string): {
+  sourceRoot: string;
+  packageName?: string;
+  matchesPhysicalPath: boolean;
+} {
+  const conventional = javaFile.split(path.sep).join('/').match(/^(.*?src\/(?:main|test)\/java)(?:\/|$)/)?.[1];
+  if (conventional) return { sourceRoot: path.resolve(conventional), matchesPhysicalPath: true };
+  let packageName: string | undefined;
+  try {
+    packageName = fs.readFileSync(javaFile, 'utf8').match(/(?:^|\n)\s*package\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*;/)?.[1];
+  } catch { /* fall through */ }
+  if (!packageName) return { sourceRoot: path.dirname(javaFile), matchesPhysicalPath: true };
+  const packageParts = packageName.split('.');
+  const directoryParts = path.dirname(javaFile).split(path.sep);
+  const suffix = directoryParts.slice(-packageParts.length);
+  const matchesPhysicalPath = suffix.join('\0') === packageParts.join('\0');
+  return {
+    sourceRoot: matchesPhysicalPath
+      ? directoryParts.slice(0, -packageParts.length).join(path.sep) || path.parse(javaFile).root
+      : path.dirname(javaFile),
+    packageName,
+    matchesPhysicalPath,
   };
 }
 

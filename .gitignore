@@ -26,6 +26,10 @@ target_test-classes/
 .classpath
 .factorypath
 .project
+vendor/jdtls/*/config_*/org.eclipse.core.runtime/
+vendor/jdtls/*/config_*/org.eclipse.equinox.app/
+vendor/jdtls/*/config_*/org.eclipse.equinox.launcher/
+vendor/jdtls/*/config_*/org.eclipse.osgi/
 
 # Gradle & IDEs
 .gradle/

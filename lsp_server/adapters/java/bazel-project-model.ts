@@ -1,13 +1,23 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { globSync } from 'glob';
+import {
+  createBazelSourceInventory,
+  sourceInventoryHash,
+  type BazelConfiguredTargetSources,
+  type BazelCrawlSource,
+  type BazelSourceInventoryComparison,
+} from './bazel-source-inventory.js';
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MODEL_RELATIVE_PATH = '.gitnexus/jdtls/bazel-project.json';
+const SOURCE_INVENTORY_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-inventory.json';
+const ASPECT_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-aspect.bzl';
+const ASPECT_MANIFEST_SUFFIX = '.gitnexus-sources.json';
 
 interface GeneratedBazelModel {
   javaMajor?: number;
@@ -20,6 +30,8 @@ interface GeneratedBazelModel {
   configurationHash: string;
   bazelBinary: string;
   targetQuery: string;
+  sourceInventoryPath?: string;
+  sourceInventoryHash?: string;
 }
 
 export interface BazelModelGenerationResult {
@@ -27,6 +39,10 @@ export interface BazelModelGenerationResult {
   modelPath?: string;
   classpathEntries?: number;
   configurationHash?: string;
+  sourceInventoryPath?: string;
+  sourceInventoryHash?: string;
+  crawlSources?: BazelCrawlSource[];
+  sourceInventoryComparison?: BazelSourceInventoryComparison;
   reason?: string;
 }
 
@@ -67,28 +83,18 @@ export async function ensureBazelProjectModel(
   workspacePath: string,
   options: BazelModelGenerationOptions = {}
 ): Promise<BazelModelGenerationResult> {
+  workspacePath = path.resolve(workspacePath);
   if (envBoolean('GITNEXUS_JDT_BAZEL_AUTO_MODEL') === false) return { status: 'disabled' };
   if (!hasBazelWorkspaceMarker(workspacePath)) return { status: 'disabled' };
 
   const configuredPath = process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL;
   const modelPath = path.resolve(workspacePath, configuredPath || MODEL_RELATIVE_PATH);
-  if (configuredPath && fs.existsSync(modelPath)) return cachedResult(modelPath);
+  const customModel = Boolean(configuredPath && fs.existsSync(modelPath));
 
   const configurationHash = bazelConfigurationHash(workspacePath);
   const sourcePaths = discoverSourcePaths(workspacePath);
   const existing = readGeneratedModel(modelPath);
-  if (
-    existing?.configurationHash === configurationHash
-    && arraysEqual(existing.sourcePaths, sourcePaths)
-    && Array.isArray(existing.generatedSourcePaths)
-    && existing.generatedSourcePaths.every(fs.existsSync)
-    && existing.classpath.every(fs.existsSync)
-    && Array.isArray(existing.runtimeClasspath)
-    && existing.runtimeClasspath.every(fs.existsSync)
-  ) {
-    return cachedResult(modelPath, existing.classpath.length, existing.configurationHash);
-  }
-  if (existing) quarantineStaleModel(modelPath);
+  if (existing && !customModel && existing.configurationHash !== configurationHash) quarantineStaleModel(modelPath);
 
   const bazelBinary = findBazelBinary();
   if (!bazelBinary) return { status: 'failed', reason: 'Neither bazelisk nor bazel was found on PATH.' };
@@ -102,35 +108,74 @@ export async function ensureBazelProjectModel(
     // Bazel 8 / rules_java no longer exposes this provider under the literal
     // `JavaInfo` key. Canonical keys include the defining bzl label and retain
     // `%JavaInfo` as the stable suffix across bzlmod repository versions.
-    const expression = '"\\t".join([str(target.label)] + [f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in (v.compilation_info.compilation_classpath if hasattr(v, "compilation_info") else v.transitive_compile_time_jars).to_list()])';
+    const expression = javaInfoCqueryExpression(
+      '(v.compilation_info.compilation_classpath if hasattr(v, "compilation_info") else v.transitive_compile_time_jars).to_list()',
+    );
     const output = await runBazel(bazelBinary, [
       'cquery', targetQuery, '--output=starlark', `--starlark:expr=${expression}`,
     ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
     const configured = parseConfiguredTargets(output, executionRoot);
-    const runtimeExpression = '"\\t".join([str(target.label)] + [f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in v.transitive_runtime_jars.to_list()])';
+    const runtimeExpression = javaInfoCqueryExpression('v.transitive_runtime_jars.to_list()');
     const runtimeOutput = await runBazel(bazelBinary, [
       'cquery', targetQuery, '--output=starlark', `--starlark:expr=${runtimeExpression}`,
     ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
     const runtime = parseConfiguredTargets(runtimeOutput, executionRoot);
-    if (configured.labels.length === 0 || configured.classpath.length === 0) {
-      return { status: 'failed', reason: `Bazel cquery returned no JavaInfo compile-time jars for ${targetQuery}.` };
+    const sourceJarExpression = javaInfoCqueryExpression('v.source_jars');
+    const sourceJarOutput = await runBazel(bazelBinary, [
+      'cquery', targetQuery, '--output=starlark', `--starlark:expr=${sourceJarExpression}`,
+    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
+    const sourceJars = parseConfiguredArtifacts(sourceJarOutput, executionRoot, (artifact) =>
+      artifact.endsWith('.jar') || artifact.endsWith('.srcjar')
+    );
+    if (configured.labels.length === 0) {
+      return { status: 'failed', reason: `Bazel cquery returned no JavaInfo targets for ${targetQuery}.` };
     }
-    if ([...configured.classpath, ...runtime.classpath].some((jar) => !fs.existsSync(jar))) {
-      const targetFile = path.join(workspacePath, '.gitnexus/jdtls/bazel-targets.txt');
-      fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-      fs.writeFileSync(targetFile, `${configured.labels.join('\n')}\n`);
-      // This build only materializes analysis artifacts. A union JDT classpath
-      // intentionally contains transitive jars, so Bazel's direct-dependency
-      // enforcement is not meaningful here and can prevent otherwise valid
-      // dependency jars from being produced.
-      await runBazel(bazelBinary, [
-        'build', '--strict_java_deps=off', `--target_pattern_file=${targetFile}`,
-      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
-    }
+    const targetFile = path.join(workspacePath, '.gitnexus/jdtls/bazel-targets.txt');
+    fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+    fs.writeFileSync(targetFile, `${configured.labels.join('\n')}\n`);
+    ensureSourceAspect(workspacePath);
+    removeStaleAspectManifests(executionRoot);
+    // Always ask Bazel to refresh configured sources. Bazel's own action cache
+    // keeps this incremental while still noticing arbitrary generator inputs.
+    await runBazel(bazelBinary, [
+      'build', '--strict_java_deps=off', `--target_pattern_file=${targetFile}`,
+      `--aspects=//.gitnexus/jdtls:${path.basename(ASPECT_RELATIVE_PATH)}%gitnexus_source_aspect`,
+      '--output_groups=+gitnexus_source_manifest,+_direct_source_jars',
+    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
     const missing = [...configured.classpath, ...runtime.classpath].filter((jar) => !fs.existsSync(jar));
     if (missing.length > 0) {
       return { status: 'failed', reason: `Bazel did not materialize ${missing.length} configured Java compile-time jars.` };
     }
+
+    const directSources = readAspectManifests(workspacePath, executionRoot);
+    const manifestLabels = new Set(directSources.map((target) => target.label));
+    const missingManifests = configured.labels.filter((label) => !manifestLabels.has(label));
+    if (missingManifests.length > 0) {
+      throw new Error(`Bazel source aspect returned no manifest for ${missingManifests.length} JavaInfo targets.`);
+    }
+    const targetMap = new Map<string, BazelConfiguredTargetSources>();
+    for (const label of configured.labels) targetMap.set(label, { label, directSources: [], sourceJars: [] });
+    for (const target of directSources) {
+      const current = targetMap.get(target.label) ?? { label: target.label, directSources: [], sourceJars: [] };
+      current.directSources.push(...target.directSources);
+      targetMap.set(target.label, current);
+    }
+    for (const [label, jars] of sourceJars) {
+      const current = targetMap.get(label) ?? { label, directSources: [], sourceJars: [] };
+      current.sourceJars.push(...jars);
+      targetMap.set(label, current);
+    }
+    const inventoryPath = path.join(workspacePath, SOURCE_INVENTORY_RELATIVE_PATH);
+    const inventory = await createBazelSourceInventory({
+      workspacePath,
+      configurationHash,
+      targetQuery,
+      repositorySources: discoverRepositoryJavaSources(workspacePath),
+      targets: [...targetMap.values()],
+      extractionRoot: path.join(workspacePath, '.gitnexus', 'jdtls', 'bazel-sources', configurationHash),
+    });
+    const inventoryHash = sourceInventoryHash(inventory);
+    writeJsonAtomically(inventoryPath, inventory);
 
     const model: GeneratedBazelModel = {
       classpath: configured.classpath,
@@ -142,9 +187,20 @@ export async function ensureBazelProjectModel(
       configurationHash,
       bazelBinary,
       targetQuery,
+      sourceInventoryPath: inventoryPath,
+      sourceInventoryHash: inventoryHash,
     };
-    writeJsonAtomically(modelPath, model);
-    return { status: 'generated', modelPath, classpathEntries: configured.classpath.length, configurationHash };
+    if (!customModel) writeJsonAtomically(modelPath, model);
+    return {
+      status: customModel ? 'cached' : 'generated',
+      modelPath,
+      classpathEntries: customModel ? customClasspathCount(modelPath) : configured.classpath.length,
+      configurationHash,
+      sourceInventoryPath: inventoryPath,
+      sourceInventoryHash: inventoryHash,
+      crawlSources: inventory.sources,
+      sourceInventoryComparison: inventory.comparison,
+    };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return { status: 'failed', reason: `Bazel project model generation failed: ${detail}` };
@@ -233,12 +289,125 @@ function commandTimeout(perCommandTimeout: number, deadlineAt: number | undefine
   return Math.max(1, Math.min(perCommandTimeout, remaining));
 }
 
-function arraysEqual(left: string[], right: string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
 function hasBazelWorkspaceMarker(workspacePath: string): boolean {
   return ['MODULE.bazel', 'WORKSPACE', 'WORKSPACE.bazel'].some((name) => fs.existsSync(path.join(workspacePath, name)));
+}
+
+function parseConfiguredArtifacts(
+  output: string,
+  executionRoot: string,
+  accept: (artifactPath: string) => boolean,
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const line of output.split(/\r?\n/)) {
+    const [label, ...artifactPaths] = line.trim().split('\t');
+    if (!label) continue;
+    const artifacts = artifactPaths.filter(accept)
+      .map((artifact) => path.isAbsolute(artifact) ? artifact : path.resolve(executionRoot, artifact));
+    result.set(label, [...new Set(artifacts)].sort());
+  }
+  return result;
+}
+
+function javaInfoCqueryExpression(artifacts: string): string {
+  const javaInfoKeys = '[k for k in providers(target).keys() if str(k).endswith("%JavaInfo")]';
+  return `"\\t".join([str(target.label)] + `
+    + `[f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in ${artifacts}]) `
+    + `if len(${javaInfoKeys}) > 0 else ""`;
+}
+
+function ensureSourceAspect(workspacePath: string): void {
+  const aspectPath = path.join(workspacePath, ASPECT_RELATIVE_PATH);
+  const buildPath = path.join(path.dirname(aspectPath), 'BUILD.bazel');
+  fs.mkdirSync(path.dirname(aspectPath), { recursive: true });
+  const aspect = [
+    'def _gitnexus_source_aspect_impl(target, ctx):',
+    '    sources = []',
+    '    if hasattr(ctx.rule.attr, "srcs"):',
+    '        for source_target in ctx.rule.attr.srcs:',
+    '            for source in source_target.files.to_list():',
+    '                sources.append({"path": source.path, "shortPath": source.short_path, "isSource": source.is_source})',
+    `    output = ctx.actions.declare_file(ctx.label.name + "${ASPECT_MANIFEST_SUFFIX}")`,
+    '    ctx.actions.write(output, json.encode({"label": str(ctx.label), "sources": sources}))',
+    '    return [OutputGroupInfo(gitnexus_source_manifest = depset([output]))]',
+    '',
+    'gitnexus_source_aspect = aspect(',
+    '    implementation = _gitnexus_source_aspect_impl,',
+    '    attr_aspects = [],',
+    ')',
+    '',
+  ].join('\n');
+  const build = `exports_files(["${path.basename(ASPECT_RELATIVE_PATH)}"])\n`;
+  if (!fs.existsSync(aspectPath) || fs.readFileSync(aspectPath, 'utf8') !== aspect) fs.writeFileSync(aspectPath, aspect);
+  if (!fs.existsSync(buildPath) || fs.readFileSync(buildPath, 'utf8') !== build) fs.writeFileSync(buildPath, build);
+}
+
+function removeStaleAspectManifests(executionRoot: string): void {
+  for (const manifest of globSync(`bazel-out/**/*${ASPECT_MANIFEST_SUFFIX}`, {
+    cwd: executionRoot, absolute: true, nodir: true,
+  })) fs.rmSync(manifest, { force: true });
+}
+
+function readAspectManifests(workspacePath: string, executionRoot: string): BazelConfiguredTargetSources[] {
+  const manifests = globSync(`bazel-out/**/*${ASPECT_MANIFEST_SUFFIX}`, {
+    cwd: executionRoot, absolute: true, nodir: true,
+  }).sort();
+  return manifests.map((manifestPath) => {
+    const value = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
+      label?: unknown;
+      sources?: Array<{ path?: unknown; shortPath?: unknown; isSource?: unknown }>;
+    };
+    if (typeof value.label !== 'string' || !Array.isArray(value.sources)) {
+      throw new Error(`Invalid Bazel source aspect manifest: ${manifestPath}`);
+    }
+    return {
+      label: value.label,
+      directSources: value.sources.map((source) => {
+        if (typeof source.path !== 'string') throw new Error(`Invalid source path in ${manifestPath}`);
+        const isSource = source.isSource === true;
+        const shortPath = typeof source.shortPath === 'string' ? source.shortPath : undefined;
+        const sourcePath = isSource && shortPath && !shortPath.startsWith('../')
+          ? path.resolve(workspacePath, shortPath)
+          : path.resolve(executionRoot, source.path);
+        return { path: sourcePath, shortPath, isSource };
+      }),
+      sourceJars: [],
+    };
+  });
+}
+
+function discoverRepositoryJavaSources(workspacePath: string): string[] {
+  try {
+    const tracked = execFileSync('git', [
+      '-C', workspacePath, 'ls-files', '--cached', '-z', '--', '*.java',
+    ], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return tracked.split('\0').filter(Boolean)
+      .map((file) => path.resolve(workspacePath, file))
+      .filter((file) => isInsideWorkspace(file, workspacePath) && fs.existsSync(file))
+      .sort();
+  } catch {
+    // Exported source trees and disposable fixtures need a filesystem fallback.
+  }
+  return globSync('**/*.java', {
+    cwd: workspacePath, absolute: true, nodir: true,
+    ignore: ['**/.git/**', '**/.gitnexus/**', '**/bazel-*/**', '**/node_modules/**', '**/build/**', '**/target/**'],
+  }).sort();
+}
+
+function isInsideWorkspace(candidate: string, workspacePath: string): boolean {
+  const relative = path.relative(path.resolve(workspacePath), path.resolve(candidate));
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function customClasspathCount(modelPath: string): number | undefined {
+  try {
+    const value = JSON.parse(fs.readFileSync(modelPath, 'utf8')) as { classpath?: unknown };
+    return Array.isArray(value.classpath) ? value.classpath.length : undefined;
+  } catch { return undefined; }
 }
 
 function parseConfiguredTargets(output: string, executionRoot: string): { labels: string[]; classpath: string[] } {
@@ -333,10 +502,6 @@ function readGeneratedModel(modelPath: string): GeneratedBazelModel | undefined 
   } catch {
     return undefined;
   }
-}
-
-function cachedResult(modelPath: string, count?: number, configurationHash?: string): BazelModelGenerationResult {
-  return { status: 'cached', modelPath, classpathEntries: count, configurationHash };
 }
 
 function writeJsonAtomically(destination: string, value: unknown): void {

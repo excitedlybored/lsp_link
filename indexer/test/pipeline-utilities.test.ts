@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { parseLspKnowledgeGraphBuildOptions } from '../src/pipeline/cli-options.js';
 import { mapConcurrently } from '../src/pipeline/concurrency.js';
-import { findJavaSourceFiles } from '../src/pipeline/java-source-files.js';
+import { addConfiguredJavaSources, findJavaSourceFiles } from '../src/pipeline/java-source-files.js';
 import {
   fingerprintPipelineInputs,
   PipelineCheckpointStore,
@@ -89,4 +89,23 @@ test('discovers Java sources but excludes generated build directories', (t) => {
   fs.writeFileSync(source, 'class Example {}');
   fs.writeFileSync(generated, 'class Generated {}');
   assert.deepEqual(findJavaSourceFiles(workspace), [source]);
+});
+
+test('adds configured generated Java to an otherwise empty Bazel root', () => {
+  const generated = path.resolve('/execution-root/bazel-out/generated/Only.java');
+  const files = addConfiguredJavaSources(new Map(), [{
+    rootId: 'bazel:.',
+    status: 'generated',
+    crawlSources: [{
+      path: generated,
+      analysisPath: generated,
+      origin: 'generated',
+      contentHash: 'hash',
+      targetLabels: ['//:generated'],
+      originalRepositoryPaths: [],
+      configuredSourceAssociations: [{ path: generated, targetLabels: ['//:generated'] }],
+      sourceJarAssociations: [],
+    }],
+  }]);
+  assert.deepEqual(files.get('bazel:.'), [generated]);
 });
