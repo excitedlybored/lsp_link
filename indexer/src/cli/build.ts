@@ -85,6 +85,7 @@ export async function buildLspKnowledgeGraph(
       stageVersion: 3,
       buildRoots: activeRoots.map(({ id, relativePath, systems }) => ({ id, relativePath, systems })),
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
+      crawlPlanner: options.crawlPlanner,
     },
   );
   const normalizationFingerprint = combineCheckpointFingerprint(
@@ -219,6 +220,7 @@ async function crawlWorkspace(
           adapter ?? undefined,
           shard.id,
           true,
+          options.crawlPlanner,
         );
         result.artifacts = retainArtifactClasspathEntries(
           result.artifacts,
@@ -407,6 +409,7 @@ async function main(): Promise<void> {
     await buildLspKnowledgeGraph(options);
   console.log(JSON.stringify({
     output,
+    crawlPlanner: options.crawlPlanner,
     run: batch.analysisRuns[0],
     buildRoots: batch.buildRoots.length,
     servers: batch.servers.length,

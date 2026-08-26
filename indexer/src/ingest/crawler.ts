@@ -41,6 +41,12 @@ import {
   type LspObservationBatch,
 } from './batch.js';
 import { LSP_KG_CAPABILITIES } from './collector.js';
+import {
+  ReferenceCoverageIndex,
+  planSemanticTokenPosition,
+  type CrawlPlannerDecision,
+  type CrawlPlannerMode,
+} from './crawl-planner.js';
 
 export interface RawCallHierarchyItem extends DocumentSymbolObservation {
   uri: string;
@@ -80,6 +86,8 @@ export interface CompleteCrawlInput {
   documents: LspDocument[];
   adapter: CompleteCrawlAdapter;
   repositoryPath: string;
+  plannerMode?: CrawlPlannerMode;
+  onPlannerDecision?: (decision: CrawlPlannerDecision) => void;
 }
 
 interface RawLocation {
@@ -153,6 +161,12 @@ const IMPLEMENTABLE_TOKEN_TYPES = new Set(['class', 'interface', 'type', 'method
  */
 export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspObservationBatch> {
   const { run, server, buildRoot, documents, adapter, repositoryPath } = input;
+  const plannerMode = input.plannerMode ?? 'legacy';
+  const plannerStats = { queried: 0, covered: 0 };
+  const recordPlannerDecision = (decision: CrawlPlannerDecision): void => {
+    plannerStats[decision.action === 'query' ? 'queried' : 'covered'] += 1;
+    input.onPlannerDecision?.(decision);
+  };
   const capabilities = adapter.getServerCapabilities();
   const support = detectCapabilitySupport(capabilities);
   const coverage = new Map<string, CoverageState>();
@@ -198,6 +212,9 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
   batch = mergeObservationBatches(batch, ingestRun(run, [server], documents, [buildRoot]));
 
   // Pass 2: every discovered symbol receives every eligible semantic request.
+  // In facts-first mode this phase completes across the root before token gap
+  // filling, so references from declarations in later documents can cover
+  // occurrences in earlier documents.
   for (const document of documents) {
     const filePath = requireFilePath(document);
     const symbols = symbolsByDocument.get(document.id) ?? [];
@@ -229,19 +246,68 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
         }
       }
 
-      await collectDocumentSemanticTokens(adapter, registry, coverage, batch, run, server, document, capabilities);
-      await collectSemanticTokenPositionRelations(adapter, registry, coverage, batch, run, server, document, filePath, symbols);
-      await collectSignatureHelp(adapter, coverage, batch, run, server, document, filePath);
-      await collectDocumentDiagnostics(adapter, coverage, batch, run, server, document);
-      collectPublishedDiagnostics(adapter, coverage, batch, run, server, document);
+      if (plannerMode === 'legacy') {
+        await collectDocumentFacts(
+          adapter, registry, coverage, batch, run, server, document, filePath, symbols,
+          capabilities, plannerMode, new ReferenceCoverageIndex(batch.occurrences), recordPlannerDecision,
+        );
+      }
     } finally {
       await adapter.closeDocument(filePath);
     }
   }
 
+  if (plannerMode === 'facts-first') {
+    const referenceCoverage = new ReferenceCoverageIndex(batch.occurrences);
+    for (const document of documents) {
+      const filePath = requireFilePath(document);
+      const symbols = symbolsByDocument.get(document.id) ?? [];
+      await adapter.openDocument(filePath);
+      try {
+        await collectDocumentFacts(
+          adapter, registry, coverage, batch, run, server, document, filePath, symbols,
+          capabilities, plannerMode, referenceCoverage, recordPlannerDecision,
+        );
+      } finally {
+        await adapter.closeDocument(filePath);
+      }
+    }
+  }
+
   batch = mergeObservationBatches(batch, registry.takeMaterializedBatch());
   const coverageBatch = buildCoverageBatch(run, server, coverage);
+  if (plannerMode === 'facts-first') {
+    console.log(
+      `[${buildRoot.id}] facts-first token plan: ${plannerStats.covered} covered by references, `
+      + `${plannerStats.queried} unresolved positions queried`,
+    );
+  }
   return dedupeObservationBatch(mergeObservationBatches(batch, coverageBatch));
+}
+
+async function collectDocumentFacts(
+  adapter: CompleteCrawlAdapter,
+  registry: SymbolRegistry,
+  coverage: Map<string, CoverageState>,
+  batch: LspObservationBatch,
+  run: LspAnalysisRun,
+  server: LspServer,
+  document: LspDocument,
+  filePath: string,
+  symbols: LspSymbol[],
+  capabilities: Record<string, unknown>,
+  plannerMode: CrawlPlannerMode,
+  referenceCoverage: ReferenceCoverageIndex,
+  onPlannerDecision?: (decision: CrawlPlannerDecision) => void,
+): Promise<void> {
+  await collectDocumentSemanticTokens(adapter, registry, coverage, batch, run, server, document, capabilities);
+  await collectSemanticTokenPositionRelations(
+    adapter, registry, coverage, batch, run, server, document, filePath, symbols,
+    plannerMode, referenceCoverage, onPlannerDecision,
+  );
+  await collectSignatureHelp(adapter, coverage, batch, run, server, document, filePath);
+  await collectDocumentDiagnostics(adapter, coverage, batch, run, server, document);
+  collectPublishedDiagnostics(adapter, coverage, batch, run, server, document);
 }
 
 async function collectSymbolLocations(
@@ -562,6 +628,9 @@ async function collectSemanticTokenPositionRelations(
   document: LspDocument,
   filePath: string,
   symbols: LspSymbol[],
+  plannerMode: CrawlPlannerMode,
+  referenceCoverage: ReferenceCoverageIndex,
+  onPlannerDecision?: (decision: CrawlPlannerDecision) => void,
 ): Promise<void> {
   const declarationPositions = new Set(symbols.map((symbol) =>
     `${symbol.selectionRange.start.line}:${symbol.selectionRange.start.character}`));
@@ -572,6 +641,11 @@ async function collectSemanticTokenPositionRelations(
     const key = `${token.line}:${token.character}`;
     if (seen.has(key) || declarationPositions.has(key)) continue;
     seen.add(key);
+    const decision = planSemanticTokenPosition({
+      mode: plannerMode, documentUri: document.uri, token, referenceCoverage,
+    });
+    onPlannerDecision?.(decision);
+    if (decision.action === 'covered') continue;
     const position = { line: token.line, character: token.character };
     await collectPositionLocations(adapter, registry, coverage, batch, run, server, document,
       filePath, position, 'textDocument/definition', 'definition');
@@ -1144,11 +1218,15 @@ function isInside(root: string, candidate: string): boolean {
 }
 
 /** Helper used by the orchestration CLI to create owned document records. */
-export function workspaceDocument(filePath: string, buildRootId: string): LspDocument {
+export function workspaceDocument(
+  filePath: string,
+  buildRootId: string,
+  origin: LspDocument['origin'] = 'workspace',
+): LspDocument {
   const absolute = path.resolve(filePath);
   const uri = pathToFileURL(absolute).href;
   return {
     id: stableId('document', uri), uri, filePath: absolute, languageId: 'java',
-    origin: 'workspace', wasOpened: false, buildRootId,
+    origin, wasOpened: false, buildRootId,
   };
 }

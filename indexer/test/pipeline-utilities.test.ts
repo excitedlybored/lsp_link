@@ -26,6 +26,8 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
     '--no-artifact-source-fetch',
     '--checkpoint-directory',
     '/checkpoints/run-1',
+    '--crawl-planner',
+    'facts-first',
   ]);
   assert.equal(options.workspace, '/workspace');
   assert.equal(options.concurrency, 3);
@@ -35,6 +37,7 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
   assert.equal(options.fetchArtifactSources, false);
   assert.equal(options.checkpointDirectory, '/checkpoints/run-1');
   assert.equal(options.resume, true);
+  assert.equal(options.crawlPlanner, 'facts-first');
 });
 
 test('defaults to resumable checkpoints beside the requested output', () => {
@@ -43,6 +46,7 @@ test('defaults to resumable checkpoints beside the requested output', () => {
   ]);
   assert.equal(options.checkpointDirectory, '/tmp/result.lbug.checkpoints');
   assert.equal(options.resume, false);
+  assert.equal(options.crawlPlanner, 'legacy');
 });
 
 test('writes atomic checkpoints and rejects incompatible input fingerprints', (t) => {
@@ -62,6 +66,13 @@ test('rejects flags that omit their required value', () => {
   assert.throws(
     () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--output']),
     /--output requires a value/,
+  );
+});
+
+test('rejects unknown crawl planners', () => {
+  assert.throws(
+    () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--crawl-planner', 'canonical']),
+    /--crawl-planner must be one of legacy, facts-first/,
   );
 });
 

@@ -6,6 +6,8 @@ export * from './ingest/batch.js';
 export * from './ingest/builders.js';
 export * from './ingest/collector.js';
 export * from './ingest/crawler.js';
+export * from './ingest/crawl-planner.js';
+export * from './ingest/semantic-inventory.js';
 export * from './artifact/model.js';
 export * from './artifact/enrichment.js';
 export * from './artifact/classpath/index.js';

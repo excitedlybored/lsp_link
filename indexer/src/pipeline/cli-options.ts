@@ -1,5 +1,6 @@
 import path from 'node:path';
 import type { LspKnowledgeGraphBuildOptions } from './types.js';
+import { CRAWL_PLANNER_MODES, type CrawlPlannerMode } from '../ingest/crawl-planner.js';
 
 export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledgeGraphBuildOptions {
   const args = [...argv];
@@ -12,6 +13,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   let fetchArtifactSources = true;
   let checkpointDirectory: string | undefined;
   let resume = true;
+  let crawlPlanner: CrawlPlannerMode = 'legacy';
   const artifactManifestPaths: string[] = [];
   while (args.length > 0) {
     const flag = args.shift();
@@ -21,6 +23,13 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     else if (flag === '--artifact-concurrency') artifactConcurrency = Number(requireFlagValue(args, flag));
     else if (flag === '--checkpoint-directory') checkpointDirectory = path.resolve(requireFlagValue(args, flag));
     else if (flag === '--no-resume') resume = false;
+    else if (flag === '--crawl-planner') {
+      const value = requireFlagValue(args, flag);
+      if (!CRAWL_PLANNER_MODES.includes(value as CrawlPlannerMode)) {
+        throw new Error(`${flag} must be one of ${CRAWL_PLANNER_MODES.join(', ')}, got ${value}`);
+      }
+      crawlPlanner = value as CrawlPlannerMode;
+    }
     else if (flag === '--no-artifact-source-fetch') fetchArtifactSources = false;
     else if (flag === '--artifact-classpath-manifest') {
       artifactManifestPaths.push(path.resolve(requireFlagValue(args, flag)));
@@ -41,6 +50,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     artifactManifestPaths,
     checkpointDirectory: checkpointDirectory ?? `${output}.checkpoints`,
     resume,
+    crawlPlanner,
   };
 }
 

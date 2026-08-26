@@ -24,6 +24,33 @@ npm run index -- build /path/to/repository \
   --artifact-concurrency 4
 ```
 
+The default `legacy` crawl planner preserves the original request schedule.
+The opt-in facts-first planner collects declaration-scoped references across a
+complete build root before querying semantic-token gaps:
+
+```bash
+npm run index -- build /path/to/repository \
+  --output /tmp/repository-facts.lbug \
+  --crawl-planner facts-first
+```
+
+Planner mode is part of the checkpoint fingerprint, so legacy results cannot
+be resumed accidentally by a facts-first crawl. To compare their independently
+derived semantic inventories, retain separate checkpoint directories and run:
+
+```bash
+npm run compare:crawls -- \
+  /tmp/repository-legacy.lbug.checkpoints/lsp-crawl.checkpoint \
+  /tmp/repository-facts.lbug.checkpoints/lsp-crawl.checkpoint \
+  --output /tmp/repository-crawl-comparison.json
+```
+
+The command exits unsuccessfully when documents, symbols, reference
+occurrences, call sites, implementation/type relations, diagnostics, semantic
+tokens, or signature inventories differ. Raw request-specific definition,
+declaration, and hover observations are reported in the batch counts but are
+not treated as semantic inventory differences.
+
 `--concurrency` is the number of persistent JDT LS shards. The separate
 `--artifact-concurrency` limits parallel JVM bytecode disassembly. The output
 path must be new.

@@ -17,6 +17,22 @@ Language servers
 The graph stores protocol facts without prematurely mapping symbols into
 language-specific approximations.
 
+## Crawl planners
+
+`--crawl-planner legacy` retains the original per-document request schedule and
+is the default. `--crawl-planner facts-first` separates root-wide declaration
+fact collection from semantic-token gap filling. A mapped reference occurrence
+is accepted as covering that token position; tokens without such evidence are
+still queried for definition, declaration, eligible type/implementation
+locations, and hover. Every suppression can be observed through the planner
+decision callback, and production runs report covered and queried position
+counts per build root.
+
+Facts-first planning starts only after Maven/Gradle/Bazel import and does not
+change build-root discovery, classpaths, JDT LS sharding, or JVM artifact
+enrichment. Use the repository-level `compare:crawls` command to compare the
+semantic inventory in legacy and facts-first crawl checkpoints.
+
 ## Node classes
 
 | Table | Role |

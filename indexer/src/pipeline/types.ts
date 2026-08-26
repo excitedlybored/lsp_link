@@ -2,6 +2,7 @@ import type { NormalizedArtifactDescriptor, ArtifactClasspathProviderAttempt } f
 import type { JvmArtifactBatch } from '../artifact/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
+import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
 import type {
   BazelCrawlSource,
   BazelSourceInventoryComparison,
@@ -17,6 +18,7 @@ export interface LspKnowledgeGraphBuildOptions {
   artifactManifestPaths: string[];
   checkpointDirectory: string;
   resume: boolean;
+  crawlPlanner: CrawlPlannerMode;
 }
 
 export interface LspKnowledgeGraphBuildResult {
