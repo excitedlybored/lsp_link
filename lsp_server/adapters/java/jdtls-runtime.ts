@@ -125,15 +125,7 @@ export class JdtlsRuntimeLocator {
 
   /** JDT.LS (redhat.java 1.40+) needs JDK 21+. Never boot the compiler on 17. */
   private static selectCompilerJdk(preferredMajor?: number): { bin: string; version: number } {
-    const candidates = [
-      ...globSync('/opt/homebrew/opt/openjdk@21/bin/java'),
-      ...globSync('/opt/homebrew/opt/openjdk@2*/bin/java'),
-      ...globSync('/opt/homebrew/opt/openjdk/bin/java'),
-      ...globSync('/opt/homebrew/Cellar/openjdk@21/*/libexec/openjdk.jdk/Contents/Home/bin/java'),
-      ...globSync('/opt/homebrew/Cellar/openjdk*/*/libexec/openjdk.jdk/Contents/Home/bin/java'),
-      ...globSync('/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java'),
-      ...globSync(path.join(os.homedir(), 'Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java')),
-    ];
+    const candidates = jdtlsJavaCandidates();
 
     const overrideHome = process.env.GITNEXUS_JDT_JAVA_HOME;
     if (overrideHome) {
@@ -162,7 +154,7 @@ export class JdtlsRuntimeLocator {
     if (jdk21OrNewer.length > 0) return jdk21OrNewer[0];
 
     throw new Error(
-      'JDT.LS requires JDK 21+. Install Homebrew openjdk@21 or set JAVA_HOME to a JDK 21+ home. JDK 17 cannot run redhat.java 1.55.'
+      'JDT.LS requires JDK 21+. Install a JDK 21+ runtime or set GITNEXUS_JDT_JAVA_HOME or JAVA_HOME. JDK 17 cannot run redhat.java 1.55.'
     );
   }
 
@@ -186,6 +178,26 @@ export class JdtlsRuntimeLocator {
       `Eclipse JDT.LS launcher not found. Expected vendor/jdtls/${VENDORED_JDTLS_VERSION} or a Red Hat Java extension in ~/.vscode/extensions or ~/.cursor/extensions.`
     );
   }
+}
+
+/** Candidate JVMs shared in scope with the broader ASM-worker discovery paths. */
+export function jdtlsJavaCandidates(homeDirectory = os.homedir()): string[] {
+  const executable = process.platform === 'win32' ? 'java.exe' : 'java';
+  if (process.platform === 'win32') {
+    return globSync(path.join(homeDirectory, `.jdks/*/bin/${executable}`));
+  }
+  return [
+    ...globSync('/usr/lib/jvm/*/bin/java'),
+    ...globSync('/opt/java/openjdk/bin/java'),
+    ...globSync('/opt/homebrew/opt/openjdk@21/bin/java'),
+    ...globSync('/opt/homebrew/opt/openjdk@2*/bin/java'),
+    ...globSync('/opt/homebrew/opt/openjdk/bin/java'),
+    ...globSync('/opt/homebrew/Cellar/openjdk@21/*/libexec/openjdk.jdk/Contents/Home/bin/java'),
+    ...globSync('/opt/homebrew/Cellar/openjdk*/*/libexec/openjdk.jdk/Contents/Home/bin/java'),
+    ...globSync('/Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java'),
+    ...globSync(path.join(homeDirectory, '.local/jdks/*/bin/java')),
+    ...globSync(path.join(homeDirectory, 'Library/Java/JavaVirtualMachines/*/Contents/Home/bin/java')),
+  ];
 }
 
 function runtimeInstall(serverDir: string): { equinoxLauncherJar: string; osgiConfigDir: string } | undefined {

@@ -11,6 +11,9 @@ import { JVM_ARTIFACT_SCHEMA_QUERIES } from './schema.js';
 export class JvmArtifactRepository {
   constructor(private readonly connection: LbugConnectionLike) {}
 
+  /** Internal bulk-loader access; keeps the database handle ownership external. */
+  connectionForBulkCopy(): LbugConnectionLike { return this.connection; }
+
   async initializeSchema(): Promise<void> {
     for (const ddl of JVM_ARTIFACT_SCHEMA_QUERIES) await this.queryAndClose(ddl);
   }

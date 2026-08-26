@@ -2,17 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
-import { openLspLadybugDatabase, type LadybugModuleLike, type LspDatabaseHandle } from '../lbug/repository.js';
+import { openLspLadybugDatabase, type LadybugModuleLike } from '../lbug/repository.js';
 import type { PipelineCheckpointStore } from '../pipeline/checkpoints.js';
-import type { JvmArtifact, JvmArtifactBatch, JvmArtifactEnrichmentRun, JvmArtifactEnrichmentSummary } from './model.js';
+import type { JvmArtifactEnrichmentSummary } from './model.js';
+import {
+  ArtifactBulkSpoolSink,
+  bulkCopyArtifactGraph,
+  completedArtifactSpools,
+} from './bulk-copy.js';
 import {
   streamJvmArtifacts,
-  type JvmArtifactStreamingSink,
   type StreamingJvmArtifactEnrichmentInput,
 } from './streaming-enrichment.js';
 
 interface ArtifactPersistenceManifest {
+  formatVersion: 2;
   stagingPath: string;
+  basePath: string;
+  spoolDirectory: string;
   initialized: boolean;
   completedArtifactIds: string[];
   published: boolean;
@@ -34,12 +41,20 @@ export async function persistStreamingKnowledgeGraph(
   const stage = 'jvm-artifact-manifest';
   let manifest = checkpointStore.load<ArtifactPersistenceManifest>(stage, artifactFingerprint);
   const stableStaging = `${output}.partial-${artifactFingerprint.slice(0, 12)}`;
+  const stableBase = `${stableStaging}.lsp-base`;
+  const stableSpool = `${stableStaging}.artifacts`;
   if (!resume) manifest = undefined;
   const stagingPath = manifest?.stagingPath ?? stableStaging;
 
-  if (!manifest?.initialized || !fs.existsSync(stagingPath)) {
+  if (manifest?.formatVersion !== 2) manifest = undefined;
+  if (!manifest?.initialized || !fs.existsSync(manifest.basePath)) {
     if (fs.existsSync(stagingPath)) fs.rmSync(stagingPath);
-    manifest = { stagingPath, initialized: false, completedArtifactIds: [], published: false };
+    fs.rmSync(stableBase, { force: true });
+    fs.rmSync(stableSpool, { recursive: true, force: true });
+    manifest = {
+      formatVersion: 2, stagingPath, basePath: stableBase, spoolDirectory: stableSpool,
+      initialized: false, completedArtifactIds: [], published: false,
+    };
     checkpointStore.save(stage, artifactFingerprint, manifest);
     const initial = openLspLadybugDatabase(stagingPath, ladybug);
     try {
@@ -51,21 +66,43 @@ export async function persistStreamingKnowledgeGraph(
     } finally {
       await initial.close();
     }
+    fs.copyFileSync(stagingPath, manifest.basePath);
     manifest.initialized = true;
     checkpointStore.save(stage, artifactFingerprint, manifest);
   }
 
-  const completed = new Set(manifest.completedArtifactIds);
-  const sink = new LadybugArtifactStreamingSink(
-    stagingPath,
-    ladybug,
-    async (artifact) => {
-      if (artifact.processingStatus !== 'complete' && artifact.processingStatus !== 'partial') return;
-      completed.add(artifact.id);
-      manifest!.completedArtifactIds = [...completed].sort();
-      checkpointStore.save(stage, artifactFingerprint, manifest!);
-    },
+  // A checkpoint can be written just before or after its sidecar. Trust only
+  // validated, atomically completed spools and repair the small manifest in
+  // either interruption ordering.
+  const completed = new Set(
+    [...completedArtifactSpools(manifest.spoolDirectory).values()].map((artifact) => artifact.id),
   );
+  manifest.completedArtifactIds = [...completed].sort();
+  checkpointStore.save(stage, artifactFingerprint, manifest);
+  const sink = new ArtifactBulkSpoolSink(manifest.spoolDirectory, async (
+    initialization, finalBatch, spoolFiles, run,
+  ) => {
+    fs.rmSync(stagingPath, { force: true });
+    fs.rmSync(`${stagingPath}.wal`, { force: true });
+    fs.copyFileSync(manifest!.basePath, stagingPath);
+    let handle = openLspLadybugDatabase(stagingPath, ladybug);
+    try {
+      await bulkCopyArtifactGraph(
+        handle.artifactRepository.connectionForBulkCopy(), initialization, finalBatch,
+        spoolFiles, run, `${manifest!.spoolDirectory}.copy-work`, async () => {
+          await handle.close();
+          handle = openLspLadybugDatabase(stagingPath, ladybug);
+          return handle.artifactRepository.connectionForBulkCopy();
+        },
+      );
+    } finally {
+      await handle.close();
+    }
+  }, async (artifact) => {
+    completed.add(artifact.id);
+    manifest!.completedArtifactIds = [...completed].sort();
+    checkpointStore.save(stage, artifactFingerprint, manifest!);
+  });
   let artifactEnrichment: JvmArtifactEnrichmentSummary;
   try {
     artifactEnrichment = await streamJvmArtifacts(enrichmentInput, sink, completed);
@@ -79,67 +116,4 @@ export async function persistStreamingKnowledgeGraph(
   manifest.published = true;
   checkpointStore.save(stage, artifactFingerprint, manifest);
   return { output, artifactEnrichment };
-}
-
-class LadybugArtifactStreamingSink implements JvmArtifactStreamingSink {
-  private handle: LspDatabaseHandle;
-  private batchesSinceRotation = 0;
-  private readonly rotationBatches: number;
-
-  constructor(
-    private readonly stagingPath: string,
-    private readonly ladybug: LadybugModuleLike,
-    private readonly onCompletedArtifact: (artifact: JvmArtifact) => Promise<void>,
-  ) {
-    this.handle = openLspLadybugDatabase(stagingPath, ladybug);
-    const configured = Number(process.env.GITNEXUS_LBUG_ROTATE_BATCHES ?? 25);
-    if (!Number.isInteger(configured) || configured < 1) {
-      throw new Error(`GITNEXUS_LBUG_ROTATE_BATCHES must be a positive integer, got ${configured}`);
-    }
-    this.rotationBatches = configured;
-  }
-
-  async initialize(run: JvmArtifactEnrichmentRun, metadata: JvmArtifactBatch): Promise<void> {
-    await this.handle.artifactRepository.mergeBatch(metadata);
-  }
-
-  async write(batch: JvmArtifactBatch): Promise<void> {
-    await this.handle.artifactRepository.mergeBatch(batch);
-    this.batchesSinceRotation++;
-    if (this.batchesSinceRotation >= this.rotationBatches) await this.rotate();
-  }
-
-  async completeArtifact(artifact: JvmArtifact): Promise<void> {
-    const batch = emptyBatch();
-    batch.artifacts.push(artifact);
-    await this.handle.artifactRepository.mergeBatch(batch);
-    await this.onCompletedArtifact(artifact);
-  }
-
-  async resolveClassArtifacts(binaryNames: string[]): Promise<Map<string, string>> {
-    return this.handle.artifactRepository.resolveClassArtifacts(binaryNames);
-  }
-
-  async finalize(run: JvmArtifactEnrichmentRun, _lspBatch: LspObservationBatch): Promise<void> {
-    await this.handle.artifactRepository.finalizeAsmRelations(run.id);
-    await this.handle.artifactRepository.finalizeAsmRun(run);
-  }
-
-  async close(): Promise<void> {
-    await this.handle.close();
-  }
-
-  private async rotate(): Promise<void> {
-    await this.handle.close();
-    this.handle = openLspLadybugDatabase(this.stagingPath, this.ladybug);
-    this.batchesSinceRotation = 0;
-  }
-}
-
-function emptyBatch(): JvmArtifactBatch {
-  return {
-    runs: [], artifacts: [], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
-    classes: [], methods: [], fields: [],
-    callSites: [], relations: [], bindings: [],
-  };
 }

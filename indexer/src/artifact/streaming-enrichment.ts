@@ -57,7 +57,9 @@ export interface ArtifactEnrichmentProgress {
 
 export interface JvmArtifactStreamingSink {
   initialize(run: JvmArtifactEnrichmentRun, artifacts: JvmArtifactBatch): Promise<void>;
-  write(batch: JvmArtifactBatch): Promise<void>;
+  beginArtifactAttempt?(artifactId: string): Promise<void>;
+  rollbackArtifactAttempt?(artifactId: string): Promise<void>;
+  write(batch: JvmArtifactBatch, artifactId?: string): Promise<void>;
   completeArtifact(artifact: JvmArtifact): Promise<void>;
   resolveClassArtifacts(binaryNames: string[]): Promise<Map<string, string>>;
   finalize(run: JvmArtifactEnrichmentRun, lspBatch: LspObservationBatch): Promise<void>;
@@ -199,6 +201,7 @@ export async function streamJvmArtifacts(
       artifact.processingStatus = 'running';
       writeChain = writeChain.then(() => sink.completeArtifact(artifact));
       await writeChain;
+      await sink.beginArtifactAttempt?.(artifact.id);
       const result = await worker.analyzeArtifact({
         artifactId: artifact.id,
         jarPath: jarPaths.get(artifact.id)!,
@@ -223,7 +226,7 @@ export async function streamJvmArtifacts(
           artifact.methodCount += normalized.methods.length;
           artifact.fieldCount += normalized.fields.length;
           artifact.callSiteCount += normalized.callSites.length;
-          await sink.write(normalized);
+          await sink.write(normalized, artifact.id);
         });
         return writeChain;
       });
@@ -245,6 +248,12 @@ export async function streamJvmArtifacts(
       });
       return artifact;
       } catch (error) {
+        // A worker can exit after one or more batches were durably spooled.
+        // Roll the current attempt back before the one-time replay so COPY
+        // never sees duplicate deterministic IDs. Other sinks remain safe via
+        // their existing idempotent MERGE behavior.
+        await writeChain.catch(() => undefined);
+        await sink.rollbackArtifactAttempt?.(artifact.id);
         run.classCount -= artifact.classCount - countSnapshot.classCount;
         run.methodCount -= artifact.methodCount - countSnapshot.methodCount;
         run.fieldCount -= artifact.fieldCount - countSnapshot.fieldCount;

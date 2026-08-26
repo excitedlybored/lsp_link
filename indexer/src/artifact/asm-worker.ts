@@ -142,11 +142,18 @@ export class AsmArtifactWorker {
     child.stderr.on('data', (chunk: string) => {
       this.stderr = `${this.stderr}${chunk}`.slice(-64 * 1024);
     });
+    // A worker that exits before (or while) stdin is written reports EPIPE on
+    // the stream, not necessarily on the ChildProcess itself. Always consume
+    // that error and surface it through the same typed failure path so callers
+    // can apply the one-time worker restart policy.
+    child.stdin.on('error', (error) => {
+      if (!this.closed) this.failAll(this.workerProcessError('stdin failed', error));
+    });
     child.once('error', (error) => this.failAll(error));
     child.once('exit', (code, signal) => {
       this.exited = true;
-      if (!this.closed) this.failAll(new AsmWorkerProcessError(
-        `ASM worker exited unexpectedly (${signal ?? code ?? 'unknown'})${this.stderr ? `: ${this.stderr.trim()}` : ''}`,
+      if (!this.closed) this.failAll(this.workerProcessError(
+        `exited unexpectedly (${signal ?? code ?? 'unknown'})`,
       ));
     });
     const lines = readline.createInterface({ input: child.stdout });
@@ -267,9 +274,21 @@ export class AsmArtifactWorker {
 
   private async write(value: unknown): Promise<void> {
     const stream = this.process?.stdin;
-    if (!stream || stream.destroyed) throw new Error('ASM worker stdin is unavailable');
+    if (!stream || stream.destroyed || !stream.writable) {
+      throw this.workerProcessError('stdin is unavailable');
+    }
     const line = `${JSON.stringify(value)}\n`;
-    if (!stream.write(line, 'utf8')) await new Promise<void>((resolve) => stream.once('drain', resolve));
+    await new Promise<void>((resolve, reject) => {
+      stream.write(line, 'utf8', (error) => {
+        if (error) reject(this.workerProcessError('stdin write failed', error));
+        else resolve();
+      });
+    });
+  }
+
+  private workerProcessError(context: string, cause?: Error): AsmWorkerProcessError {
+    const detail = cause?.message ?? this.stderr.trim();
+    return new AsmWorkerProcessError(`ASM worker ${context}${detail ? `: ${detail}` : ''}`);
   }
 
   private failAll(error: Error): void {

@@ -15,6 +15,9 @@ import { JvmArtifactRepository } from '../dist/artifact/repository.js';
 import { JVM_ARTIFACT_SCHEMA_QUERIES } from '../dist/artifact/schema.js';
 import { openLspLadybugDatabase } from '../dist/lbug/repository.js';
 import { streamJvmArtifacts } from '../dist/artifact/streaming-enrichment.js';
+import { ArtifactBulkSpoolSink, bulkCopyArtifactGraph } from '../dist/artifact/bulk-copy.js';
+import { persistStreamingKnowledgeGraph } from '../dist/artifact/streaming-persistence.js';
+import { PipelineCheckpointStore } from '../dist/pipeline/checkpoints.js';
 
 test('negotiates one persistent ASM worker without javap', async () => {
   const worker = new AsmArtifactWorker(2);
@@ -192,6 +195,184 @@ test('uses a physically separate Ladybug schema and repository transaction', asy
   const repository = new JvmArtifactRepository(connection);
   await repository.initializeSchema();
   assert.deepEqual(connection.queries, [...JVM_ARTIFACT_SCHEMA_QUERIES]);
+});
+
+test('bulk-copies spooled ASM facts with graph parity and no duplicate nodes', async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-asm-bulk-copy-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const jar = path.resolve(
+    import.meta.dirname, '../../vendor/jdtls/1.57.0/plugins/org.objectweb.asm_9.9.1.jar',
+  );
+  const input = {
+    lspRunId: 'run:bulk-copy', cacheDirectory: fixture, lspBatch: emptyLspBatch(''),
+    fetchSources: false,
+    artifacts: [{
+      buildRootId: 'root:test', providerIds: ['explicit-manifest'], scope: 'compile',
+      modulePath: false, classpathEntryPath: jar, binaryJarPath: jar,
+    }],
+  };
+  const expected = await enrichJvmArtifacts(input);
+  const spool = path.join(fixture, 'spool');
+  const completed = new Set();
+  const interrupted = new ArtifactBulkSpoolSink(
+    spool,
+    async () => { throw new Error('simulated interruption before bulk publication'); },
+    async (artifact) => completed.add(artifact.id),
+  );
+  await assert.rejects(streamJvmArtifacts(input, interrupted), /simulated interruption/);
+  assert.equal(completed.size, 1, 'completed artifact spool is checkpointable before publication');
+  const databasePath = path.join(fixture, 'bulk.lbug');
+  const handle = openLspLadybugDatabase(databasePath, lbug);
+  await handle.repository.initializeSchema();
+  await handle.artifactRepository.initializeSchema();
+  const sink = new ArtifactBulkSpoolSink(spool, async (
+    initialization, finalBatch, spoolFiles, run,
+  ) => bulkCopyArtifactGraph(
+    handle.artifactRepository.connectionForBulkCopy(), initialization, finalBatch,
+    spoolFiles, run, path.join(fixture, 'copy-work'),
+  ));
+  const resumed = await streamJvmArtifacts(input, sink, completed);
+  assert.equal(resumed.run.classCount, expected.runs[0].classCount,
+    'resumed run totals include artifacts restored from completed spools');
+  assert.equal(resumed.run.methodCount, expected.runs[0].methodCount);
+  assert.equal(resumed.run.callSiteCount, expected.runs[0].callSiteCount);
+  const counts = await artifactCounts(handle);
+  assert.deepEqual(counts, {
+    classes: expected.classes.length,
+    methods: expected.methods.length,
+    callSites: expected.callSites.length,
+  });
+  const distinct = await handle.artifactRepository.connectionForBulkCopy().query(
+    'MATCH (c:JvmClass) RETURN count(c) AS total, count(DISTINCT c.id) AS distinctIds',
+  );
+  assert.deepEqual(await distinct.getAll(), [{ total: expected.classes.length, distinctIds: expected.classes.length }]);
+  await distinct.close();
+  await handle.close();
+});
+
+test('rolls back an incomplete spool attempt before replay', async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-asm-spool-replay-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  let publishedFiles = [];
+  const sink = new ArtifactBulkSpoolSink(fixture, async (_initial, _final, files) => {
+    publishedFiles = files;
+  });
+  const batch = {
+    runs: [], artifacts: [], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
+    classes: [{
+      id: 'class:one', stageId: 'stage', artifactId: 'artifact:one', binaryName: 'example.One',
+      packageName: 'example', simpleName: 'One', kind: 'class', interfaces: [], isSeed: false,
+      seedUris: [], wasDisassembled: true, annotations: [],
+    }],
+    methods: [], fields: [], callSites: [], relations: [], bindings: [],
+  };
+  const artifact = {
+    id: 'artifact:one', stageId: 'stage', buildRootIds: ['root'],
+    classpathProviders: ['explicit-manifest'], classpathScopes: ['compile'], modulePath: false,
+    classpathEntryPath: '/tmp/one.jar', binaryJarPath: '/tmp/one.jar', sourceOrigin: 'unavailable',
+    associationStatus: 'binary_only', classCount: 1, methodCount: 0, fieldCount: 0,
+    callSiteCount: 0, contentHash: 'hash', classpathOrdinal: 0, processingStatus: 'complete',
+    errorCount: 0, completedAt: new Date().toISOString(),
+  };
+  await sink.initialize({
+    id: 'stage', lspRunId: 'run', status: 'running', startedAt: new Date().toISOString(),
+    provider: 'asm', classpathProviders: [], classpathResolutionJson: '[]', classpathErrorCount: 0,
+    artifactCount: 1, classCount: 0, methodCount: 0, fieldCount: 0, callSiteCount: 0,
+    errorCount: 0, truncated: false,
+  }, { ...batch, classes: [], artifacts: [artifact] });
+  await sink.beginArtifactAttempt(artifact.id);
+  await sink.write(batch, artifact.id);
+  await sink.rollbackArtifactAttempt(artifact.id);
+  await sink.beginArtifactAttempt(artifact.id);
+  await sink.write(batch, artifact.id);
+  await sink.completeArtifact(artifact);
+  await sink.finalize({
+    id: 'stage', lspRunId: 'run', status: 'complete', startedAt: new Date().toISOString(),
+    provider: 'asm', classpathProviders: [], classpathResolutionJson: '[]', classpathErrorCount: 0,
+    artifactCount: 1, classCount: 1, methodCount: 0, fieldCount: 0, callSiteCount: 0,
+    errorCount: 0, truncated: false,
+  });
+  assert.equal(publishedFiles.length, 1);
+  assert.equal(fs.readFileSync(publishedFiles[0], 'utf8').trim().split('\n').length, 1,
+    'failed-attempt batches are truncated before replay');
+});
+
+test('resumes production bulk publication atomically with final run-count parity', async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-asm-persistence-resume-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const output = path.join(fixture, 'graph.lbug');
+  const checkpointStore = new PipelineCheckpointStore(path.join(fixture, 'checkpoints'));
+  const jar = path.resolve(
+    import.meta.dirname, '../../vendor/jdtls/1.57.0/plugins/org.objectweb.asm_9.9.1.jar',
+  );
+  const lspBatch = emptyPersistedLspBatch();
+  const enrichmentInput = {
+    lspRunId: 'run:persistence-resume', cacheDirectory: fixture, lspBatch,
+    fetchSources: false,
+    artifacts: [{
+      buildRootId: 'root:test', providerIds: ['explicit-manifest'], scope: 'compile',
+      modulePath: false, classpathEntryPath: jar, binaryJarPath: jar,
+    }],
+  };
+  const uninterrupted = await enrichJvmArtifacts(enrichmentInput);
+  let injected = false;
+  class FailingConnection {
+    constructor(database) { this.inner = new lbug.Connection(database); }
+    async query(...args) {
+      if (!injected && String(args[0]).startsWith('COPY ')) {
+        injected = true;
+        throw new Error('simulated COPY publication interruption');
+      }
+      return this.inner.query(...args);
+    }
+    prepare(...args) { return this.inner.prepare(...args); }
+    execute(...args) { return this.inner.execute(...args); }
+    close() { return this.inner.close(); }
+  }
+  const faultyLadybug = { Database: lbug.Database, Connection: FailingConnection };
+  const normalization = { runs: [], invocations: [], relations: [] };
+  await assert.rejects(persistStreamingKnowledgeGraph(
+    output, 'fingerprint', checkpointStore, lspBatch, normalization,
+    enrichmentInput, faultyLadybug, true,
+  ), /simulated COPY publication interruption/);
+  assert.equal(fs.existsSync(output), false, 'an interrupted staging database is never published');
+
+  const resumed = await persistStreamingKnowledgeGraph(
+    output, 'fingerprint', checkpointStore, lspBatch, normalization,
+    enrichmentInput, lbug, true,
+  );
+  assert.equal(resumed.output, output);
+  assert.ok(fs.existsSync(output));
+  assert.deepEqual({
+    classCount: resumed.artifactEnrichment.run.classCount,
+    methodCount: resumed.artifactEnrichment.run.methodCount,
+    fieldCount: resumed.artifactEnrichment.run.fieldCount,
+    callSiteCount: resumed.artifactEnrichment.run.callSiteCount,
+    errorCount: resumed.artifactEnrichment.run.errorCount,
+  }, {
+    classCount: uninterrupted.runs[0].classCount,
+    methodCount: uninterrupted.runs[0].methodCount,
+    fieldCount: uninterrupted.runs[0].fieldCount,
+    callSiteCount: uninterrupted.runs[0].callSiteCount,
+    errorCount: uninterrupted.runs[0].errorCount,
+  }, 'resumed run totals match an uninterrupted enrichment');
+  const handle = openLspLadybugDatabase(output, lbug);
+  const result = await handle.artifactRepository.connectionForBulkCopy().query(
+    'MATCH (run:JvmArtifactEnrichmentRun) RETURN run.classCount AS classCount, '
+      + 'run.methodCount AS methodCount, run.callSiteCount AS callSiteCount',
+  );
+  const [persistedRun] = await result.getAll();
+  await result.close();
+  assert.deepEqual({
+    classCount: Number(persistedRun.classCount),
+    methodCount: Number(persistedRun.methodCount),
+    callSiteCount: Number(persistedRun.callSiteCount),
+  }, {
+    classCount: resumed.artifactEnrichment.run.classCount,
+    methodCount: resumed.artifactEnrichment.run.methodCount,
+    callSiteCount: resumed.artifactEnrichment.run.callSiteCount,
+  });
+  await handle.close();
 });
 
 test('resolves duplicate binary names by classpath ordinal without dropping either owner', async (t) => {
@@ -429,6 +610,14 @@ function emptyLspBatch(uri) {
     occurrences: [{ uri }],
     hovers: [{ id: 'hover:test', contents: `Resolved from ${uri}` }],
     diagnostics: [], semanticTokens: [], signatureHelps: [],
+    signatures: [], parameters: [], coverage: [], evidence: [], relations: [],
+  };
+}
+
+function emptyPersistedLspBatch() {
+  return {
+    analysisRuns: [], servers: [], buildRoots: [], documents: [], symbols: [], callSites: [],
+    occurrences: [], hovers: [], diagnostics: [], semanticTokens: [], signatureHelps: [],
     signatures: [], parameters: [], coverage: [], evidence: [], relations: [],
   };
 }

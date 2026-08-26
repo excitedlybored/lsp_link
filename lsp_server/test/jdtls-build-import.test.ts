@@ -10,6 +10,7 @@ import {
   discoverJavaBuildRoots,
   JdtlsRuntime,
   JdtlsWorkspace,
+  jdtlsJavaCandidates,
   jdtlsResolutionClasspath,
   ownerBuildRoot,
 } from '../adapters/java/jdtls-runtime.js';
@@ -28,6 +29,16 @@ const runtime: JdtlsRuntime = {
   equinoxLauncherJar: '/jdtls/launcher.jar',
   osgiConfigDir: '/jdtls/config',
 };
+
+test('discovers user-local Linux JDK installations used by the ASM worker', (t) => {
+  if (process.platform !== 'linux') return t.skip('Linux-specific discovery path');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'jdtls-jdk-home-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const java = path.join(home, '.local/jdks/temurin-21/bin/java');
+  fs.mkdirSync(path.dirname(java), { recursive: true });
+  fs.writeFileSync(java, '');
+  assert.ok(jdtlsJavaCandidates(home).includes(java));
+});
 
 test('normalizes only JDT LS empty type-definition envelopes to nullable results', () => {
   const emptyEnvelope = new Error(

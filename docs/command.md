@@ -89,10 +89,10 @@ path must be new.
 
 LadybugDB chooses its default buffer pool. Set `GITNEXUS_LBUG_BUFFER_POOL_MB`
 (minimum 64) when an explicit persistence-memory limit is required; the
-benchmark harness uses 256 MiB for repeatable comparisons.
-The staging connection is closed and reopened every 25 committed ASM batches
-to release native cache memory; `GITNEXUS_LBUG_ROTATE_BATCHES` tunes that
-positive batch count.
+benchmark harness uses 1 GiB for repeatable comparisons.
+During bulk loading, the staging connection is closed and reopened every 20
+committed COPY fragments to release native cache memory;
+`GITNEXUS_LBUG_ROTATE_BATCHES` tunes that positive fragment count.
 
 Useful options:
 

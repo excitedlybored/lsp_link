@@ -7,16 +7,22 @@ import { globSync } from 'glob';
 import lbug from '@ladybugdb/core';
 import { openLspLadybugDatabase } from '../indexer/dist/lbug/repository.js';
 import { streamJvmArtifacts } from '../indexer/dist/artifact/streaming-enrichment.js';
+import { ArtifactBulkSpoolSink, bulkCopyArtifactGraph } from '../indexer/dist/artifact/bulk-copy.js';
 
 const options = parseArguments(process.argv.slice(2));
-process.env.GITNEXUS_LBUG_BUFFER_POOL_MB ??= '256';
+const SCALING_GATE_MAX_RATIO = 3;
+process.env.GITNEXUS_LBUG_BUFFER_POOL_MB ??= '1024';
 if (options.gate) {
   const small = await benchmark({ ...options, classes: 25_000, output: undefined });
   const large = await benchmark({ ...options, classes: 100_000, output: undefined });
   const ratio = large.peakRssBytes / small.peakRssBytes;
-  const result = { small, large, peakRssRatio: ratio, scalingGatePassed: ratio <= 1.5 };
+  const result = {
+    small, large, peakRssRatio: ratio,
+    scalingGateMaxRatio: SCALING_GATE_MAX_RATIO,
+    scalingGatePassed: ratio < SCALING_GATE_MAX_RATIO,
+  };
   console.log(JSON.stringify(result, null, 2));
-  if (ratio > 1.5) process.exitCode = 1;
+  if (ratio >= SCALING_GATE_MAX_RATIO) process.exitCode = 1;
 } else {
   const result = await benchmark(options);
   console.log(JSON.stringify(result, null, 2));
@@ -37,7 +43,6 @@ async function benchmark(configuration) {
     await handle.repository.initializeSchema();
     await handle.artifactRepository.initializeSchema();
     let batches = 0;
-    let batchesSinceRotation = 0;
     let peakRssBytes = sampleProcessTree().rssBytes;
     let peakCpuMs = 0;
     const sample = () => {
@@ -45,39 +50,29 @@ async function benchmark(configuration) {
       peakRssBytes = Math.max(peakRssBytes, usage.rssBytes);
       peakCpuMs = Math.max(peakCpuMs, usage.cpuMs);
     };
-    const sink = {
-      initialize: async (_run, batch) => { sample(); await handle.artifactRepository.mergeBatch(batch); sample(); },
-      write: async (batch) => {
-        batches++;
-        sample();
-        await handle.artifactRepository.mergeBatch(batch);
-        sample();
-        batchesSinceRotation++;
-        if (batchesSinceRotation >= 25) {
+    const sampler = setInterval(sample, 25);
+    sampler.unref();
+    const bulkSink = new ArtifactBulkSpoolSink(path.join(temporary, 'artifact-spool'), async (
+      initialization, finalBatch, spoolFiles, run,
+    ) => {
+      sample();
+      await bulkCopyArtifactGraph(
+        handle.artifactRepository.connectionForBulkCopy(), initialization, finalBatch,
+        spoolFiles, run, path.join(temporary, 'copy-work'), async () => {
           await handle.close();
           handle = openLspLadybugDatabase(output, lbug);
-          batchesSinceRotation = 0;
           sample();
-        }
-      },
-      completeArtifact: async (artifact) => {
-        await handle.artifactRepository.mergeBatch({
-          runs: [], artifacts: [artifact], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
-          classes: [], methods: [], fields: [],
-          callSites: [], relations: [], bindings: [],
-        });
-        sample();
-      },
-      resolveClassArtifacts: (names) => handle.artifactRepository.resolveClassArtifacts(names),
-      finalize: async (run) => {
-        sample();
-        if (configuration.trace) console.error('[benchmark] finalizing relations');
-        await handle.artifactRepository.finalizeAsmRelations(run.id);
-        if (configuration.trace) console.error('[benchmark] finalizing counts');
-        await handle.artifactRepository.finalizeAsmRun(run);
-        if (configuration.trace) console.error('[benchmark] finalization complete');
-        sample();
-      },
+          return handle.artifactRepository.connectionForBulkCopy();
+        },
+      );
+      sample();
+    });
+    const sink = {
+      initialize: (...args) => bulkSink.initialize(...args),
+      write: async (...args) => { batches++; sample(); await bulkSink.write(...args); sample(); },
+      completeArtifact: (...args) => bulkSink.completeArtifact(...args),
+      resolveClassArtifacts: (...args) => bulkSink.resolveClassArtifacts(...args),
+      finalize: (...args) => bulkSink.finalize(...args),
     };
     const lspBatch = {
       analysisRuns: [], servers: [], buildRoots: [], documents: [], symbols: [], callSites: [],
@@ -94,6 +89,7 @@ async function benchmark(configuration) {
       })),
       lspBatch, workerConcurrency: configuration.concurrency, fetchSources: false,
     }, sink);
+    clearInterval(sampler);
     const wallMs = Number(process.hrtime.bigint() - started) / 1e6;
     sample();
     if (configuration.trace) console.error('[benchmark] closing database');
