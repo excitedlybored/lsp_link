@@ -12,8 +12,9 @@ Use Node.js 20.17+ or 22.9+ with npm 9.2+. Python analyzer setup requires
 
 This uses the checked-in `vendor/npm` tarballs with `npm ci --offline`; it does
 not contact Artifactory or another npm registry. It also verifies the bundled
-Eclipse JDT.LS runtime in `vendor/jdtls/1.57.0`; install only a JDK 21+ to use
-Java indexing.
+Eclipse JDT.LS runtime in `vendor/jdtls/1.57.0`. A local JDK 21+ compiles the
+persistent ASM worker with `--release 21`; installation remains offline. Set
+`GITNEXUS_JDT_JAVA_HOME` when the JDK is not in a conventional location.
 
 ## Build a knowledge graph
 
@@ -82,8 +83,16 @@ declaration, and hover observations are reported in the batch counts but are
 not treated as semantic inventory differences.
 
 `--concurrency` is the number of persistent JDT LS shards. The separate
-`--artifact-concurrency` limits parallel JVM bytecode disassembly. The output
+`--artifact-concurrency` controls parsing threads in the persistent ASM worker
+(default 4, maximum 16). The output
 path must be new.
+
+LadybugDB chooses its default buffer pool. Set `GITNEXUS_LBUG_BUFFER_POOL_MB`
+(minimum 64) when an explicit persistence-memory limit is required; the
+benchmark harness uses 256 MiB for repeatable comparisons.
+The staging connection is closed and reopened every 25 committed ASM batches
+to release native cache memory; `GITNEXUS_LBUG_ROTATE_BATCHES` tunes that
+positive batch count.
 
 Useful options:
 

@@ -76,13 +76,16 @@
 - Prefer additional processes only when resource measurements show a reliable
   improvement.
 
-### 9. Replace `javap` text parsing with ASM-based bytecode extraction
+### 9. Replace `javap` text parsing with ASM-based bytecode extraction — core complete
 
-- Keep JDT/LSP as the primary representation for repository source code.
-- Replace only the `javap` output parser with structured ASM class-file parsing
+- [x] Keep JDT/LSP as the primary representation for repository source code.
+- [x] Replace the `javap` output parser with structured ASM class-file parsing
   for dependency and main-build JARs.
-- Preserve the existing `JvmClass`, `JvmMethod`, `JvmField`, `JvmCallSite`, and
+- [x] Preserve the existing `JvmClass`, `JvmMethod`, `JvmField`, `JvmCallSite`, and
   provenance model while adding reliable source-file, method-descriptor,
   line-number, annotation, and bytecode-offset evidence.
-- Use ASM as the primary representation only when source code is unavailable,
+- [x] Use ASM as the primary representation only when source code is unavailable,
   such as for a prebuilt internal JAR.
+- [ ] Complete the combined persistence RSS gate: the ASM implementation is
+  merged locally, but Ladybug native memory still scales 2.21× from 25k to
+  100k synthetic classes versus the required 1.5×.

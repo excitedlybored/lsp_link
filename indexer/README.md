@@ -171,9 +171,9 @@ npm run index -- build /path/to/repository \
 ```
 
 `--concurrency` controls persistent JDT LS shards. The separate
-`--artifact-concurrency` option bounds concurrent `javap` batches during JVM
-artifact enrichment. Enrichment reports processed, failed, and total class
-counts periodically. `--artifact-max-classes N` can cap disassembly when a
+`--artifact-concurrency` sets parsing threads in the single persistent ASM
+worker (default 4, maximum 16). Enrichment reports processed, failed, and total class
+counts periodically. `--artifact-max-classes N` can cap detailed parsing when a
 complete dependency-bytecode crawl is not required.
 
 Intermediate output is durable and resumable. By default it is written to
@@ -216,20 +216,20 @@ For every Bazel header JAR on a prepared build-root classpath, the stage:
 2. finds a sibling or local Maven source JAR, or downloads the Maven source JAR
    into the build model's `artifact-sources` cache;
 3. creates one `JvmArtifact` and one `JvmClass` per dependency class;
-4. seeds `javap` from external JDT URIs observed during stage 1;
+4. seeds bounded ASM traversal from external JDT URIs observed during stage 1;
 5. creates separate `JvmMethod`, `JvmField`, and `JvmCallSite` nodes, preserving
    bytecode annotations plus superclass, interface, declaration, and resolved
    bytecode-call relations;
-6. disassembles every unique dependency class, prioritizing stage-1 seeds, and
+6. parses every unique dependency class without classloading, prioritizing stage-1 seeds, and
    records the dependency logic graph.
 
 `JvmClass` represents a class supplied by a compiled dependency artifact, not
 source owned by the indexed repository. The crawler inventories its `.class`
-entry from the JAR; `javap` then statically observes the compiled bytecode and
+entry from the JAR; vendored ASM then statically observes the compiled bytecode and
 metadata to recover its methods, fields, annotations, inheritance, and
 bytecode-level calls. Those recovered facts connect dependency classes to one
 another, while LSP bindings connect repository symbols and annotation uses to
-their canonical dependency `JvmClass` or `JvmMethod` identity. `javap` reads
+their canonical dependency `JvmClass` or `JvmMethod` identity. ASM reads
 the artifact only; it does not execute dependency code.
 
 The combination supplies the cross-boundary link required for framework-aware
@@ -243,7 +243,7 @@ relying on annotation names alone.
 flowchart LR
   S["Repository source\nannotations and calls"] --> L["JDT / LSP crawl\nsymbols, hovers, resolutions"]
   L --> B["LspJvmBinding\ncanonical cross-boundary link"]
-  J["Dependency JARs"] --> V["javap bytecode enrichment"]
+  J["Dependency JARs"] --> V["persistent ASM worker"]
   V --> C["JvmClass"] --> M["JvmMethod / JvmField\nannotations, inheritance, calls"]
   B --> C
   B --> M

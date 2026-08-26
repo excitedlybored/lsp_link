@@ -219,8 +219,8 @@ coverage counters, or JDT LS stability before raising the default above one.
 - Stream bounded observation batches into transactional persistence instead of
   retaining the complete repository graph in memory.
 - Batch LadybugDB inserts and deduplication by stable-key partitions.
-- Keep artifact disassembly concurrency independent from LSP request
-  concurrency so CPU-heavy `javap` work cannot starve language servers.
+- Keep persistent ASM worker concurrency independent from LSP request
+  concurrency so artifact parsing cannot starve language servers.
 
 ### 6. Correctness gates
 

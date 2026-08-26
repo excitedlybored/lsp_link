@@ -1,5 +1,5 @@
 import type { NormalizedArtifactDescriptor, ArtifactClasspathProviderAttempt } from '../artifact/classpath/index.js';
-import type { JvmArtifactBatch } from '../artifact/model.js';
+import type { JvmArtifactEnrichmentSummary } from '../artifact/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
 import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
@@ -25,7 +25,7 @@ export interface LspKnowledgeGraphBuildOptions {
 
 export interface LspKnowledgeGraphBuildResult {
   batch: LspObservationBatch;
-  artifactBatch: JvmArtifactBatch;
+  artifactEnrichment: JvmArtifactEnrichmentSummary;
   callNormalizationBatch: DerivedCallNormalizationBatch;
   output: string;
 }

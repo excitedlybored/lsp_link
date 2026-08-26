@@ -8,10 +8,10 @@ echo "=================================================="
 # 1. The complete npm dependency closure is committed as tarballs in
 #    vendor/npm. --offline prevents fallback to a configured registry such as a
 #    company Artifactory if a tarball or lockfile entry is missing.
-echo "[1/4] Installing Node.js packages from vendor/npm (strictly offline)..."
+echo "[1/5] Installing Node.js packages from vendor/npm (strictly offline)..."
 npm ci --offline
 
-echo "[2/4] Verifying vendored Node LSP packages installed correctly..."
+echo "[2/5] Verifying vendored Node LSP packages installed correctly..."
 node -e "
 const fs = require('fs');
 const path = require('path');
@@ -24,7 +24,7 @@ for (const p of pkgs) {
 "
 
 # 3. Verify the bundled Java language-server distribution before Java indexing.
-echo "[3/4] Verifying bundled Eclipse JDT.LS runtime..."
+echo "[3/5] Verifying bundled Eclipse JDT.LS runtime..."
 jdtls_launcher=$(find vendor/jdtls/1.57.0/plugins -maxdepth 1 -name 'org.eclipse.equinox.launcher_*.jar' -print -quit)
 if [ -z "$jdtls_launcher" ]; then
   echo "  Bundled Eclipse JDT.LS launcher is missing from vendor/jdtls/1.57.0." >&2
@@ -32,9 +32,14 @@ if [ -z "$jdtls_launcher" ]; then
 fi
 echo "  Eclipse JDT.LS 1.57.0 OK"
 
-# 4. Python virtual environment for analyzer tooling. Use the locally installed
-#    python3.12 explicitly; do not let uv select or download a different Python.
-echo "[4/4] Initializing Python .venv..."
+# 4. Compile the classloading-free artifact worker with the locally installed
+#    JDK 21+ and the checksum-verified vendored ASM Core JAR. No network access
+#    is used.
+echo "[4/5] Building the persistent ASM artifact worker..."
+npm run artifact-worker:build
+
+echo "[5/5] Initializing Python .venv..."
+# Use python3.12 explicitly; do not let uv select or download another Python.
 if ! command -v uv >/dev/null 2>&1; then
   echo "  'uv' is required for Python analyzer setup. Install uv, then re-run this script." >&2
   exit 1

@@ -23,6 +23,7 @@ import { DerivedCallNormalizationRepository } from '../derived/call-normalizatio
 
 export interface LbugQueryResultLike {
   close?(): void | Promise<void>;
+  getAll?(): Array<Record<string, unknown>> | Promise<Array<Record<string, unknown>>>;
 }
 
 export interface LbugPreparedStatementLike {
@@ -45,7 +46,7 @@ export interface LbugDatabaseLike {
 }
 
 export interface LadybugModuleLike {
-  Database: new (path: string) => LbugDatabaseLike;
+  Database: new (path: string, bufferManagerSize?: number) => LbugDatabaseLike;
   Connection: new (database: LbugDatabaseLike) => LbugConnectionLike;
 }
 
@@ -64,7 +65,12 @@ export function openLspLadybugDatabase(
   databasePath: string,
   ladybug: LadybugModuleLike,
 ): LspDatabaseHandle {
-  const database = new ladybug.Database(databasePath);
+  const configuredPool = process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
+  const configuredPoolMiB = configuredPool === undefined ? 0 : Number(configuredPool);
+  if (configuredPool !== undefined && (!Number.isInteger(configuredPoolMiB) || configuredPoolMiB < 64)) {
+    throw new Error(`GITNEXUS_LBUG_BUFFER_POOL_MB must be an integer of at least 64, got ${configuredPool}`);
+  }
+  const database = new ladybug.Database(databasePath, configuredPoolMiB * 1024 * 1024);
   const connection = new ladybug.Connection(database);
   return {
     repository: new LspLadybugRepository(connection),

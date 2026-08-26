@@ -3,7 +3,7 @@
  * Every persisted observation originates from an LSP response or artifact stage.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,13 +15,12 @@ import {
   type ArtifactClasspathProviderAttempt,
   type NormalizedArtifactDescriptor,
 } from '../artifact/classpath/index.js';
-import type { JvmArtifactBatch } from '../artifact/model.js';
-import { enrichJvmArtifacts } from '../artifact/enrichment.js';
+import { persistStreamingKnowledgeGraph } from '../artifact/streaming-persistence.js';
 import { normalizeLogicalCalls } from '../derived/call-normalization/normalize.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
 import { dedupeObservationBatch, mergeObservationBatches } from '../ingest/batch.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
-import { openLspLadybugDatabase, type LadybugModuleLike } from '../lbug/repository.js';
+import type { LadybugModuleLike } from '../lbug/repository.js';
 import type { LspAnalysisRun } from '../model.js';
 import { parseLspKnowledgeGraphBuildOptions } from '../pipeline/cli-options.js';
 import {
@@ -97,12 +96,6 @@ export async function buildLspKnowledgeGraph(
   const normalizationFingerprint = combineCheckpointFingerprint(
     'call-normalization-v1', crawlFingerprint,
   );
-  const artifactFingerprint = combineCheckpointFingerprint(
-    'jvm-artifact-enrichment-v1', crawlFingerprint,
-    options.artifactMaxClasses ?? null,
-    options.fetchArtifactSources,
-  );
-
   const completedCrawl = checkpointStore.load<LspCrawlCheckpoint>('lsp-crawl', crawlFingerprint);
   let lspBatch: LspObservationBatch;
   let artifacts: NormalizedArtifactDescriptor[];
@@ -130,32 +123,56 @@ export async function buildLspKnowledgeGraph(
       checkpointStore.save('call-normalization', normalizationFingerprint, callNormalizationBatch);
     }
 
-    let artifactBatch = checkpointStore.load<JvmArtifactBatch>(
-      'jvm-artifact-enrichment', artifactFingerprint,
+    console.log('[stage:jvm-artifact-enrichment] streaming ASM artifact facts');
+    const artifactFingerprint = combineCheckpointFingerprint(
+      'jvm-artifact-enrichment-asm-stream-v1', crawlFingerprint,
+      options.artifactMaxClasses ?? null,
+      options.fetchArtifactSources,
+      artifacts.map((artifact) => ({
+        classpathEntryPath: artifact.classpathEntryPath,
+        headerJarPath: artifact.headerJarPath,
+        binaryJarPath: artifact.binaryJarPath,
+        contentHash: hashArtifactDescriptor(artifact),
+      })),
     );
-    if (!artifactBatch) {
-      console.log('[stage:jvm-artifact-enrichment] associating header, binary, and source JARs');
-      artifactBatch = await enrichJvmArtifacts({
+    const persisted = await persistStreamingKnowledgeGraph(
+      options.output,
+      artifactFingerprint,
+      checkpointStore,
+      lspBatch,
+      callNormalizationBatch,
+      {
         lspRunId: lspBatch.analysisRuns[0]!.id,
         artifacts,
         classpathAttempts,
         cacheDirectory: path.join(workspacePath, '.gitnexus', 'jvm-artifacts'),
         lspBatch,
         maxDisassembledClasses: options.artifactMaxClasses,
-        javapConcurrency: options.artifactConcurrency,
+        workerConcurrency: options.artifactConcurrency,
         fetchSources: options.fetchArtifactSources,
-      });
-      logArtifactEnrichment(artifactBatch);
-      checkpointStore.save('jvm-artifact-enrichment', artifactFingerprint, artifactBatch);
-    }
-
-    const outputPath = await persistKnowledgeGraph(
-      options.output, lspBatch, callNormalizationBatch, artifactBatch,
+      },
+      lbug as unknown as LadybugModuleLike,
+      options.resume,
     );
-    return { batch: lspBatch, callNormalizationBatch, artifactBatch, output: outputPath };
+    logArtifactEnrichment(persisted.artifactEnrichment);
+    return {
+      batch: lspBatch,
+      callNormalizationBatch,
+      artifactEnrichment: persisted.artifactEnrichment,
+      output: persisted.output,
+    };
   } finally {
     await adapterRegistry.shutdownAll();
   }
+}
+
+function hashArtifactDescriptor(artifact: NormalizedArtifactDescriptor): string {
+  const selected = artifact.binaryJarPath ?? artifact.headerJarPath ?? artifact.classpathEntryPath;
+  const hash = createHash('sha256');
+  hash.update(path.resolve(selected));
+  try { hash.update(fs.readFileSync(selected)); }
+  catch (error) { hash.update(`unreadable:${error instanceof Error ? error.message : String(error)}`); }
+  return hash.digest('hex');
 }
 
 interface LspCrawlCheckpoint {
@@ -334,31 +351,6 @@ function finalizeAnalysisRun(
   run.completedAt = new Date().toISOString();
 }
 
-async function persistKnowledgeGraph(
-  requestedOutputPath: string,
-  lspBatch: LspKnowledgeGraphBuildResult['batch'],
-  callNormalizationBatch: LspKnowledgeGraphBuildResult['callNormalizationBatch'],
-  artifactBatch: LspKnowledgeGraphBuildResult['artifactBatch'],
-): Promise<string> {
-  const outputPath = path.resolve(requestedOutputPath);
-  if (fs.existsSync(outputPath)) {
-    throw new Error(`Refusing to overwrite existing LSP database: ${outputPath}`);
-  }
-  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
-  const handle = openLspLadybugDatabase(outputPath, lbug as unknown as LadybugModuleLike);
-  try {
-    await handle.repository.initializeSchema();
-    await handle.repository.writeBatch(lspBatch);
-    await handle.callNormalizationRepository.initializeSchema();
-    await handle.callNormalizationRepository.writeBatch(callNormalizationBatch);
-    await handle.artifactRepository.initializeSchema();
-    await handle.artifactRepository.writeBatch(artifactBatch);
-  } finally {
-    await handle.close();
-  }
-  return outputPath;
-}
-
 function logBuildRootPreparation(
   preparations: Array<{ rootId: string; status: string; classpathEntries?: number; reason?: string }>,
 ): void {
@@ -388,14 +380,12 @@ function logSourceInventory(
   );
 }
 
-function logArtifactEnrichment(artifactBatch: LspKnowledgeGraphBuildResult['artifactBatch']): void {
-  const run = artifactBatch.runs[0];
-  const sourceAssociatedArtifacts = artifactBatch.artifacts
-    .filter((artifact) => artifact.associationStatus === 'complete').length;
+function logArtifactEnrichment(summary: LspKnowledgeGraphBuildResult['artifactEnrichment']): void {
+  const run = summary.run;
   console.log(
     `[stage:jvm-artifact-enrichment] ${run.status}: ${run.artifactCount} artifacts, `
     + `${run.classCount} classes, ${run.methodCount} methods, ${run.callSiteCount} bytecode calls, `
-    + `${sourceAssociatedArtifacts} source-associated artifacts`,
+    + `${summary.sourceAssociatedArtifactCount} source-associated artifacts`,
   );
 }
 
@@ -416,7 +406,7 @@ async function main(): Promise<void> {
     return;
   }
   const options = parseLspKnowledgeGraphBuildOptions(process.argv.slice(2));
-  const { batch, callNormalizationBatch, artifactBatch, output } =
+  const { batch, callNormalizationBatch, artifactEnrichment, output } =
     await buildLspKnowledgeGraph(options);
   console.log(JSON.stringify({
     output,
@@ -434,7 +424,7 @@ async function main(): Promise<void> {
     coverage: batch.coverage.length,
     relations: batch.relations.length,
     callNormalization: callNormalizationBatch.runs[0],
-    artifactEnrichment: artifactBatch.runs[0],
+    artifactEnrichment: artifactEnrichment.run,
   }, null, 2));
 }
 

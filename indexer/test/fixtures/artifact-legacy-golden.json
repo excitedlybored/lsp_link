@@ -1,0 +1,12 @@
+{
+  "classes": [
+    { "binaryName": "com.example.TestDep", "kind": "class" },
+    { "binaryName": "com.example.Contract", "kind": "interface" },
+    { "binaryName": "com.example.Item", "kind": "record" },
+    { "binaryName": "com.example.Mode", "kind": "enum" }
+  ],
+  "methods": ["target", "caller", "run", "interfaceCall", "lambda"],
+  "fields": ["field"],
+  "annotations": ["java.lang.Deprecated", "com.example.ClassOnly"],
+  "invocationOpcodes": ["invokespecial", "invokestatic", "invokevirtual", "invokeinterface"]
+}

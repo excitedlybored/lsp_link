@@ -14,6 +14,8 @@
   ],
   "scripts": {
     "index": "tsx indexer/src/cli/build.ts",
+    "artifact-worker:build": "node scripts/build-artifact-worker.mjs",
+    "benchmark:asm": "npm run build && node scripts/benchmark-asm-enrichment.mjs",
     "bazel:prepare": "tsx indexer/src/cli/bazel-prepare.ts",
     "compare:crawls": "tsx indexer/src/cli/compare-crawls.ts",
     "lbug:read": "uv run --with-requirements analyzer/requirements.lock.txt python analyzer/lbug_client.py",
@@ -25,7 +27,7 @@
     "indexer:build": "npm run build --workspace lsp-indexer",
     "indexer:test": "npm run test --workspace lsp-indexer",
     "server": "tsx lsp_server/server_launcher.ts",
-    "build": "npm --workspaces run build --if-present",
+    "build": "npm run artifact-worker:build && npm --workspaces run build --if-present",
     "test": "npm --workspaces run test --if-present && npm run test:extractors"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 import type { LspSymbolNodeTable } from '../model.js';
 
-export type JvmArtifactStageStatus = 'complete' | 'partial' | 'failed';
+export type JvmArtifactStageStatus = 'running' | 'complete' | 'partial' | 'failed';
 
 export interface JvmArtifactEnrichmentRun {
   id: string;
@@ -8,7 +8,7 @@ export interface JvmArtifactEnrichmentRun {
   status: JvmArtifactStageStatus;
   startedAt: string;
   completedAt?: string;
-  provider: 'javap';
+  provider: 'asm';
   providerVersion?: string;
   classpathProviders: string[];
   classpathResolutionJson: string;
@@ -37,6 +37,37 @@ export interface JvmArtifact {
   sourceOrigin: 'provided' | 'local_maven' | 'sibling' | 'downloaded' | 'unavailable';
   associationStatus: 'complete' | 'binary_only' | 'header_only';
   classCount: number;
+  methodCount: number;
+  fieldCount: number;
+  callSiteCount: number;
+  contentHash: string;
+  classpathOrdinal: number;
+  processingStatus: 'pending' | 'running' | 'complete' | 'partial' | 'failed';
+  errorCount: number;
+  completedAt?: string;
+}
+
+export interface JvmClassResolution {
+  binaryName: string;
+  stageId: string;
+  classId: string;
+  artifactId: string;
+  classpathOrdinal: number;
+}
+
+export interface JvmBinaryReference {
+  binaryName: string;
+  stageId: string;
+}
+
+export interface JvmBinaryReferenceRelation {
+  id: string;
+  binaryName: string;
+  targetKind: 'JvmClass' | 'JvmCallSite';
+  targetId: string;
+  kind: 'SUPERCLASS_TARGET' | 'INTERFACE_TARGET' | 'BYTECODE_CALL_TARGET';
+  stageId: string;
+  ordinal: number;
 }
 
 export interface JvmClass {
@@ -96,8 +127,8 @@ export interface JvmCallSite {
 }
 
 export type JvmEntityKind =
-  | 'JvmArtifactEnrichmentRun' | 'JvmArtifact' | 'JvmClass'
-  | 'JvmMethod' | 'JvmField' | 'JvmCallSite';
+  | 'JvmArtifactEnrichmentRun' | 'JvmArtifact' | 'JvmClassResolution' | 'JvmClass'
+  | 'JvmBinaryReference' | 'JvmMethod' | 'JvmField' | 'JvmCallSite';
 
 export interface JvmRelation {
   id: string;
@@ -131,6 +162,9 @@ export interface LspJvmBinding {
 export interface JvmArtifactBatch {
   runs: JvmArtifactEnrichmentRun[];
   artifacts: JvmArtifact[];
+  resolutions: JvmClassResolution[];
+  binaryReferences: JvmBinaryReference[];
+  binaryReferenceRelations: JvmBinaryReferenceRelation[];
   classes: JvmClass[];
   methods: JvmMethod[];
   fields: JvmField[];
@@ -139,9 +173,15 @@ export interface JvmArtifactBatch {
   bindings: LspJvmBinding[];
 }
 
+export interface JvmArtifactEnrichmentSummary {
+  run: JvmArtifactEnrichmentRun;
+  sourceAssociatedArtifactCount: number;
+}
+
 export function emptyJvmArtifactBatch(): JvmArtifactBatch {
   return {
-    runs: [], artifacts: [], classes: [], methods: [], fields: [], callSites: [],
+    runs: [], artifacts: [], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
+    classes: [], methods: [], fields: [], callSites: [],
     relations: [], bindings: [],
   };
 }

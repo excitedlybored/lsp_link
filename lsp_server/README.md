@@ -134,6 +134,8 @@ imported by M2E and Buildship through JDT LS; generic JDT and explicit JSON
 manifest providers cover unmanaged and externally modeled projects. Use
 `--artifact-classpath-manifest` for an additional manifest and
 `--artifact-max-classes` only when a bounded dependency crawl is desired.
+Artifact bytecode is parsed without classloading by one persistent ASM worker;
+`--artifact-concurrency` controls its parsing threads and is capped at 16.
 
 ### Poly-build monorepositories
 

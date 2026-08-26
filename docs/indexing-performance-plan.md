@@ -103,12 +103,13 @@ Keep:
 The aggregate checkpoint should reference root checkpoints instead of embedding
 their contents.
 
-## 6. Replace repeated `javap` processes
+## 6. Replace repeated `javap` processes — implementation complete, RSS gate open
 
-The current implementation launches verbose `javap` repeatedly with the entire
-dependency classpath.
+The artifact stage now launches one JDK 21-compatible worker using vendored
+ASM Core 9.9.1. It parses JARs without classloading and streams versioned,
+bounded NDJSON batches directly into a resumable staging LadybugDB.
 
-Use one persistent JVM artifact worker based on ASM or the Java Class-File API:
+The implemented flow is:
 
 ```text
 Node orchestrator
@@ -122,13 +123,19 @@ Node orchestrator
 This remains framework-neutral. Temporal, Spring, Kafka, and MongoDB are simply
 bytecode and annotation data.
 
-For the interim implementation:
+`--artifact-concurrency` now controls worker parsing threads (4 by default,
+bounded to 16). Artifact hashes, classpath ordinals, completion state, and
+canonical duplicate-class resolution are persisted. The old `javap` parser,
+queue, executable lookup, and fallback path have been removed.
 
-- raise `javap` concurrency to a bounded value such as 10;
-- group classes by owning JAR;
-- increase batch size;
-- avoid rebuilding the complete classpath argument for every batch;
-- checkpoint every completed artifact.
+The deterministic correctness runs pass, but the combined Node/worker/Ladybug
+RSS scaling gate is not yet accepted. On the current host, 25,000 synthetic
+classes peaked at 1,529,851,904 bytes and 100,000 peaked at 3,381,030,912 bytes
+(2.21×, above the required 1.5×). Profiling attributes the remaining growth to
+native Ladybug graph/index memory; NDJSON transport is backpressured and the
+JAR worker is bounded. Do not treat this item as performance-complete until the
+Ladybug storage path satisfies the gate and the 23,730-class legacy comparison
+demonstrates at least 50% lower peak RSS.
 
 ## 7. Make the vendored JDT.LS runtime immutable
 

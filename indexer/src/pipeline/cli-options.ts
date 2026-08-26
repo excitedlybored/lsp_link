@@ -51,6 +51,9 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   requirePositiveInteger('--concurrency', concurrency);
   if (artifactMaxClasses !== undefined) requirePositiveInteger('--artifact-max-classes', artifactMaxClasses);
   requirePositiveInteger('--artifact-concurrency', artifactConcurrency);
+  if (artifactConcurrency > 16) {
+    throw new Error(`--artifact-concurrency must be at most 16, got ${artifactConcurrency}`);
+  }
   return {
     workspace,
     output,

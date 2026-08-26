@@ -17,7 +17,15 @@ export const JVM_ARTIFACT_SCHEMA_QUERIES = [
     id STRING, stageId STRING, buildRootIds STRING[], classpathProviders STRING[],
     classpathScopes STRING[], modulePath BOOLEAN, coordinate STRING,
     classpathEntryPath STRING, headerJarPath STRING, binaryJarPath STRING, sourceJarPath STRING,
-    sourceOrigin STRING, associationStatus STRING, classCount INT64, PRIMARY KEY (id))`,
+    sourceOrigin STRING, associationStatus STRING, classCount INT64, methodCount INT64,
+    fieldCount INT64, callSiteCount INT64, contentHash STRING,
+    classpathOrdinal INT32, processingStatus STRING, errorCount INT64, completedAt STRING,
+    PRIMARY KEY (id))`,
+  `CREATE NODE TABLE JvmClassResolution (
+    binaryName STRING, stageId STRING, classId STRING, artifactId STRING,
+    classpathOrdinal INT32, PRIMARY KEY (binaryName))`,
+  `CREATE NODE TABLE JvmBinaryReference (
+    binaryName STRING, stageId STRING, PRIMARY KEY (binaryName))`,
   `CREATE NODE TABLE JvmClass (
     id STRING, stageId STRING, artifactId STRING, binaryName STRING,
     packageName STRING, simpleName STRING, kind STRING, access STRING,
@@ -43,6 +51,13 @@ export const JVM_ARTIFACT_SCHEMA_QUERIES = [
     FROM JvmMethod TO JvmCallSite,
     FROM JvmCallSite TO JvmMethod,
     id STRING, kind STRING, stageId STRING, status STRING, ordinal INT32)`,
+  `CREATE REL TABLE JvmBinaryReferenceRelation (
+    FROM JvmBinaryReference TO JvmClass,
+    FROM JvmBinaryReference TO JvmCallSite,
+    id STRING, kind STRING, stageId STRING, ordinal INT32)`,
+  `CREATE REL TABLE JvmResolvedReference (
+    FROM JvmClass TO JvmBinaryReference,
+    id STRING, stageId STRING)`,
   `CREATE REL TABLE LspJvmBinding (
 ${LSP_JVM_BINDING_ENDPOINTS},
     id STRING, kind STRING, stageId STRING, status STRING,

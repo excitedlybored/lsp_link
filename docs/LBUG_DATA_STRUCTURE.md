@@ -35,8 +35,8 @@ document, and exact invocation range. Provider disagreement remains visible.
 
 ## JVM artifact model
 
-The post-crawl artifact stage writes `JvmArtifactEnrichmentRun`, `JvmArtifact`,
-`JvmClass`, `JvmMethod`, `JvmField`, and `JvmCallSite` nodes. `JvmRelation`
+The post-crawl persistent ASM stage writes `JvmArtifactEnrichmentRun`, `JvmArtifact`,
+`JvmClassResolution`, `JvmClass`, `JvmMethod`, `JvmField`, and `JvmCallSite` nodes. `JvmRelation`
 stores containment, inheritance, interface, declaration, and bytecode-call
 facts. Artifact-derived evidence is never written as an `LspRelation`.
 `LspJvmBinding` connects LSP observations to exact `JvmClass` or `JvmMethod`
