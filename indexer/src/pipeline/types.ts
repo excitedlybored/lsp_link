@@ -3,6 +3,7 @@ import type { JvmArtifactBatch } from '../artifact/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
 import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
+import type { BazelBuildMode } from '../../../lsp_server/adapters/java/bazel-project-model.js';
 import type {
   BazelCrawlSource,
   BazelSourceInventoryComparison,
@@ -19,6 +20,7 @@ export interface LspKnowledgeGraphBuildOptions {
   checkpointDirectory: string;
   resume: boolean;
   crawlPlanner: CrawlPlannerMode;
+  bazelBuildMode: BazelBuildMode;
 }
 
 export interface LspKnowledgeGraphBuildResult {

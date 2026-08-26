@@ -6,6 +6,7 @@ import test from 'node:test';
 import { parseLspKnowledgeGraphBuildOptions } from '../src/pipeline/cli-options.js';
 import { mapConcurrently } from '../src/pipeline/concurrency.js';
 import { addConfiguredJavaSources, findJavaSourceFiles } from '../src/pipeline/java-source-files.js';
+import { parseBazelPreparationCommandOptions } from '../src/cli/bazel-prepare.js';
 import {
   fingerprintPipelineInputs,
   PipelineCheckpointStore,
@@ -28,6 +29,8 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
     '/checkpoints/run-1',
     '--crawl-planner',
     'facts-first',
+    '--bazel-build-mode',
+    'prebuilt',
   ]);
   assert.equal(options.workspace, '/workspace');
   assert.equal(options.concurrency, 3);
@@ -38,6 +41,7 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
   assert.equal(options.checkpointDirectory, '/checkpoints/run-1');
   assert.equal(options.resume, true);
   assert.equal(options.crawlPlanner, 'facts-first');
+  assert.equal(options.bazelBuildMode, 'prebuilt');
 });
 
 test('defaults to resumable checkpoints beside the requested output', () => {
@@ -47,6 +51,7 @@ test('defaults to resumable checkpoints beside the requested output', () => {
   assert.equal(options.checkpointDirectory, '/tmp/result.lbug.checkpoints');
   assert.equal(options.resume, false);
   assert.equal(options.crawlPlanner, 'legacy');
+  assert.equal(options.bazelBuildMode, 'managed');
 });
 
 test('writes atomic checkpoints and rejects incompatible input fingerprints', (t) => {
@@ -74,6 +79,21 @@ test('rejects unknown crawl planners', () => {
     () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--crawl-planner', 'canonical']),
     /--crawl-planner must be one of legacy, facts-first/,
   );
+});
+
+test('rejects unknown Bazel build modes', () => {
+  assert.throws(
+    () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--bazel-build-mode', 'scan-output']),
+    /--bazel-build-mode must be one of managed, prebuilt/,
+  );
+});
+
+test('parses isolated Bazel preparation command options', () => {
+  assert.deepEqual(parseBazelPreparationCommandOptions([
+    '/workspace', '--concurrency', '2', '--timeout-ms', '9000',
+  ]), {
+    workspace: '/workspace', concurrency: 2, timeoutMs: 9000,
+  });
 });
 
 test('maps work with bounded concurrency while retaining input order', async () => {

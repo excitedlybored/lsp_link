@@ -44,6 +44,7 @@ import {
   planJdtlsBuildRootShards,
   prepareJdtlsShardWorkspace,
 } from '../../../lsp_server/adapters/java/jdtls-sharding.js';
+import { runBazelPreparationCommand } from './bazel-prepare.js';
 
 export async function buildLspKnowledgeGraph(
   options: LspKnowledgeGraphBuildOptions,
@@ -52,7 +53,11 @@ export async function buildLspKnowledgeGraph(
   const workspacePath = path.resolve(options.workspace);
   const discoveredRoots = adapterRegistry.getJavaBuildRoots(workspacePath);
   const repositoryJavaFiles = findJavaSourceFiles(workspacePath);
-  const preparation = await adapterRegistry.prepareJavaBuildRoots(workspacePath);
+  const preparation = await adapterRegistry.prepareJavaBuildRoots(
+    workspacePath,
+    undefined,
+    { buildMode: options.bazelBuildMode },
+  );
   logBuildRootPreparation(preparation.roots);
   const filesByRoot = addConfiguredJavaSources(
     assignFilesToBuildRoots(repositoryJavaFiles, discoveredRoots),
@@ -86,6 +91,7 @@ export async function buildLspKnowledgeGraph(
       buildRoots: activeRoots.map(({ id, relativePath, systems }) => ({ id, relativePath, systems })),
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
       crawlPlanner: options.crawlPlanner,
+      bazelBuildMode: options.bazelBuildMode,
     },
   );
   const normalizationFingerprint = combineCheckpointFingerprint(
@@ -275,6 +281,7 @@ function collectCrawlInputPaths(
     '**/BUILD', '**/BUILD.bazel', '**/WORKSPACE', '**/WORKSPACE.bazel', '**/MODULE.bazel',
     '**/pom.xml', '**/build.gradle', '**/build.gradle.kts', '**/settings.gradle',
     '**/settings.gradle.kts', '**/gradle.properties', '**/.gitnexus/jdtls/bazel-project.json',
+    '**/.gitnexus/jdtls/bazel-source-inventory.json', '**/.gitnexus/jdtls/bazel-handoff.json',
   ], {
     cwd: workspacePath,
     absolute: true,
@@ -404,12 +411,17 @@ function logCallNormalization(
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === 'bazel-prepare') {
+    await runBazelPreparationCommand(process.argv.slice(3));
+    return;
+  }
   const options = parseLspKnowledgeGraphBuildOptions(process.argv.slice(2));
   const { batch, callNormalizationBatch, artifactBatch, output } =
     await buildLspKnowledgeGraph(options);
   console.log(JSON.stringify({
     output,
     crawlPlanner: options.crawlPlanner,
+    bazelBuildMode: options.bazelBuildMode,
     run: batch.analysisRuns[0],
     buildRoots: batch.buildRoots.length,
     servers: batch.servers.length,

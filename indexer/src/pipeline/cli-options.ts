@@ -1,6 +1,9 @@
 import path from 'node:path';
 import type { LspKnowledgeGraphBuildOptions } from './types.js';
 import { CRAWL_PLANNER_MODES, type CrawlPlannerMode } from '../ingest/crawl-planner.js';
+import type { BazelBuildMode } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+
+const BAZEL_BUILD_MODES: BazelBuildMode[] = ['managed', 'prebuilt'];
 
 export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledgeGraphBuildOptions {
   const args = [...argv];
@@ -14,6 +17,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   let checkpointDirectory: string | undefined;
   let resume = true;
   let crawlPlanner: CrawlPlannerMode = 'legacy';
+  let bazelBuildMode: BazelBuildMode = 'managed';
   const artifactManifestPaths: string[] = [];
   while (args.length > 0) {
     const flag = args.shift();
@@ -29,6 +33,13 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
         throw new Error(`${flag} must be one of ${CRAWL_PLANNER_MODES.join(', ')}, got ${value}`);
       }
       crawlPlanner = value as CrawlPlannerMode;
+    }
+    else if (flag === '--bazel-build-mode') {
+      const value = requireFlagValue(args, flag);
+      if (!BAZEL_BUILD_MODES.includes(value as BazelBuildMode)) {
+        throw new Error(`${flag} must be one of ${BAZEL_BUILD_MODES.join(', ')}, got ${value}`);
+      }
+      bazelBuildMode = value as BazelBuildMode;
     }
     else if (flag === '--no-artifact-source-fetch') fetchArtifactSources = false;
     else if (flag === '--artifact-classpath-manifest') {
@@ -51,6 +62,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     checkpointDirectory: checkpointDirectory ?? `${output}.checkpoints`,
     resume,
     crawlPlanner,
+    bazelBuildMode,
   };
 }
 

@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { globSync } from 'glob';
 import {
   createBazelSourceInventory,
+  readBazelSourceInventory,
   sourceInventoryHash,
   type BazelConfiguredTargetSources,
   type BazelCrawlSource,
@@ -16,6 +17,7 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MODEL_RELATIVE_PATH = '.gitnexus/jdtls/bazel-project.json';
 const SOURCE_INVENTORY_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-inventory.json';
+const HANDOFF_RELATIVE_PATH = '.gitnexus/jdtls/bazel-handoff.json';
 const ASPECT_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-aspect.bzl';
 const ASPECT_MANIFEST_SUFFIX = '.gitnexus-sources.json';
 
@@ -32,6 +34,256 @@ interface GeneratedBazelModel {
   targetQuery: string;
   sourceInventoryPath?: string;
   sourceInventoryHash?: string;
+  handoffPath?: string;
+}
+
+interface WriteBazelHandoffInput {
+  workspacePath: string;
+  configurationHash: string;
+  modelPath: string;
+  inventoryPath: string;
+  inventoryHash: string;
+  compileClasspath: string[];
+  runtimeClasspath: string[];
+  sourceJars: string[];
+  handoffPath: string;
+}
+
+function writeBazelHandoff(input: WriteBazelHandoffInput): void {
+  if (!fs.existsSync(input.modelPath)) throw new Error(`Bazel project model does not exist: ${input.modelPath}`);
+  const artifacts = new Map<string, Set<BazelHandoffArtifact['kinds'][number]>>();
+  const addArtifacts = (paths: string[], kind: BazelHandoffArtifact['kinds'][number]): void => {
+    for (const artifactPath of paths) {
+      const resolved = path.resolve(artifactPath);
+      const kinds = artifacts.get(resolved) ?? new Set<BazelHandoffArtifact['kinds'][number]>();
+      kinds.add(kind);
+      artifacts.set(resolved, kinds);
+    }
+  };
+  addArtifacts(input.compileClasspath, 'compile_jar');
+  addArtifacts(input.runtimeClasspath, 'runtime_jar');
+  addArtifacts(input.sourceJars, 'source_jar');
+  const handoff: BazelPrebuiltHandoff = {
+    schemaVersion: 1,
+    workspacePath: path.resolve(input.workspacePath),
+    configurationHash: input.configurationHash,
+    generatedAt: new Date().toISOString(),
+    modelPath: path.resolve(input.modelPath),
+    modelHash: hashFile(input.modelPath),
+    sourceInventoryPath: path.resolve(input.inventoryPath),
+    sourceInventoryHash: input.inventoryHash,
+    artifacts: [...artifacts].map(([artifactPath, kinds]) => ({
+      path: artifactPath,
+      contentHash: hashFile(artifactPath),
+      kinds: [...kinds].sort(),
+    })).sort((left, right) => left.path.localeCompare(right.path)),
+  };
+  writeJsonAtomically(input.handoffPath, handoff);
+}
+
+export function validatePrebuiltBazelHandoff(workspacePath: string): BazelModelGenerationResult {
+  workspacePath = path.resolve(workspacePath);
+  const expectedModelPath = path.resolve(
+    workspacePath,
+    process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL || MODEL_RELATIVE_PATH,
+  );
+  const handoffPath = path.resolve(
+    workspacePath,
+    process.env.GITNEXUS_JDT_BAZEL_HANDOFF || HANDOFF_RELATIVE_PATH,
+  );
+  try {
+    const handoff = readBazelHandoff(handoffPath);
+    if (path.resolve(handoff.workspacePath) !== workspacePath) {
+      throw new Error(`handoff belongs to ${handoff.workspacePath}, not ${workspacePath}`);
+    }
+    if (path.resolve(handoff.modelPath) !== expectedModelPath) {
+      throw new Error(`handoff model ${handoff.modelPath} is not the configured project model ${expectedModelPath}`);
+    }
+    validateHashedFile(handoff.modelPath, handoff.modelHash, 'project model');
+    validateExistingFile(handoff.sourceInventoryPath, 'source inventory');
+    const inventory = readBazelSourceInventory(handoff.sourceInventoryPath);
+    if (!inventory) throw new Error(`invalid source inventory: ${handoff.sourceInventoryPath}`);
+    if (inventory.configurationHash !== handoff.configurationHash) {
+      throw new Error('source inventory configuration does not match the handoff');
+    }
+    if (sourceInventoryHash(inventory) !== handoff.sourceInventoryHash) {
+      throw new Error('source inventory semantic hash does not match the handoff');
+    }
+    const configurationHash = bazelConfigurationHash(workspacePath, inventory.targetQuery);
+    if (handoff.configurationHash !== configurationHash) {
+      throw new Error('Bazel configuration files changed after preparation');
+    }
+
+    const model = readBazelModel(handoff.modelPath);
+    if (model.configurationHash !== undefined && model.configurationHash !== handoff.configurationHash) {
+      throw new Error('project model configuration does not match the handoff');
+    }
+    if (model.sourceInventoryPath !== undefined
+      && path.resolve(workspacePath, model.sourceInventoryPath) !== path.resolve(handoff.sourceInventoryPath)) {
+      throw new Error('project model source inventory path does not match the handoff');
+    }
+    if (model.sourceInventoryHash !== undefined && model.sourceInventoryHash !== handoff.sourceInventoryHash) {
+      throw new Error('project model source inventory hash does not match the handoff');
+    }
+    const artifacts = new Map(handoff.artifacts.map((artifact) => [path.resolve(artifact.path), artifact]));
+    for (const artifact of handoff.artifacts) {
+      validateHashedFile(artifact.path, artifact.contentHash, artifact.kinds.join('/'));
+    }
+    validateModelArtifacts(model.classpath, workspacePath, artifacts, 'compile_jar');
+    validateModelArtifacts(model.runtimeClasspath, workspacePath, artifacts, 'runtime_jar');
+    for (const target of inventory.targets) {
+      for (const sourceJar of target.sourceJars) {
+        const artifact = artifacts.get(path.resolve(sourceJar));
+        if (!artifact?.kinds.includes('source_jar')) {
+          throw new Error(`source JAR is absent from the handoff: ${sourceJar}`);
+        }
+      }
+      for (const source of target.directSources) validateExistingFile(source.path, 'configured source artifact');
+    }
+    for (const source of inventory.sources) {
+      validateHashedFile(source.path, source.contentHash, 'crawl source');
+      validateHashedFile(source.analysisPath, source.contentHash, 'analysis source');
+      for (const originalPath of source.originalRepositoryPaths) {
+        validateHashedFile(originalPath, source.contentHash, 'repository source');
+      }
+      for (const association of source.configuredSourceAssociations) {
+        validateHashedFile(association.path, source.contentHash, 'configured source');
+      }
+      for (const association of source.sourceJarAssociations) {
+        const artifact = artifacts.get(path.resolve(association.sourceJarPath));
+        if (!artifact?.kinds.includes('source_jar')) {
+          throw new Error(`source-JAR association is absent from the handoff: ${association.sourceJarPath}`);
+        }
+      }
+    }
+    return {
+      status: 'cached',
+      buildMode: 'prebuilt',
+      modelPath: handoff.modelPath,
+      classpathEntries: model.classpath.length,
+      configurationHash,
+      sourceInventoryPath: handoff.sourceInventoryPath,
+      sourceInventoryHash: handoff.sourceInventoryHash,
+      handoffPath,
+      crawlSources: inventory.sources,
+      sourceInventoryComparison: inventory.comparison,
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      buildMode: 'prebuilt',
+      handoffPath,
+      reason: `Prebuilt Bazel handoff validation failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+function readBazelHandoff(handoffPath: string): BazelPrebuiltHandoff {
+  const value = JSON.parse(fs.readFileSync(handoffPath, 'utf8')) as Partial<BazelPrebuiltHandoff>;
+  if (
+    value.schemaVersion !== 1
+    || typeof value.workspacePath !== 'string'
+    || typeof value.configurationHash !== 'string'
+    || typeof value.modelPath !== 'string'
+    || typeof value.modelHash !== 'string'
+    || typeof value.sourceInventoryPath !== 'string'
+    || typeof value.sourceInventoryHash !== 'string'
+    || !Array.isArray(value.artifacts)
+  ) throw new Error(`invalid or missing handoff: ${handoffPath}`);
+  if (!value.artifacts.every((artifact) => typeof artifact.path === 'string'
+    && typeof artifact.contentHash === 'string' && Array.isArray(artifact.kinds))) {
+    throw new Error(`invalid artifact entry in handoff: ${handoffPath}`);
+  }
+  return value as BazelPrebuiltHandoff;
+}
+
+interface ReadBazelModel {
+  classpath: string[];
+  runtimeClasspath: string[];
+  configurationHash?: string;
+  sourceInventoryPath?: string;
+  sourceInventoryHash?: string;
+}
+
+function readBazelModel(modelPath: string): ReadBazelModel {
+  const value = JSON.parse(fs.readFileSync(modelPath, 'utf8')) as Record<string, unknown>;
+  if (!Array.isArray(value.classpath) || !value.classpath.every((entry) => typeof entry === 'string')) {
+    throw new Error(`invalid Bazel project model: ${modelPath}`);
+  }
+  if (value.runtimeClasspath !== undefined
+    && (!Array.isArray(value.runtimeClasspath) || !value.runtimeClasspath.every((entry) => typeof entry === 'string'))) {
+    throw new Error(`invalid Bazel runtime classpath: ${modelPath}`);
+  }
+  for (const field of ['configurationHash', 'sourceInventoryPath', 'sourceInventoryHash'] as const) {
+    if (value[field] !== undefined && typeof value[field] !== 'string') {
+      throw new Error(`invalid Bazel project model ${field}: ${modelPath}`);
+    }
+  }
+  return {
+    classpath: value.classpath,
+    runtimeClasspath: (value.runtimeClasspath as string[] | undefined) ?? [],
+    configurationHash: value.configurationHash as string | undefined,
+    sourceInventoryPath: value.sourceInventoryPath as string | undefined,
+    sourceInventoryHash: value.sourceInventoryHash as string | undefined,
+  };
+}
+
+function readModelClasspath(
+  modelPath: string,
+  workspacePath: string,
+  field: 'classpath' | 'runtimeClasspath',
+): string[] {
+  return readBazelModel(modelPath)[field].map((entry) =>
+    path.isAbsolute(entry) ? entry : path.resolve(workspacePath, entry)
+  );
+}
+
+function validateModelArtifacts(
+  entries: string[],
+  workspacePath: string,
+  artifacts: Map<string, BazelHandoffArtifact>,
+  kind: BazelHandoffArtifact['kinds'][number],
+): void {
+  for (const entry of entries) {
+    const resolved = path.isAbsolute(entry) ? entry : path.resolve(workspacePath, entry);
+    if (!artifacts.get(resolved)?.kinds.includes(kind)) {
+      throw new Error(`${kind} is absent from the handoff: ${resolved}`);
+    }
+  }
+}
+
+function validateHashedFile(filePath: string, expectedHash: string, description: string): void {
+  validateExistingFile(filePath, description);
+  if (hashFile(filePath) !== expectedHash) throw new Error(`${description} changed after preparation: ${filePath}`);
+}
+
+function validateExistingFile(filePath: string, description: string): void {
+  const stat = fs.lstatSync(filePath);
+  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${description} is not a regular file: ${filePath}`);
+}
+
+function hashFile(filePath: string): string {
+  return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+export type BazelBuildMode = 'managed' | 'prebuilt';
+
+interface BazelHandoffArtifact {
+  path: string;
+  contentHash: string;
+  kinds: Array<'compile_jar' | 'runtime_jar' | 'source_jar'>;
+}
+
+interface BazelPrebuiltHandoff {
+  schemaVersion: 1;
+  workspacePath: string;
+  configurationHash: string;
+  generatedAt: string;
+  modelPath: string;
+  modelHash: string;
+  sourceInventoryPath: string;
+  sourceInventoryHash: string;
+  artifacts: BazelHandoffArtifact[];
 }
 
 export interface BazelModelGenerationResult {
@@ -41,6 +293,8 @@ export interface BazelModelGenerationResult {
   configurationHash?: string;
   sourceInventoryPath?: string;
   sourceInventoryHash?: string;
+  handoffPath?: string;
+  buildMode?: BazelBuildMode;
   crawlSources?: BazelCrawlSource[];
   sourceInventoryComparison?: BazelSourceInventoryComparison;
   reason?: string;
@@ -69,12 +323,14 @@ export interface BazelPreparationReport {
 export interface BazelModelGenerationOptions {
   signal?: AbortSignal;
   deadlineAt?: number;
+  buildMode?: BazelBuildMode;
 }
 
 export interface BazelPreparationOptions {
   concurrency?: number;
   timeoutMs?: number;
   preferredRootIds?: string[];
+  buildMode?: BazelBuildMode;
   generate?: (workspacePath: string, options: BazelModelGenerationOptions) => Promise<BazelModelGenerationResult>;
 }
 
@@ -84,14 +340,17 @@ export async function ensureBazelProjectModel(
   options: BazelModelGenerationOptions = {}
 ): Promise<BazelModelGenerationResult> {
   workspacePath = path.resolve(workspacePath);
-  if (envBoolean('GITNEXUS_JDT_BAZEL_AUTO_MODEL') === false) return { status: 'disabled' };
   if (!hasBazelWorkspaceMarker(workspacePath)) return { status: 'disabled' };
+  const buildMode = options.buildMode ?? 'managed';
+  if (buildMode === 'prebuilt') return validatePrebuiltBazelHandoff(workspacePath);
+  if (envBoolean('GITNEXUS_JDT_BAZEL_AUTO_MODEL') === false) return { status: 'disabled' };
 
   const configuredPath = process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL;
   const modelPath = path.resolve(workspacePath, configuredPath || MODEL_RELATIVE_PATH);
   const customModel = Boolean(configuredPath && fs.existsSync(modelPath));
 
-  const configurationHash = bazelConfigurationHash(workspacePath);
+  const targetQuery = process.env.GITNEXUS_JDT_BAZEL_TARGETS || '//...';
+  const configurationHash = bazelConfigurationHash(workspacePath, targetQuery);
   const sourcePaths = discoverSourcePaths(workspacePath);
   const existing = readGeneratedModel(modelPath);
   if (existing && !customModel && existing.configurationHash !== configurationHash) quarantineStaleModel(modelPath);
@@ -102,7 +361,6 @@ export async function ensureBazelProjectModel(
   const timeout = positiveInteger(process.env.GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
   // Provider-based filtering is deliberate: custom/Starlark Java rules need not
   // have a native `java_*` rule kind, but JavaInfo is the stable contract.
-  const targetQuery = process.env.GITNEXUS_JDT_BAZEL_TARGETS || '//...';
   try {
     const executionRoot = (await runBazel(bazelBinary, ['info', 'execution_root'], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal)).trim();
     // Bazel 8 / rules_java no longer exposes this provider under the literal
@@ -177,6 +435,10 @@ export async function ensureBazelProjectModel(
     const inventoryHash = sourceInventoryHash(inventory);
     writeJsonAtomically(inventoryPath, inventory);
 
+    const handoffPath = path.resolve(
+      workspacePath,
+      process.env.GITNEXUS_JDT_BAZEL_HANDOFF || HANDOFF_RELATIVE_PATH,
+    );
     const model: GeneratedBazelModel = {
       classpath: configured.classpath,
       runtimeClasspath: runtime.classpath,
@@ -189,8 +451,20 @@ export async function ensureBazelProjectModel(
       targetQuery,
       sourceInventoryPath: inventoryPath,
       sourceInventoryHash: inventoryHash,
+      handoffPath,
     };
     if (!customModel) writeJsonAtomically(modelPath, model);
+    writeBazelHandoff({
+      workspacePath,
+      configurationHash,
+      modelPath,
+      inventoryPath,
+      inventoryHash,
+      compileClasspath: customModel ? readModelClasspath(modelPath, workspacePath, 'classpath') : configured.classpath,
+      runtimeClasspath: customModel ? readModelClasspath(modelPath, workspacePath, 'runtimeClasspath') : runtime.classpath,
+      sourceJars: [...targetMap.values()].flatMap((target) => target.sourceJars),
+      handoffPath,
+    });
     return {
       status: customModel ? 'cached' : 'generated',
       modelPath,
@@ -198,6 +472,8 @@ export async function ensureBazelProjectModel(
       configurationHash,
       sourceInventoryPath: inventoryPath,
       sourceInventoryHash: inventoryHash,
+      handoffPath,
+      buildMode,
       crawlSources: inventory.sources,
       sourceInventoryComparison: inventory.comparison,
     };
@@ -246,7 +522,11 @@ export async function prepareBazelProjectModels(
       const rootStarted = Date.now();
       let result: BazelModelGenerationResult;
       try {
-        result = await generate(root.workspacePath, { signal: controller.signal, deadlineAt });
+        result = await generate(root.workspacePath, {
+          signal: controller.signal,
+          deadlineAt,
+          buildMode: options.buildMode ?? 'managed',
+        });
       } catch (error) {
         result = { status: 'failed', reason: error instanceof Error ? error.message : String(error) };
       }
@@ -455,9 +735,13 @@ function discoverGeneratedSourcePaths(executionRoot: string): string[] {
   return [...roots].sort();
 }
 
-function bazelConfigurationHash(workspacePath: string): string {
+function bazelConfigurationHash(workspacePath: string, targetQuery: string): string {
   const hash = createHash('sha256');
-  const files = globSync(['MODULE.bazel', 'MODULE.bazel.lock', 'WORKSPACE', 'WORKSPACE.bazel', '.bazelrc', '**/BUILD', '**/BUILD.bazel'], {
+  const files = globSync([
+    'MODULE.bazel', 'MODULE.bazel.lock', 'WORKSPACE', 'WORKSPACE.bazel', 'REPO.bazel',
+    '.bazelrc', '.bazelversion', '.bazelignore',
+    '**/BUILD', '**/BUILD.bazel', '**/*.bzl', '**/REPO.bazel', '**/.bazelrc',
+  ], {
     cwd: workspacePath,
     nodir: true,
     ignore: ['**/.git/**', '**/.gitnexus/**', '**/bazel-*/**'],
@@ -465,7 +749,7 @@ function bazelConfigurationHash(workspacePath: string): string {
   for (const file of files) {
     hash.update(file).update('\0').update(fs.readFileSync(path.join(workspacePath, file))).update('\0');
   }
-  hash.update(process.env.GITNEXUS_JDT_BAZEL_TARGETS || '').update('\0');
+  hash.update(targetQuery).update('\0');
   return hash.digest('hex');
 }
 

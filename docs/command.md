@@ -24,6 +24,36 @@ npm run index -- build /path/to/repository \
   --artifact-concurrency 4
 ```
 
+For enterprise Bazel repositories, run preparation in the user-controlled
+environment that has Artifactory credentials:
+
+```bash
+npm run index -- bazel-prepare /path/to/repository
+# Equivalent direct script:
+npm run bazel:prepare -- /path/to/repository
+```
+
+Preparation owns every Bazel command and writes a hashed handoff at
+`.gitnexus/jdtls/bazel-handoff.json`. Index later without invoking Bazel:
+
+```bash
+npm run index -- build /path/to/repository \
+  --bazel-build-mode prebuilt \
+  --output /tmp/repository.lbug
+```
+
+`prebuilt` validates the configuration fingerprint, project model, source
+inventory, classpath/source JARs, and every repository/generated/analysis
+source. Missing or changed inputs fail the Bazel root and require preparation
+again. The default `managed` mode retains the integrated behavior.
+
+If the user already ran `bazel build`, preparation reuses Bazel's incremental
+outputs. It still runs configured queries and materializes the source aspect,
+because ordinary build outputs do not contain GitNexus's target/source
+inventory. The preparation and indexing commands currently share the same
+workspace and Bazel output cache; cleaning or relocating either invalidates the
+handoff.
+
 The default `legacy` crawl planner preserves the original request schedule.
 The opt-in facts-first planner collects declaration-scoped references across a
 complete build root before querying semantic-token gaps:

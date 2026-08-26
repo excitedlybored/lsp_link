@@ -109,6 +109,12 @@ generated/source-JAR sources, content deduplication, and repository-only files. 
 that configured inventory and every checked-in Java file. Set `GITNEXUS_JDT_BAZEL_PROJECT_MODEL` to use a
 pre-generated classpath manifest; GitNexus leaves it unchanged and generates the source sidecar beside it.
 
+Enterprise builds may isolate Bazel access from indexing. `npm run index -- bazel-prepare <workspace>` runs
+the user-owned Bazel analysis/build phase and emits `.gitnexus/jdtls/bazel-handoff.json` last. A later
+`npm run index -- build <workspace> --bazel-build-mode prebuilt` performs no Bazel command. It accepts the
+handoff only when the build configuration, model, inventory, classpath/source JAR hashes, and all crawl
+source hashes still match. Set `GITNEXUS_JDT_BAZEL_HANDOFF` for a non-default same-workspace handoff path.
+
 Imports are enabled by default. Use `GITNEXUS_JDT_IMPORT=0` globally, or
 `GITNEXUS_JDT_GRADLE_IMPORT`, `GITNEXUS_JDT_MAVEN_IMPORT`, and `GITNEXUS_JDT_BAZEL_IMPORT`
 for provider-specific control. `GITNEXUS_JDT_JAVA_HOME` explicitly selects the JDT runtime.
@@ -118,7 +124,7 @@ Provider configuration is passed through without repository edits:
 - Gradle: `GITNEXUS_JDT_GRADLE_ARGUMENTS`, `GITNEXUS_JDT_GRADLE_USER_HOME`, and `GITNEXUS_JDT_GRADLE_OFFLINE`.
 - Maven: `GITNEXUS_JDT_MAVEN_USER_SETTINGS`, `GITNEXUS_JDT_MAVEN_GLOBAL_SETTINGS`, and `GITNEXUS_JDT_MAVEN_OFFLINE`.
 - Bazel: `GITNEXUS_JDT_BAZEL_PROJECT_MODEL`, `GITNEXUS_BAZEL_BIN`,
-  `GITNEXUS_JDT_BAZEL_TARGETS`, `GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS`, and
+  `GITNEXUS_JDT_BAZEL_TARGETS`, `GITNEXUS_JDT_BAZEL_HANDOFF`, `GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS`, and
   `GITNEXUS_JDT_BAZEL_AUTO_MODEL=0` to disable generation.
 
 The separate JVM artifact-enrichment stage consumes normalized descriptors

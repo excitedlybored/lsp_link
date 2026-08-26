@@ -128,6 +128,7 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
   const root = fixture({
     'MODULE.bazel': 'module(name = "sample")',
     'BUILD.bazel': 'java_library(name = "app", srcs = glob(["src/main/java/**/*.java"]))',
+    'defs.bzl': 'JAVA_TAG = "java"\n',
     'src/main/java/example/Sample.java': 'package example; class Sample {}',
   });
   const fakeBazel = path.join(root, 'fake-bazel');
@@ -166,6 +167,7 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     assert.deepEqual(model.runtimeClasspath, model.classpath);
     assert.deepEqual(model.sourcePaths, ['src/main/java']);
     assert.ok(generated.sourceInventoryPath);
+    assert.ok(generated.handoffPath && fs.existsSync(generated.handoffPath));
     const inventory = JSON.parse(fs.readFileSync(generated.sourceInventoryPath, 'utf8'));
     assert.equal(inventory.comparison.repositorySources, 1);
     assert.equal(inventory.comparison.configuredRepositorySources, 1);
@@ -177,6 +179,73 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     const refreshed = await ensureBazelProjectModel(root);
     assert.equal(refreshed.status, 'generated');
     assert.equal(refreshed.classpathEntries, 2);
+
+    const forbiddenBazelCall = path.join(root, 'forbidden-bazel-call');
+    fs.writeFileSync(fakeBazel, [
+      '#!/bin/sh',
+      `: > '${forbiddenBazelCall}'`,
+      'exit 99',
+    ].join('\n'));
+    const prebuilt = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(prebuilt.status, 'cached');
+    assert.equal(prebuilt.buildMode, 'prebuilt');
+    assert.equal(prebuilt.crawlSources?.length, 1);
+    assert.equal(fs.existsSync(forbiddenBazelCall), false);
+
+    const compiledJar = path.join(root, 'execroot/bazel-out/app.jar');
+    fs.writeFileSync(compiledJar, 'tampered');
+    const staleArtifact = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(staleArtifact.status, 'failed');
+    assert.match(staleArtifact.reason ?? '', /changed after preparation/);
+    assert.equal(fs.existsSync(forbiddenBazelCall), false);
+    fs.writeFileSync(compiledJar, '');
+
+    const sourcePath = path.join(root, 'src/main/java/example/Sample.java');
+    const originalSource = fs.readFileSync(sourcePath, 'utf8');
+    fs.writeFileSync(sourcePath, `${originalSource}\n// stale`);
+    const staleSource = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(staleSource.status, 'failed');
+    assert.match(staleSource.reason ?? '', /source changed after preparation/);
+    assert.equal(fs.existsSync(forbiddenBazelCall), false);
+    fs.writeFileSync(sourcePath, originalSource);
+
+    const buildPath = path.join(root, 'BUILD.bazel');
+    const originalBuild = fs.readFileSync(buildPath, 'utf8');
+    fs.writeFileSync(buildPath, `${originalBuild}\n# changed configuration`);
+    const staleConfiguration = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(staleConfiguration.status, 'failed');
+    assert.match(staleConfiguration.reason ?? '', /configuration files changed/);
+    assert.equal(fs.existsSync(forbiddenBazelCall), false);
+    fs.writeFileSync(buildPath, originalBuild);
+
+    const extensionPath = path.join(root, 'defs.bzl');
+    fs.appendFileSync(extensionPath, '# changed Starlark configuration\n');
+    const staleExtension = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(staleExtension.status, 'failed');
+    assert.match(staleExtension.reason ?? '', /configuration files changed/);
+    assert.equal(fs.existsSync(forbiddenBazelCall), false);
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+  }
+});
+
+test('prebuilt mode fails without a handoff and never invokes Bazel', async (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "no_handoff")',
+    'BUILD.bazel': 'java_library(name = "app", srcs = ["App.java"])',
+    'App.java': 'class App {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const called = path.join(root, 'bazel-was-called');
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, ['#!/bin/sh', `: > '${called}'`, 'exit 99'].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  try {
+    const result = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(result.status, 'failed');
+    assert.match(result.reason ?? '', /invalid or missing handoff|ENOENT/);
+    assert.equal(fs.existsSync(called), false);
   } finally {
     delete process.env.GITNEXUS_BAZEL_BIN;
   }
@@ -349,6 +418,9 @@ test('preserves a custom Bazel classpath model while generating its source sidec
     assert.equal(fs.readFileSync(path.join(root, 'custom-model.json'), 'utf8'), originalModel);
     assert.ok(result.sourceInventoryPath && fs.existsSync(result.sourceInventoryPath));
     assert.equal(result.crawlSources?.[0]?.targetLabels[0], '//:app');
+    const prebuilt = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(prebuilt.status, 'cached');
+    assert.equal(prebuilt.modelPath, path.join(root, 'custom-model.json'));
   } finally {
     delete process.env.GITNEXUS_BAZEL_BIN;
     delete process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL;

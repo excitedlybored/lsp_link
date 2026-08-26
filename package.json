@@ -14,6 +14,7 @@
   ],
   "scripts": {
     "index": "tsx indexer/src/cli/build.ts",
+    "bazel:prepare": "tsx indexer/src/cli/bazel-prepare.ts",
     "compare:crawls": "tsx indexer/src/cli/compare-crawls.ts",
     "lbug:read": "uv run --with-requirements analyzer/requirements.lock.txt python analyzer/lbug_client.py",
     "graph:summary": "uv run --with-requirements analyzer/requirements.lock.txt python analyzer/query_db.py",

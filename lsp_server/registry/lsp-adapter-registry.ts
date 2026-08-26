@@ -10,7 +10,11 @@ import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
 import { SpringBootLanguageServerAdapter } from '../adapters/java/spring-boot-adapter.js';
 import { springToolsEnabled } from '../adapters/java/spring-tools-runtime.js';
-import { BazelPreparationReport, prepareBazelProjectModels } from '../adapters/java/bazel-project-model.js';
+import {
+  BazelPreparationReport,
+  prepareBazelProjectModels,
+  type BazelPreparationOptions,
+} from '../adapters/java/bazel-project-model.js';
 import { discoverJavaBuildRoots, JavaBuildRoot, JdtlsWorkspace, ownerBuildRoot } from '../adapters/java/jdtls-runtime.js';
 import type { PreparedJdtlsShard } from '../adapters/java/jdtls-sharding.js';
 import { PyrightAdapter } from '../adapters/python/pyright-adapter.js';
@@ -121,14 +125,18 @@ export class LspAdapterRegistry {
     return roots;
   }
 
-  public async prepareJavaBuildRoots(repositoryPath: string, rootIds?: string[]): Promise<BazelPreparationReport> {
+  public async prepareJavaBuildRoots(
+    repositoryPath: string,
+    rootIds?: string[],
+    options: Pick<BazelPreparationOptions, 'buildMode'> = {},
+  ): Promise<BazelPreparationReport> {
     const key = path.resolve(repositoryPath);
-    const selectionKey = `${key}:${[...(rootIds ?? [])].sort().join(',')}`;
+    const selectionKey = `${key}:${[...(rootIds ?? [])].sort().join(',')}:${options.buildMode ?? 'managed'}`;
     const active = this.bazelPreparations.get(selectionKey);
     if (active) return active;
     const selected = rootIds ? new Set(rootIds) : undefined;
     const roots = this.getJavaBuildRoots(key).filter((root) => !selected || selected.has(root.id));
-    const preparation = prepareBazelProjectModels(roots).then((report) => {
+    const preparation = prepareBazelProjectModels(roots, options).then((report) => {
       for (const result of report.roots) {
         if (result.status === 'generated' || result.status === 'cached') {
           this.preparedBazelRoots.add(path.resolve(result.workspacePath));
