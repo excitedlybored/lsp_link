@@ -28,7 +28,7 @@
     "indexer:test": "npm run test --workspace lsp-indexer",
     "server": "tsx lsp_server/server_launcher.ts",
     "build": "npm run artifact-worker:build && npm --workspaces run build --if-present",
-    "test": "npm --workspaces run test --if-present && npm run test:extractors"
+    "test": "npm run artifact-worker:build && npm --workspaces run test --if-present && npm run test:extractors"
   },
   "devDependencies": {
     "@types/node": "file:./vendor/npm/types-node-26.2.0.tgz",
