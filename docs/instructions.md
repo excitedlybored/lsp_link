@@ -34,6 +34,14 @@ stage that runs longer than 15 seconds emits a heartbeat with elapsed time,
 captured output size, and Bazel's latest status line. A quiet interval between
 heartbeats is therefore expected and does not indicate a hang.
 
+The aspect build writes a per-run Build Event Protocol (BEP) JSON stream. After
+the build, `bazel:aspect-output-discovery` follows the output group's shared
+`NamedSetOfFiles` references and reads only manifests reported by that build.
+It does not recursively scan `bazel-out`, and stale manifests from prior builds
+cannot enter the graph. The BEP file is removed after successful processing and
+also removed after controlled failures so workspace labels and paths are not
+left behind in an additional diagnostic trace.
+
 ## Install
 
 Requirements:

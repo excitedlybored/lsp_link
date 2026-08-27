@@ -2,6 +2,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import { globSync } from 'glob';
 import {
   createBazelSourceInventory,
@@ -22,6 +24,7 @@ const SOURCE_INVENTORY_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-inventory.j
 const HANDOFF_RELATIVE_PATH = '.gitnexus/jdtls/bazel-handoff.json';
 const ASPECT_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-aspect.bzl';
 const ASPECT_MANIFEST_SUFFIX = '.gitnexus-sources.json';
+const ASPECT_BEP_RELATIVE_PATH = '.gitnexus/jdtls/bazel-aspect-build.bep.json';
 
 interface GeneratedBazelModel {
   javaMajor?: number;
@@ -453,16 +456,19 @@ export async function ensureBazelProjectModel(
     fs.mkdirSync(path.dirname(targetFile), { recursive: true });
     fs.writeFileSync(targetFile, `${rootLabels.join('\n')}\n`);
     ensureSourceAspect(workspacePath);
-    removeStaleAspectManifests(executionRoot);
+    const aspectBepPath = path.join(workspacePath, ASPECT_BEP_RELATIVE_PATH);
+    fs.rmSync(aspectBepPath, { force: true });
     // Always ask Bazel to refresh configured sources. Bazel's own action cache
     // keeps this incremental while still noticing arbitrary generator inputs.
     await runBazel(bazelBinary, [
       'build', '--strict_java_deps=off', `--target_pattern_file=${targetFile}`,
       `--aspects=//.gitnexus/jdtls:${path.basename(ASPECT_RELATIVE_PATH)}%gitnexus_source_aspect`,
       '--output_groups=+gitnexus_source_manifest,+gitnexus_java_artifacts',
+      `--build_event_json_file=${aspectBepPath}`,
     ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, 'aspect-build');
 
-    const directSources = readAspectManifests(workspacePath, executionRoot);
+    const manifestPaths = await readAspectManifestPathsFromBep(aspectBepPath, executionRoot);
+    const directSources = readAspectManifests(manifestPaths, workspacePath, executionRoot);
     const manifestsByLabel = new Map(directSources.map((target) => [target.label, target]));
     const invalidRoots = rootLabels.filter((label) => !manifestsByLabel.get(label)?.hasJavaInfo);
     if (invalidRoots.length > 0) {
@@ -531,6 +537,7 @@ export async function ensureBazelProjectModel(
       handoffPath,
       scopeConfigHash: scopeResolution?.configHash,
     });
+    fs.rmSync(aspectBepPath, { force: true });
     return {
       status: customModel ? 'cached' : 'generated',
       modelPath,
@@ -546,6 +553,7 @@ export async function ensureBazelProjectModel(
       scopeResolution,
     };
   } catch (error) {
+    fs.rmSync(path.join(workspacePath, ASPECT_BEP_RELATIVE_PATH), { force: true });
     const detail = error instanceof Error ? error.message : String(error);
     return { status: 'failed', reason: `Bazel project model generation failed: ${detail}` };
   }
@@ -720,17 +728,130 @@ function ensureSourceAspect(workspacePath: string): void {
   if (!fs.existsSync(buildPath) || fs.readFileSync(buildPath, 'utf8') !== build) fs.writeFileSync(buildPath, build);
 }
 
-function removeStaleAspectManifests(executionRoot: string): void {
-  for (const manifest of globSync(`bazel-out/**/*${ASPECT_MANIFEST_SUFFIX}`, {
-    cwd: executionRoot, absolute: true, nodir: true,
-  })) fs.rmSync(manifest, { force: true });
+interface BepFile {
+  name?: unknown;
+  uri?: unknown;
+  pathPrefix?: unknown;
 }
 
-function readAspectManifests(workspacePath: string, executionRoot: string): BazelAspectTarget[] {
-  const manifests = globSync(`bazel-out/**/*${ASPECT_MANIFEST_SUFFIX}`, {
-    cwd: executionRoot, absolute: true, nodir: true,
-  }).sort();
-  return manifests.map((manifestPath) => {
+interface BepNamedSet {
+  files: BepFile[];
+  fileSetIds: string[];
+}
+
+async function readAspectManifestPathsFromBep(bepPath: string, executionRoot: string): Promise<string[]> {
+  const startedAt = Date.now();
+  let lineNumber = 0;
+  console.error('[bazel:aspect-output-discovery] started');
+  const heartbeat = setInterval(() => {
+    console.error(
+      `[bazel:aspect-output-discovery] running — elapsed ${formatElapsed(Date.now() - startedAt)}; parsed ${lineNumber} events`,
+    );
+  }, PROGRESS_INTERVAL_MS);
+  heartbeat.unref();
+  try {
+    if (!fs.existsSync(bepPath)) throw new Error(`Bazel did not write its Build Event Protocol file: ${bepPath}`);
+    const namedSets = new Map<string, BepNamedSet>();
+    const rootSetIds = new Set<string>();
+    const inlineFiles: BepFile[] = [];
+    const lines = createInterface({ input: fs.createReadStream(bepPath, { encoding: 'utf8' }), crlfDelay: Infinity });
+    for await (const line of lines) {
+      lineNumber += 1;
+      if (!line.trim()) continue;
+      let event: any;
+      try {
+        event = JSON.parse(line);
+      } catch (error) {
+        throw new Error(`Invalid Bazel BEP JSON at ${bepPath}:${lineNumber}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const namedSetId = event?.id?.namedSet?.id;
+      if (typeof namedSetId === 'string' && event?.namedSetOfFiles && typeof event.namedSetOfFiles === 'object') {
+        namedSets.set(namedSetId, {
+          files: Array.isArray(event.namedSetOfFiles.files)
+            ? event.namedSetOfFiles.files.filter(isPotentialManifestBepFile)
+            : [],
+          fileSetIds: bepFileSetIds(event.namedSetOfFiles.fileSets, bepPath, lineNumber),
+        });
+      }
+      for (const group of Array.isArray(event?.completed?.outputGroup) ? event.completed.outputGroup : []) {
+        if (group?.name !== 'gitnexus_source_manifest') continue;
+        if (group.incomplete === true) throw new Error('Bazel reported an incomplete gitnexus_source_manifest output group.');
+        for (const id of bepFileSetIds(group.fileSets, bepPath, lineNumber)) rootSetIds.add(id);
+        if (Array.isArray(group.inlineFiles)) inlineFiles.push(...group.inlineFiles);
+      }
+    }
+    if (rootSetIds.size === 0 && inlineFiles.length === 0) {
+      throw new Error('Bazel BEP contained no gitnexus_source_manifest output group.');
+    }
+    const files = [...inlineFiles];
+    const pending = [...rootSetIds];
+    const visited = new Set<string>();
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const namedSet = namedSets.get(id);
+      if (!namedSet) throw new Error(`Bazel BEP referenced missing NamedSetOfFiles ${JSON.stringify(id)}.`);
+      files.push(...namedSet.files);
+      pending.push(...namedSet.fileSetIds);
+    }
+    const manifests = uniqueSorted(files.flatMap((file) => {
+      const resolved = resolveBepFile(file, executionRoot);
+      if (!resolved || !resolved.endsWith(ASPECT_MANIFEST_SUFFIX)) return [];
+      if (!isInsideWorkspace(resolved, executionRoot)) {
+        throw new Error(`Bazel BEP manifest is outside the execution root: ${resolved}`);
+      }
+      return [resolved];
+    }));
+    if (manifests.length === 0) throw new Error('Bazel BEP reported no source-aspect manifest files.');
+    console.error(
+      `[bazel:aspect-output-discovery] completed in ${formatElapsed(Date.now() - startedAt)}; resolved ${manifests.length} manifests`,
+    );
+    return manifests;
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+function isPotentialManifestBepFile(file: BepFile): boolean {
+  return (typeof file.name === 'string' && file.name.endsWith(ASPECT_MANIFEST_SUFFIX))
+    || (typeof file.uri === 'string' && file.uri.includes(ASPECT_MANIFEST_SUFFIX));
+}
+
+function bepFileSetIds(value: unknown, bepPath: string, lineNumber: number): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`Invalid BEP fileSets at ${bepPath}:${lineNumber}.`);
+  return value.map((fileSet) => {
+    if (!fileSet || typeof fileSet.id !== 'string') {
+      throw new Error(`Invalid BEP NamedSetOfFiles reference at ${bepPath}:${lineNumber}.`);
+    }
+    return fileSet.id;
+  });
+}
+
+function resolveBepFile(file: BepFile, executionRoot: string): string | undefined {
+  if (typeof file.uri === 'string') {
+    try {
+      const url = new URL(file.uri);
+      if (url.protocol === 'file:') return path.resolve(fileURLToPath(url));
+    } catch {
+      // Fall through to the portable pathPrefix/name representation.
+    }
+  }
+  if (typeof file.name !== 'string') return undefined;
+  if (file.pathPrefix !== undefined
+    && (!Array.isArray(file.pathPrefix) || file.pathPrefix.some((part) => typeof part !== 'string'))) {
+    throw new Error('Invalid Bazel BEP file pathPrefix.');
+  }
+  return path.resolve(executionRoot, ...((file.pathPrefix as string[] | undefined) ?? []), file.name);
+}
+
+function readAspectManifests(
+  manifests: string[], workspacePath: string, executionRoot: string,
+): BazelAspectTarget[] {
+  const startedAt = Date.now();
+  console.error(`[bazel:aspect-manifest-read] started; reading ${manifests.length} manifests`);
+  const targets = manifests.map((manifestPath) => {
     const value = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
       label?: unknown;
       ruleKind?: unknown;
@@ -771,6 +892,10 @@ function readAspectManifests(workspacePath: string, executionRoot: string): Baze
       sourceJars: resolveManifestArtifacts(value.sourceJars, executionRoot, manifestPath),
     };
   });
+  console.error(
+    `[bazel:aspect-manifest-read] completed in ${formatElapsed(Date.now() - startedAt)}; read ${targets.length} manifests`,
+  );
+  return targets;
 }
 
 function resolveManifestArtifacts(value: unknown, executionRoot: string, manifestPath: string): string[] {

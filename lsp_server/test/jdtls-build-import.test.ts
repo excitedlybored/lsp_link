@@ -97,6 +97,49 @@ function fixture(files: Record<string, string>): string {
   return root;
 }
 
+function fakeBepPrelude(): string[] {
+  return [
+    'for argument in "$@"; do',
+    '  case "$argument" in',
+    '    --build_event_json_file=*) BEP_FILE=${argument#*=} ;;',
+    '  esac',
+    'done',
+  ];
+}
+
+function fakeBepManifestWrite(relativePaths: string[], nested = false): string {
+  assert.ok(relativePaths.length > 0);
+  const bepFile = (relativePath: string) => ({
+    name: path.posix.basename(relativePath),
+    pathPrefix: path.posix.dirname(relativePath).split('/').filter(Boolean),
+  });
+  const events: unknown[] = [];
+  if (nested && relativePaths.length > 1) {
+    events.push({
+      id: { namedSet: { id: 'leaf-manifests' } },
+      namedSetOfFiles: { files: relativePaths.slice(1).map(bepFile) },
+    });
+    events.push({
+      id: { namedSet: { id: 'root-manifests' } },
+      namedSetOfFiles: { files: [bepFile(relativePaths[0])], fileSets: [{ id: 'leaf-manifests' }] },
+    });
+  } else {
+    events.push({
+      id: { namedSet: { id: 'root-manifests' } },
+      namedSetOfFiles: { files: relativePaths.map(bepFile) },
+    });
+  }
+  events.push({
+    id: { targetCompleted: { label: '//:aspect-root', aspect: 'gitnexus_source_aspect' } },
+    completed: {
+      success: true,
+      outputGroup: [{ name: 'gitnexus_source_manifest', fileSets: [{ id: 'root-manifests' }] }],
+    },
+  });
+  const quotedEvents = events.map((event) => `'${JSON.stringify(event)}'`).join(' ');
+  return `  printf '%s\\n' ${quotedEvents} > "$BEP_FILE"`;
+}
+
 function javaSettings(root: string): any {
   const workspace = JdtlsWorkspace.inspect(root);
   const launch = createJdtlsProcessLaunch(root, workspace, runtime, path.join(root, '.jdtls-test'));
@@ -182,6 +225,7 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
   const buildLog = path.join(root, 'build.log');
   fs.writeFileSync(fakeBazel, [
     '#!/bin/sh',
+    ...fakeBepPrelude(),
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${path.join(root, 'execroot')}'`,
     'elif [ "$1" = "cquery" ]; then',
@@ -192,8 +236,12 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     `  mkdir -p '${path.join(root, 'execroot/external/maven')}' '${path.join(root, 'execroot/bazel-out')}'`,
     `  : > '${path.join(root, 'execroot/external/maven/spring-context.jar')}'`,
     `  : > '${path.join(root, 'execroot/bazel-out/app.jar')}'`,
+    `  printf '%s\n' 'stale manifest deliberately not reported by BEP' > '${path.join(root, 'execroot/bazel-out/stale.gitnexus-sources.json')}'`,
     `  printf '%s\n' '{"label":"//:app","ruleKind":"java_library","dependencies":[{"label":"//shared:api","attribute":"deps"}],"sources":[{"path":"src/main/java/example/Sample.java","shortPath":"src/main/java/example/Sample.java","isSource":true}],"compileArtifacts":["bazel-out/app.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(root, 'execroot/bazel-out/app.gitnexus-sources.json')}'`,
     `  printf '%s\n' '{"label":"//shared:api","ruleKind":"java_library","dependencies":[],"sources":[],"compileArtifacts":["external/maven/spring-context.jar"],"runtimeArtifacts":["external/maven/spring-context.jar"],"sourceJars":[]}' > '${path.join(root, 'execroot/bazel-out/shared.gitnexus-sources.json')}'`,
+    fakeBepManifestWrite([
+      'bazel-out/app.gitnexus-sources.json', 'bazel-out/shared.gitnexus-sources.json',
+    ], true),
     'else',
     '  exit 2',
     'fi',
@@ -223,6 +271,8 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
       { label: '//shared:api', attribute: 'deps' },
     ]);
     assert.equal(generated.configuredTargets?.[0]?.compileArtifacts?.length, 1);
+    assert.equal(generated.configuredTargets?.some((target) => target.label.includes('stale')), false);
+    assert.equal(fs.existsSync(path.join(root, '.gitnexus/jdtls/bazel-aspect-build.bep.json')), false);
     assert.ok(fs.readFileSync(cqueryLog, 'utf8').trim().split('\n').every((command) =>
       command.includes('"C:"') && command.includes('"R:"') && command.includes('"S:"')
         && command.includes('if len(') && command.includes('else ""')
@@ -311,6 +361,7 @@ test('uses the recursive build aspect as the authoritative graph for configured 
   const fakeBazel = path.join(root, 'fake-bazel');
   fs.writeFileSync(fakeBazel, [
     '#!/bin/sh',
+    ...fakeBepPrelude(),
     'if [ "$1" = "query" ]; then',
     '  case "$*" in',
     '    *"attr(\\\"tags\\\""*) exit 0 ;;',
@@ -331,6 +382,10 @@ test('uses the recursive build aspect as the authoritative graph for configured 
     `  printf '%s\\n' '{"label":"//:app","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[{"label":"//:bridge","attribute":"deps"}],"sources":[{"path":"App.java","shortPath":"App.java","isSource":true}],"compileArtifacts":["bazel-out/app-hjar.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
     `  printf '%s\\n' '{"label":"//:bridge","ruleKind":"custom_wrapper","hasJavaInfo":false,"dependencies":[{"label":"@third_party//:api","attribute":"deps"}],"sources":[],"compileArtifacts":[],"runtimeArtifacts":[],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/bridge.gitnexus-sources.json')}'`,
     `  printf '%s\\n' '{"label":"@third_party//:api","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[],"sources":[],"compileArtifacts":["external/third_party/api-hjar.jar"],"runtimeArtifacts":["external/third_party/api.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/api.gitnexus-sources.json')}'`,
+    fakeBepManifestWrite([
+      'bazel-out/app.gitnexus-sources.json', 'bazel-out/bridge.gitnexus-sources.json',
+      'bazel-out/api.gitnexus-sources.json',
+    ], true),
     'else',
     '  exit 2',
     'fi',
@@ -362,6 +417,44 @@ test('uses the recursive build aspect as the authoritative graph for configured 
     assert.match(aspect, /java_info\.compile_jars/);
     assert.match(aspect, /java_info\.runtime_output_jars/);
     assert.match(aspect, /java_info\.source_jars/);
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+  }
+});
+
+test('fails safely and removes temporary BEP data when the aspect output group is missing', async (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "missing_bep_group")',
+    'BUILD.bazel': 'java_library(name = "app", srcs = ["App.java"])',
+    'App.java': 'class App {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const executionRoot = path.join(root, 'execroot');
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    ...fakeBepPrelude(),
+    'if [ "$1" = "info" ]; then',
+    `  printf '%s\\n' '${executionRoot}'`,
+    'elif [ "$1" = "cquery" ]; then',
+    '  printf "//:app\\tC:bazel-out/app.jar\\tR:bazel-out/app.jar\\n"',
+    'elif [ "$1" = "build" ]; then',
+    `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
+    `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
+    `  printf '%s\\n' '{"label":"//:app","sources":[],"compileArtifacts":["bazel-out/app.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"id":{"namedSet":{"id":"orphan"}},"namedSetOfFiles":{"files":[{"name":"app.gitnexus-sources.json","pathPrefix":["bazel-out"]}]}}' > "$BEP_FILE"`,
+    'else',
+    '  exit 2',
+    'fi',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  try {
+    const result = await ensureBazelProjectModel(root);
+    assert.equal(result.status, 'failed');
+    assert.match(result.reason ?? '', /no gitnexus_source_manifest output group/);
+    assert.equal(fs.existsSync(path.join(root, '.gitnexus/jdtls/bazel-aspect-build.bep.json')), false);
+    assert.equal(fs.existsSync(path.join(root, '.gitnexus/jdtls/bazel-handoff.json')), false);
   } finally {
     delete process.env.GITNEXUS_BAZEL_BIN;
   }
@@ -491,12 +584,14 @@ test('discovers Java from a configured source JAR when the repository has no che
   const fakeBazel = path.join(root, 'fake-bazel');
   fs.writeFileSync(fakeBazel, [
     '#!/bin/sh',
+    ...fakeBepPrelude(),
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${executionRoot}'`,
     'elif [ "$1" = "cquery" ]; then',
     '  printf "//:generated\\tC:bazel-out/generated.jar\\tR:bazel-out/generated.jar\\tS:bazel-out/generated.srcjar\\n"',
     'elif [ "$1" = "build" ]; then',
     `  printf '%s\\n' '{"label":"//:generated","sources":[],"compileArtifacts":["bazel-out/generated.jar"],"runtimeArtifacts":["bazel-out/generated.jar"],"sourceJars":["bazel-out/generated.srcjar"]}' > '${path.join(executionRoot, 'bazel-out/generated.gitnexus-sources.json')}'`,
+    fakeBepManifestWrite(['bazel-out/generated.gitnexus-sources.json']),
     '  exit 0',
     'else',
     '  exit 2',
@@ -529,6 +624,7 @@ test('preserves a custom Bazel classpath model while generating its source sidec
   const fakeBazel = path.join(root, 'fake-bazel');
   fs.writeFileSync(fakeBazel, [
     '#!/bin/sh',
+    ...fakeBepPrelude(),
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${executionRoot}'`,
     'elif [ "$1" = "cquery" ]; then',
@@ -537,6 +633,7 @@ test('preserves a custom Bazel classpath model while generating its source sidec
     `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
     `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
     `  printf '%s\\n' '{"label":"//:app","sources":[{"path":"App.java","shortPath":"App.java","isSource":true}],"compileArtifacts":["bazel-out/app.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    fakeBepManifestWrite(['bazel-out/app.gitnexus-sources.json']),
     'else',
     '  exit 2',
     'fi',
@@ -574,6 +671,7 @@ test('includes Git-tracked unowned Java even under an ignored build directory', 
   const fakeBazel = path.join(root, 'fake-bazel');
   fs.writeFileSync(fakeBazel, [
     '#!/bin/sh',
+    ...fakeBepPrelude(),
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${executionRoot}'`,
     'elif [ "$1" = "cquery" ]; then',
@@ -582,6 +680,7 @@ test('includes Git-tracked unowned Java even under an ignored build directory', 
     `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
     `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
     `  printf '%s\\n' '{"label":"//:app","sources":[],"compileArtifacts":["bazel-out/app.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    fakeBepManifestWrite(['bazel-out/app.gitnexus-sources.json']),
     'else',
     '  exit 2',
     'fi',
