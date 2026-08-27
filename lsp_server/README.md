@@ -108,6 +108,10 @@ preparation (Bazel keeps the work incremental), and the sidecar records configur
 generated/source-JAR sources, content deduplication, and repository-only files. Crawling uses the union of
 that configured inventory and every checked-in Java file. Set `GITNEXUS_JDT_BAZEL_PROJECT_MODEL` to use a
 pre-generated classpath manifest; GitNexus leaves it unchanged and generates the source sidecar beside it.
+Source JAR materialization deduplicates identical archives globally, validates and reuses completed cache
+entries, and extracts with bounded concurrency and a per-JAR timeout. Override the defaults with
+`GITNEXUS_BAZEL_SOURCE_JAR_CONCURRENCY` (default `4`, maximum `16`) and
+`GITNEXUS_BAZEL_SOURCE_JAR_TIMEOUT_MS` (default `120000`).
 
 Enterprise builds may isolate Bazel access from indexing. `npm run index -- bazel-prepare <workspace>` runs
 the user-owned Bazel analysis/build phase and emits `.gitnexus/jdtls/bazel-handoff.json` last. A later

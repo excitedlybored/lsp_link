@@ -505,6 +505,8 @@ export async function ensureBazelProjectModel(
       targets: [...targetMap.values()],
       extractionRoot: path.join(workspacePath, '.gitnexus', 'jdtls', 'bazel-sources', configurationHash),
       scopeResolution,
+      deadlineAt: options.deadlineAt,
+      signal: options.signal,
     });
     const inventoryHash = sourceInventoryHash(inventory);
     writeJsonAtomically(inventoryPath, inventory);

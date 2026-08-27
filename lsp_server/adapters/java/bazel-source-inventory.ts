@@ -6,6 +6,11 @@ import { promisify } from 'node:util';
 import type { BazelScopeResolution } from './bazel-project-model.js';
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_SOURCE_JAR_CONCURRENCY = 4;
+const MAX_SOURCE_JAR_CONCURRENCY = 16;
+const DEFAULT_SOURCE_JAR_TIMEOUT_MS = 2 * 60_000;
+const SOURCE_JAR_CACHE_MANIFEST = '.gitnexus-source-cache.json';
+const SOURCE_JAR_PROGRESS_INTERVAL_MS = 15_000;
 
 export type BazelCrawlSourceOrigin = 'repository' | 'generated' | 'source_jar';
 
@@ -82,10 +87,37 @@ export interface CreateBazelSourceInventoryInput {
   targets: BazelConfiguredTargetSources[];
   extractionRoot: string;
   scopeResolution?: BazelScopeResolution;
+  sourceJarConcurrency?: number;
+  sourceJarTimeoutMs?: number;
+  deadlineAt?: number;
+  signal?: AbortSignal;
 }
 
 interface CandidateSource extends BazelCrawlSource {
   priority: number;
+}
+
+interface ExtractedSourceJarEntry {
+  entry: string;
+  path: string;
+  contentHash: string;
+}
+
+interface SourceJarWorkItem {
+  contentHash: string;
+  associations: Array<{ sourceJarPath: string; targetLabels: string[] }>;
+  destination: string;
+}
+
+interface SourceJarExtractionResult {
+  entries: ExtractedSourceJarEntry[];
+  cacheHit: boolean;
+}
+
+interface SourceJarCacheManifest {
+  schemaVersion: 1;
+  sourceJarHash: string;
+  entries: Array<{ entry: string; contentHash: string }>;
 }
 
 /** Build the repository-union-configured inventory and safely materialize source JAR entries. */
@@ -103,32 +135,7 @@ export async function createBazelSourceInventory(
     }
   }
 
-  const jarCandidates: CandidateSource[] = [];
-  for (const target of targets) {
-    for (const sourceJar of target.sourceJars) {
-      const extracted = await extractJavaSourceJar(
-        sourceJar,
-        path.join(input.extractionRoot, hashFile(sourceJar).slice(0, 24)),
-      );
-      for (const entry of extracted) {
-        jarCandidates.push({
-          path: entry.path,
-          analysisPath: entry.path,
-          origin: 'source_jar',
-          contentHash: entry.contentHash,
-          targetLabels: [target.label],
-          originalRepositoryPaths: [],
-          configuredSourceAssociations: [],
-          sourceJarAssociations: [{
-            sourceJarPath: path.resolve(sourceJar),
-            sourceJarEntry: entry.entry,
-            targetLabels: [target.label],
-          }],
-          priority: 2,
-        });
-      }
-    }
-  }
+  const jarCandidates = await extractSourceJarCandidates(targets, input);
 
   const jarByHash = groupCandidatesByHash(jarCandidates);
   const repositoryCandidates: CandidateSource[] = input.repositorySources
@@ -266,82 +273,336 @@ export function readBazelSourceInventory(inventoryPath: string): BazelSourceInve
   }
 }
 
+async function extractSourceJarCandidates(
+  targets: BazelConfiguredTargetSources[],
+  input: CreateBazelSourceInventoryInput,
+): Promise<CandidateSource[]> {
+  const labelsByJarPath = new Map<string, Set<string>>();
+  let associationCount = 0;
+  for (const target of targets) {
+    for (const sourceJar of target.sourceJars) {
+      associationCount += 1;
+      const resolved = path.resolve(sourceJar);
+      const labels = labelsByJarPath.get(resolved) ?? new Set<string>();
+      labels.add(target.label);
+      labelsByJarPath.set(resolved, labels);
+    }
+  }
+  const jarPaths = [...labelsByJarPath.keys()].sort();
+  if (jarPaths.length === 0) return [];
+  console.error(
+    `[bazel:source-inventory] cataloging ${jarPaths.length} unique source-JAR paths from ${associationCount} target associations`,
+  );
+  const byContentHash = new Map<string, SourceJarWorkItem>();
+  const catalogStep = Math.max(1, Math.floor(jarPaths.length / 20));
+  for (let index = 0; index < jarPaths.length; index += 1) {
+    throwIfAborted(input.signal, 'Source-JAR cataloging was aborted.');
+    const sourceJarPath = jarPaths[index];
+    const contentHash = hashFile(sourceJarPath);
+    const work = byContentHash.get(contentHash) ?? {
+      contentHash,
+      associations: [],
+      destination: path.join(input.extractionRoot, contentHash.slice(0, 24)),
+    };
+    work.associations.push({
+      sourceJarPath,
+      targetLabels: [...labelsByJarPath.get(sourceJarPath)!].sort(),
+    });
+    byContentHash.set(contentHash, work);
+    if ((index + 1) % catalogStep === 0 || index + 1 === jarPaths.length) {
+      console.error(`[bazel:source-inventory] cataloged ${index + 1}/${jarPaths.length} source-JAR paths`);
+    }
+  }
+  const workItems = [...byContentHash.values()].sort((left, right) =>
+    left.contentHash.localeCompare(right.contentHash));
+  const concurrency = boundedPositiveInteger(
+    input.sourceJarConcurrency ?? environmentPositiveInteger('GITNEXUS_BAZEL_SOURCE_JAR_CONCURRENCY')
+      ?? DEFAULT_SOURCE_JAR_CONCURRENCY,
+    'source-JAR concurrency',
+    MAX_SOURCE_JAR_CONCURRENCY,
+  );
+  const timeoutMs = boundedPositiveInteger(
+    input.sourceJarTimeoutMs ?? environmentPositiveInteger('GITNEXUS_BAZEL_SOURCE_JAR_TIMEOUT_MS')
+      ?? DEFAULT_SOURCE_JAR_TIMEOUT_MS,
+    'source-JAR timeout',
+  );
+  console.error(
+    `[bazel:source-inventory] extracting ${workItems.length} content-unique source JARs with concurrency ${Math.min(concurrency, workItems.length)}`,
+  );
+  const results = new Array<SourceJarExtractionResult>(workItems.length);
+  const controller = new AbortController();
+  const relayAbort = (): void => controller.abort(input.signal?.reason);
+  input.signal?.addEventListener('abort', relayAbort, { once: true });
+  if (input.signal?.aborted) relayAbort();
+  let nextIndex = 0;
+  let completed = 0;
+  let cacheHits = 0;
+  let javaFiles = 0;
+  let firstFailure: unknown;
+  const startedAt = Date.now();
+  const reportProgress = (): void => {
+    const percent = workItems.length === 0 ? 100 : Math.floor((completed / workItems.length) * 100);
+    console.error(
+      `[bazel:source-inventory] completed ${completed}/${workItems.length} source JARs (${percent}%); cache hits ${cacheHits}; Java files ${javaFiles}; elapsed ${formatElapsed(Date.now() - startedAt)}`,
+    );
+  };
+  const heartbeat = setInterval(reportProgress, SOURCE_JAR_PROGRESS_INTERVAL_MS);
+  heartbeat.unref();
+  const progressStep = Math.max(1, Math.floor(workItems.length / 100));
+  const worker = async (): Promise<void> => {
+    while (!controller.signal.aborted) {
+      const index = nextIndex++;
+      if (index >= workItems.length) return;
+      const work = workItems[index];
+      try {
+        const result = await extractJavaSourceJar(work.associations[0].sourceJarPath, work.destination, {
+          expectedContentHash: work.contentHash,
+          timeoutMs,
+          deadlineAt: input.deadlineAt,
+          signal: controller.signal,
+        });
+        results[index] = result;
+        completed += 1;
+        if (result.cacheHit) cacheHits += 1;
+        javaFiles += result.entries.length;
+        if (completed % progressStep === 0 || completed === workItems.length) reportProgress();
+      } catch (error) {
+        if (firstFailure === undefined) firstFailure = error;
+        controller.abort(error);
+        return;
+      }
+    }
+  };
+  try {
+    await Promise.all(Array.from(
+      { length: Math.min(concurrency, workItems.length) },
+      () => worker(),
+    ));
+  } finally {
+    clearInterval(heartbeat);
+    input.signal?.removeEventListener('abort', relayAbort);
+  }
+  if (firstFailure !== undefined) throw firstFailure;
+  throwIfAborted(input.signal, 'Source-JAR extraction was aborted.');
+
+  const candidates: CandidateSource[] = [];
+  for (let index = 0; index < workItems.length; index += 1) {
+    const work = workItems[index];
+    const targetLabels = [...new Set(work.associations.flatMap((association) => association.targetLabels))].sort();
+    for (const entry of results[index].entries) {
+      candidates.push({
+        path: entry.path,
+        analysisPath: entry.path,
+        origin: 'source_jar',
+        contentHash: entry.contentHash,
+        targetLabels,
+        originalRepositoryPaths: [],
+        configuredSourceAssociations: [],
+        sourceJarAssociations: work.associations.map((association) => ({
+          sourceJarPath: association.sourceJarPath,
+          sourceJarEntry: entry.entry,
+          targetLabels: association.targetLabels,
+        })),
+        priority: 2,
+      });
+    }
+  }
+  return candidates;
+}
+
+interface ExtractJavaSourceJarOptions {
+  expectedContentHash: string;
+  timeoutMs: number;
+  deadlineAt?: number;
+  signal?: AbortSignal;
+}
+
 async function extractJavaSourceJar(
   sourceJar: string,
   destination: string,
-): Promise<Array<{ entry: string; path: string; contentHash: string }>> {
+  options: ExtractJavaSourceJarOptions,
+): Promise<SourceJarExtractionResult> {
   const resolvedJar = path.resolve(sourceJar);
   if (!fs.existsSync(resolvedJar)) throw new Error(`Bazel source JAR does not exist: ${resolvedJar}`);
-  let listing: string;
-  let extractor: 'jar' | 'unzip';
-  try {
-    const jar = findJarExecutable();
-    listing = String((await execFileAsync(jar, ['tf', resolvedJar], { maxBuffer: 64 * 1024 * 1024 })).stdout);
-    extractor = 'jar';
-  } catch (jarError) {
-    try {
-      listing = String((await execFileAsync('unzip', ['-Z1', resolvedJar], { maxBuffer: 64 * 1024 * 1024 })).stdout);
-      extractor = 'unzip';
-    } catch (unzipError) {
-      const detail = unzipError instanceof Error ? unzipError.message
-        : jarError instanceof Error ? jarError.message : String(unzipError);
-      throw new Error(`Invalid Bazel source JAR ${resolvedJar}: ${detail}`);
-    }
+  throwIfAborted(options.signal, 'Source-JAR extraction was aborted.');
+  if (options.deadlineAt !== undefined && options.deadlineAt <= Date.now()) {
+    throw new Error('Repository-wide deadline exceeded before source-JAR extraction.');
   }
-  const entries = listing.split(/\r?\n/).filter(Boolean);
-  for (const entry of entries) validateBazelSourceJarEntry(entry, resolvedJar);
-  const javaEntries = entries.filter((entry) => entry.endsWith('.java')).sort();
-  if (javaEntries.length === 0) return [];
-  const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
-  fs.rmSync(temporary, { recursive: true, force: true });
-  fs.mkdirSync(temporary, { recursive: true });
+  const cached = readCachedSourceJarExtraction(destination, options.expectedContentHash);
+  if (cached) return { entries: cached, cacheHit: true };
+  const remaining = options.deadlineAt === undefined ? options.timeoutMs : options.deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error('Repository-wide deadline exceeded before source-JAR extraction.');
+  const effectiveTimeoutMs = Math.max(1, Math.min(options.timeoutMs, remaining));
+  const controller = new AbortController();
+  let timedOut = false;
+  const relayAbort = (): void => controller.abort(options.signal?.reason);
+  options.signal?.addEventListener('abort', relayAbort, { once: true });
+  if (options.signal?.aborted) relayAbort();
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`source-JAR extraction exceeded ${effectiveTimeoutMs} ms`));
+  }, effectiveTimeoutMs);
+  let listing: string;
   try {
-    // Keep command lines bounded for large source JARs, and never materialize
-    // resources or class files that are outside the crawl inventory.
-    for (let offset = 0; offset < javaEntries.length; offset += 200) {
-      const batch = javaEntries.slice(offset, offset + 200);
-      if (extractor === 'jar') {
-        await execFileAsync(findJarExecutable(), ['xf', resolvedJar, ...batch], {
-          cwd: temporary,
+    try {
+      const jar = findJarExecutable();
+      listing = String((await execFileAsync(jar, ['tf', resolvedJar], {
+        maxBuffer: 64 * 1024 * 1024,
+        signal: controller.signal,
+      })).stdout);
+    } catch (jarError) {
+      if (controller.signal.aborted) throw jarError;
+      try {
+        listing = String((await execFileAsync('unzip', ['-Z1', resolvedJar], {
           maxBuffer: 64 * 1024 * 1024,
-        });
-      } else {
-        await execFileAsync('unzip', ['-q', resolvedJar, ...batch, '-d', temporary], {
-          maxBuffer: 64 * 1024 * 1024,
-        });
+          signal: controller.signal,
+        })).stdout);
+      } catch (unzipError) {
+        if (controller.signal.aborted) throw unzipError;
+        const detail = unzipError instanceof Error ? unzipError.message
+          : jarError instanceof Error ? jarError.message : String(unzipError);
+        throw new Error(`Invalid Bazel source JAR ${resolvedJar}: ${detail}`);
       }
     }
-    const extracted = javaEntries.map((entry) => {
-      const extractedPath = path.resolve(temporary, ...entry.split('/'));
-      if (!isInside(extractedPath, temporary)) {
-        throw new Error(`Bazel source JAR entry was not safely extracted: ${entry}`);
-      }
-      const extractedStat = fs.lstatSync(extractedPath);
-      if (extractedStat.isSymbolicLink() || !extractedStat.isFile()) {
-        throw new Error(`Bazel source JAR entry was not safely extracted: ${entry}`);
-      }
-      return { entry, temporaryPath: extractedPath, contentHash: hashFile(extractedPath) };
-    });
-    fs.mkdirSync(path.dirname(destination), { recursive: true });
-    const previous = `${destination}.${process.pid}.previous`;
-    fs.rmSync(previous, { recursive: true, force: true });
-    if (fs.existsSync(destination)) fs.renameSync(destination, previous);
+    const entries = listing.split(/\r?\n/).filter(Boolean);
+    for (const entry of entries) validateBazelSourceJarEntry(entry, resolvedJar);
+    const javaEntries = entries.filter((entry) => entry.endsWith('.java')).sort();
+    const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
+    fs.rmSync(temporary, { recursive: true, force: true });
+    fs.mkdirSync(temporary, { recursive: true });
     try {
-      fs.renameSync(temporary, destination);
+      if (javaEntries.length > 0) {
+        try {
+          // execFile passes the wildcard literally to unzip. This extracts every
+          // nested Java entry in one process without materializing other files.
+          await execFileAsync('unzip', ['-q', resolvedJar, '*.java', '-d', temporary], {
+            maxBuffer: 64 * 1024 * 1024,
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (controller.signal.aborted || !isMissingExecutable(error)) throw error;
+          // The JDK jar tool has no archive-entry wildcard support. Keep its
+          // fallback command lines bounded on hosts without unzip.
+          for (let offset = 0; offset < javaEntries.length; offset += 200) {
+            throwIfAborted(controller.signal, 'Source-JAR extraction was aborted.');
+            const batch = javaEntries.slice(offset, offset + 200);
+            await execFileAsync(findJarExecutable(), ['xf', resolvedJar, ...batch], {
+              cwd: temporary,
+              maxBuffer: 64 * 1024 * 1024,
+              signal: controller.signal,
+            });
+          }
+        }
+      }
+      const extracted = javaEntries.map((entry) => {
+        throwIfAborted(controller.signal, 'Source-JAR extraction was aborted.');
+        const extractedPath = path.resolve(temporary, ...entry.split('/'));
+        if (!isInside(extractedPath, temporary)) {
+          throw new Error(`Bazel source JAR entry was not safely extracted: ${entry}`);
+        }
+        const extractedStat = fs.lstatSync(extractedPath);
+        if (extractedStat.isSymbolicLink() || !extractedStat.isFile()) {
+          throw new Error(`Bazel source JAR entry was not safely extracted: ${entry}`);
+        }
+        return { entry, temporaryPath: extractedPath, contentHash: hashFile(extractedPath) };
+      });
+      const cacheManifest: SourceJarCacheManifest = {
+        schemaVersion: 1,
+        sourceJarHash: options.expectedContentHash,
+        entries: extracted.map(({ entry, contentHash }) => ({ entry, contentHash })),
+      };
+      fs.writeFileSync(path.join(temporary, SOURCE_JAR_CACHE_MANIFEST), `${JSON.stringify(cacheManifest)}\n`);
+      fs.mkdirSync(path.dirname(destination), { recursive: true });
+      const previous = `${destination}.${process.pid}.previous`;
       fs.rmSync(previous, { recursive: true, force: true });
+      if (fs.existsSync(destination)) fs.renameSync(destination, previous);
+      try {
+        fs.renameSync(temporary, destination);
+        fs.rmSync(previous, { recursive: true, force: true });
+      } catch (error) {
+        if (fs.existsSync(previous) && !fs.existsSync(destination)) fs.renameSync(previous, destination);
+        throw error;
+      }
+      return {
+        entries: extracted.map(({ entry, temporaryPath, contentHash }) => ({
+          entry,
+          path: path.resolve(destination, path.relative(temporary, temporaryPath)),
+          contentHash,
+        })),
+        cacheHit: false,
+      };
     } catch (error) {
-      if (fs.existsSync(previous) && !fs.existsSync(destination)) fs.renameSync(previous, destination);
+      fs.rmSync(temporary, { recursive: true, force: true });
       throw error;
     }
-    return extracted.map(({ entry, temporaryPath, contentHash }) => ({
-      entry,
-      path: path.resolve(destination, path.relative(temporary, temporaryPath)),
-      contentHash,
-    }));
   } catch (error) {
-    fs.rmSync(temporary, { recursive: true, force: true });
+    if (timedOut) throw new Error(`Bazel source-JAR extraction timed out after ${effectiveTimeoutMs} ms.`);
+    if (options.signal?.aborted) throw new Error('Bazel source-JAR extraction was aborted.');
     throw error;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', relayAbort);
   }
+}
+
+function readCachedSourceJarExtraction(
+  destination: string,
+  expectedContentHash: string,
+): ExtractedSourceJarEntry[] | undefined {
+  const manifestPath = path.join(destination, SOURCE_JAR_CACHE_MANIFEST);
+  try {
+    const value = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Partial<SourceJarCacheManifest>;
+    if (value.schemaVersion !== 1 || value.sourceJarHash !== expectedContentHash || !Array.isArray(value.entries)) {
+      return undefined;
+    }
+    const extracted: ExtractedSourceJarEntry[] = [];
+    for (const cachedEntry of value.entries) {
+      if (!cachedEntry || typeof cachedEntry.entry !== 'string' || typeof cachedEntry.contentHash !== 'string') {
+        return undefined;
+      }
+      validateBazelSourceJarEntry(cachedEntry.entry, manifestPath);
+      const extractedPath = path.resolve(destination, ...cachedEntry.entry.split('/'));
+      if (!isInside(extractedPath, destination)) return undefined;
+      const stat = fs.lstatSync(extractedPath);
+      if (stat.isSymbolicLink() || !stat.isFile()) return undefined;
+      const contentHash = hashFile(extractedPath);
+      if (contentHash !== cachedEntry.contentHash) return undefined;
+      extracted.push({ entry: cachedEntry.entry, path: extractedPath, contentHash });
+    }
+    return extracted;
+  } catch {
+    return undefined;
+  }
+}
+
+function boundedPositiveInteger(value: number, name: string, maximum = Number.MAX_SAFE_INTEGER): number {
+  if (!Number.isInteger(value) || value < 1 || value > maximum) {
+    throw new Error(`${name} must be an integer from 1 to ${maximum}.`);
+  }
+  return value;
+}
+
+function environmentPositiveInteger(name: string): number | undefined {
+  const value = process.env[name];
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer.`);
+  return parsed;
+}
+
+function isMissingExecutable(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
+function throwIfAborted(signal: AbortSignal | undefined, message: string): void {
+  if (signal?.aborted) throw new Error(message);
+}
+
+function formatElapsed(durationMs: number): string {
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 export function validateBazelSourceJarEntry(entry: string, sourceJar: string): void {

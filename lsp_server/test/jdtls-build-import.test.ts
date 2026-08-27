@@ -497,21 +497,34 @@ test('builds a repository-union Bazel source inventory and content-deduplicates 
   execFileSync('zip', ['-q', '-r', sourceJar, '.'], { cwd: path.join(root, 'jar-input') });
   const original = path.join(root, 'src/main/java/example/Original.java');
   const generated = path.join(root, 'execroot/bazel-out/generated/example/Generated.java');
-  const inventory = await createBazelSourceInventory({
+  const inventoryInput = {
     workspacePath: root,
     configurationHash: 'configuration',
     targetQuery: '//...',
     repositorySources: [original],
-    targets: [{
-      label: '//:lib',
-      directSources: [
-        { path: original, shortPath: 'src/main/java/example/Original.java', isSource: true },
-        { path: generated, isSource: false },
-      ],
-      sourceJars: [sourceJar],
-    }],
+    targets: [
+      {
+        label: '//:lib',
+        directSources: [
+          { path: original, shortPath: 'src/main/java/example/Original.java', isSource: true },
+          { path: generated, isSource: false },
+        ],
+        sourceJars: [sourceJar],
+      },
+      { label: '//:alias', directSources: [], sourceJars: [sourceJar] },
+    ],
     extractionRoot: path.join(root, '.gitnexus/jdtls/bazel-sources/configuration'),
-  });
+    sourceJarConcurrency: 2,
+  };
+  const progress: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => progress.push(values.map(String).join(' '));
+  let inventory: Awaited<ReturnType<typeof createBazelSourceInventory>>;
+  try {
+    inventory = await createBazelSourceInventory(inventoryInput);
+  } finally {
+    console.error = originalConsoleError;
+  }
   assert.equal(inventory.comparison.repositorySources, 1);
   assert.equal(inventory.comparison.configuredRepositorySources, 1);
   assert.equal(inventory.comparison.generatedSources, 1);
@@ -519,9 +532,40 @@ test('builds a repository-union Bazel source inventory and content-deduplicates 
   assert.equal(inventory.comparison.duplicateSources, 2);
   assert.equal(inventory.sources.length, 3);
   assert.ok(inventory.sources.every((source) => source.targetLabels.includes('//:lib')));
+  assert.ok(inventory.sources.every((source) => source.targetLabels.includes('//:alias')));
+  assert.ok(progress.some((line) => line.includes('extracting 1 content-unique source JARs')));
+  assert.ok(progress.some((line) => line.includes('completed 1/1 source JARs (100%)')));
   assert.match(inventory.sources.find((source) => source.path === original)!.analysisPath, /bazel-sources/);
   const jarHash = createHash('sha256').update(fs.readFileSync(sourceJar)).digest('hex').slice(0, 24);
   assert.ok(inventory.sources.some((source) => source.analysisPath.includes(jarHash)));
+  assert.equal(inventory.sources[0].sourceJarAssociations[0].targetLabels.length, 2);
+
+  const savedPath = process.env.PATH;
+  const cacheProgress: string[] = [];
+  console.error = (...values: unknown[]) => cacheProgress.push(values.map(String).join(' '));
+  process.env.PATH = path.join(root, 'no-archive-tools');
+  try {
+    const cached = await createBazelSourceInventory(inventoryInput);
+    assert.deepEqual(cached.sources, inventory.sources);
+  } finally {
+    console.error = originalConsoleError;
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+  assert.ok(cacheProgress.some((line) => line.includes('cache hits 1')));
+
+  const jarOnly = inventory.sources.find((source) => source.path.endsWith('/JarOnly.java'))!;
+  fs.writeFileSync(jarOnly.analysisPath, 'corrupt cache entry\n');
+  const rebuildProgress: string[] = [];
+  console.error = (...values: unknown[]) => rebuildProgress.push(values.map(String).join(' '));
+  try {
+    const rebuilt = await createBazelSourceInventory(inventoryInput);
+    const rebuiltJarOnly = rebuilt.sources.find((source) => source.path.endsWith('/JarOnly.java'))!;
+    assert.equal(fs.readFileSync(rebuiltJarOnly.analysisPath, 'utf8'), 'package example; class JarOnly {}\n');
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.ok(rebuildProgress.some((line) => line.includes('cache hits 0')));
 });
 
 test('retains every repository, configured-source, and source-JAR association after deduplication', async (t) => {
@@ -536,7 +580,7 @@ test('retains every repository, configured-source, and source-JAR association af
   const jarOne = path.join(root, 'one.srcjar');
   const jarTwo = path.join(root, 'two.srcjar');
   execFileSync('zip', ['-q', '-r', jarOne, '.'], { cwd: path.join(root, 'jar-one') });
-  execFileSync('zip', ['-q', '-r', jarTwo, '.'], { cwd: path.join(root, 'jar-two') });
+  fs.copyFileSync(jarOne, jarTwo);
   const repositoryOne = path.join(root, 'one/Same.java');
   const repositoryTwo = path.join(root, 'two/Same.java');
   const inventory = await createBazelSourceInventory({
@@ -563,6 +607,7 @@ test('retains every repository, configured-source, and source-JAR association af
   assert.equal(inventory.sources[0].configuredSourceAssociations.length, 2);
   assert.equal(inventory.sources[0].sourceJarAssociations.length, 2);
   assert.deepEqual(inventory.sources[0].targetLabels, ['//:one', '//:two']);
+  assert.equal(fs.readdirSync(path.join(root, '.gitnexus/jdtls/bazel-sources/configuration')).length, 1);
 
   const changed = structuredClone(inventory);
   changed.generatedAt = new Date(Date.now() + 1_000).toISOString();
@@ -716,6 +761,73 @@ test('rejects unsafe and corrupt Bazel source JARs', async (t) => {
     targets: [{ label: '//:broken', directSources: [], sourceJars: [path.join(root, 'broken-src.jar')] }],
     extractionRoot: path.join(root, '.gitnexus/jdtls/bazel-sources/configuration'),
   }), /Invalid Bazel source JAR/);
+});
+
+test('bounds source-JAR workers and aborts an archive command at its per-JAR timeout', async (t) => {
+  const root = fixture({
+    'jar-input/example/Slow.java': 'package example; class Slow {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sourceJar = path.join(root, 'slow.srcjar');
+  execFileSync('zip', ['-q', '-r', sourceJar, '.'], { cwd: path.join(root, 'jar-input') });
+  const fakeJavaHome = path.join(root, 'fake-java-home');
+  const fakeJar = path.join(fakeJavaHome, 'bin/jar');
+  fs.mkdirSync(path.dirname(fakeJar), { recursive: true });
+  fs.writeFileSync(fakeJar, '#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n');
+  fs.chmodSync(fakeJar, 0o755);
+  const input = {
+    workspacePath: root,
+    configurationHash: 'slow',
+    targetQuery: '//:slow',
+    repositorySources: [],
+    targets: [{ label: '//:slow', directSources: [], sourceJars: [sourceJar] }],
+    extractionRoot: path.join(root, '.gitnexus/jdtls/bazel-sources/slow'),
+  };
+  await assert.rejects(
+    createBazelSourceInventory({ ...input, sourceJarConcurrency: 17 }),
+    /source-JAR concurrency must be an integer from 1 to 16/,
+  );
+  const savedJavaHome = process.env.GITNEXUS_JDT_JAVA_HOME;
+  process.env.GITNEXUS_JDT_JAVA_HOME = fakeJavaHome;
+  const started = Date.now();
+  try {
+    await assert.rejects(
+      createBazelSourceInventory({ ...input, sourceJarConcurrency: 1, sourceJarTimeoutMs: 75 }),
+      /source-JAR extraction timed out after 75 ms/,
+    );
+  } finally {
+    if (savedJavaHome === undefined) delete process.env.GITNEXUS_JDT_JAVA_HOME;
+    else process.env.GITNEXUS_JDT_JAVA_HOME = savedJavaHome;
+  }
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test('extracts thousands of source-JAR documents as one scalable inventory unit', async (t) => {
+  const root = fixture({});
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const documentCount = Number(process.env.GITNEXUS_TEST_SOURCE_JAR_DOCUMENTS ?? 4_000);
+  const inputDirectory = path.join(root, 'jar-input/example');
+  fs.mkdirSync(inputDirectory, { recursive: true });
+  for (let index = 0; index < documentCount; index += 1) {
+    fs.writeFileSync(
+      path.join(inputDirectory, `Generated${index}.java`),
+      `package example; class Generated${index} {}\n`,
+    );
+  }
+  const sourceJar = path.join(root, 'large.srcjar');
+  execFileSync('zip', ['-q', '-r', sourceJar, '.'], { cwd: path.join(root, 'jar-input') });
+  const inventory = await createBazelSourceInventory({
+    workspacePath: root,
+    configurationHash: 'large',
+    targetQuery: '//:large',
+    repositorySources: [],
+    targets: [{ label: '//:large', directSources: [], sourceJars: [sourceJar] }],
+    extractionRoot: path.join(root, '.gitnexus/jdtls/bazel-sources/large'),
+    sourceJarConcurrency: 4,
+    sourceJarTimeoutMs: 30_000,
+  });
+  assert.equal(inventory.sources.length, documentCount);
+  assert.ok(inventory.sources.every((source) => source.targetLabels[0] === '//:large'));
 });
 
 test('rejects Java symlinks when source-JAR extraction falls back to unzip', async (t) => {

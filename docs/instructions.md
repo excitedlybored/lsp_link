@@ -330,6 +330,12 @@ the tools' normal credential stores. Relevant environment variables include:
   command, in MiB. The default is `256`; accepted values are `32` through
   `2048`. Increase it only when an unusually large configured graph still
   exceeds the default.
+- `GITNEXUS_BAZEL_SOURCE_JAR_CONCURRENCY`: number of source JARs extracted in
+  parallel. The default is `4`; accepted values are `1` through `16`.
+- `GITNEXUS_BAZEL_SOURCE_JAR_TIMEOUT_MS`: deadline for listing and extracting
+  one source JAR, in milliseconds. The default is `120000` (two minutes) and
+  the value must be a positive integer. The repository-wide preparation
+  deadline still takes precedence.
 - `GITNEXUS_LBUG_BUFFER_POOL_MB`: LadybugDB buffer-pool size in MiB, minimum 64.
 - `GITNEXUS_LBUG_ROTATE_BATCHES`: positive number of committed COPY fragments
   between staging-connection rotations.
@@ -337,6 +343,16 @@ the tools' normal credential stores. Relevant environment variables include:
 Repository credentials remain in Bazel, `.netrc`, credential helpers, or the
 environment expected by the repository. They are neither read from nor stored
 in the run configuration.
+
+During `[bazel:source-inventory]`, source JARs are deduplicated globally by
+archive content before extraction. Completed extractions are cached under
+`.gitnexus/jdtls/bazel-sources/<configuration-hash>/<source-jar-hash>` and are
+reused only after the manifest and extracted Java-file hashes validate. The
+stage reports `completed/total`, percentage, cache hits, Java-file count, and
+elapsed time as work finishes, with a heartbeat every 15 seconds while active.
+Each archive is normally extracted with one bounded process regardless of how
+many Java documents it contains; a batched JDK fallback is used when `unzip` is
+not installed.
 
 ## Inspect a completed graph
 
