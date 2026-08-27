@@ -4,11 +4,16 @@ import {
   type BazelPreparationReport,
 } from '../../../lsp_server/adapters/java/bazel-project-model.js';
 import { discoverJavaBuildRoots } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
+import { extractRunConfig } from '../pipeline/run-config.js';
+import type { BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
 
 interface BazelPreparationCommandOptions {
   workspace: string;
   concurrency?: number;
   timeoutMs?: number;
+  targetQuery?: string;
+  targetScope?: BazelTargetScope;
+  scopeConfigHash?: string;
 }
 
 export async function runBazelPreparationCommand(argv: string[]): Promise<BazelPreparationReport> {
@@ -19,6 +24,9 @@ export async function runBazelPreparationCommand(argv: string[]): Promise<BazelP
     buildMode: 'managed',
     concurrency: options.concurrency,
     timeoutMs: options.timeoutMs,
+    targetQuery: options.targetQuery,
+    targetScope: options.targetScope,
+    scopeConfigHash: options.scopeConfigHash,
   });
   console.log(JSON.stringify({
     workspace: options.workspace,
@@ -43,18 +51,30 @@ export async function runBazelPreparationCommand(argv: string[]): Promise<BazelP
 }
 
 export function parseBazelPreparationCommandOptions(argv: string[]): BazelPreparationCommandOptions {
-  const args = [...argv];
+  const extracted = extractRunConfig(argv);
+  const args = extracted.args;
+  const config = extracted.config;
   if (args[0] === 'bazel-prepare') args.shift();
   const workspace = path.resolve(args.shift() ?? '.');
-  let concurrency: number | undefined;
-  let timeoutMs: number | undefined;
+  let concurrency: number | undefined = config?.bazel.preparation.concurrency;
+  let timeoutMs: number | undefined = config?.bazel.preparation.timeoutMs;
+  let targetQuery: string | undefined;
   while (args.length > 0) {
     const flag = args.shift();
     if (flag === '--concurrency') concurrency = positiveInteger(flag, requireValue(args, flag));
     else if (flag === '--timeout-ms') timeoutMs = positiveInteger(flag, requireValue(args, flag));
+    else if (flag === '--bazel-target-query') {
+      if (config) throw new Error(`${flag} cannot override semantic settings loaded with --config`);
+      targetQuery = requireValue(args, flag);
+    }
     else throw new Error(`Unknown argument ${flag}`);
   }
-  return { workspace, concurrency, timeoutMs };
+  return config
+    ? {
+      workspace, concurrency, timeoutMs, targetQuery,
+      targetScope: config.bazel.scope, scopeConfigHash: config.semanticHash,
+    }
+    : { workspace, concurrency, timeoutMs, targetQuery };
 }
 
 function requireValue(args: string[], flag: string): string {

@@ -44,6 +44,7 @@ import {
   prepareJdtlsShardWorkspace,
 } from '../../../lsp_server/adapters/java/jdtls-sharding.js';
 import { runBazelPreparationCommand } from './bazel-prepare.js';
+import { buildBazelBuildGraphBatch } from '../bazel/model.js';
 
 export async function buildLspKnowledgeGraph(
   options: LspKnowledgeGraphBuildOptions,
@@ -55,9 +56,17 @@ export async function buildLspKnowledgeGraph(
   const preparation = await adapterRegistry.prepareJavaBuildRoots(
     workspacePath,
     undefined,
-    { buildMode: options.bazelBuildMode },
+    {
+      buildMode: options.bazelBuildMode, targetQuery: options.bazelTargetQuery,
+      targetScope: options.bazelTargetScope, scopeConfigHash: options.runConfigHash,
+      concurrency: options.bazelPreparationConcurrency, timeoutMs: options.bazelPreparationTimeoutMs,
+    },
   );
   logBuildRootPreparation(preparation.roots);
+  if (options.failOnFailedBuildRoot) {
+    const failed = preparation.roots.filter((root) => root.status === 'failed');
+    if (failed.length > 0) throw new Error(`Bazel preparation failed for ${failed.length}/${preparation.roots.length} roots`);
+  }
   const filesByRoot = addConfiguredJavaSources(
     assignFilesToBuildRoots(repositoryJavaFiles, discoveredRoots),
     preparation.roots,
@@ -91,6 +100,8 @@ export async function buildLspKnowledgeGraph(
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
       crawlPlanner: options.crawlPlanner,
       bazelBuildMode: options.bazelBuildMode,
+      bazelTargetQuery: options.bazelTargetQuery ?? null,
+      runConfigHash: options.runConfigHash ?? null,
     },
   );
   const normalizationFingerprint = combineCheckpointFingerprint(
@@ -112,6 +123,9 @@ export async function buildLspKnowledgeGraph(
       ({ lspBatch, artifacts, classpathAttempts } = crawl);
       checkpointStore.save<LspCrawlCheckpoint>('lsp-crawl', crawlFingerprint, crawl);
     }
+    if (options.failOnFailedBuildRoot && lspBatch.servers.some((server) => server.status === 'failed')) {
+      throw new Error('Semantic crawl failed for one or more build roots');
+    }
 
     let callNormalizationBatch = checkpointStore.load<DerivedCallNormalizationBatch>(
       'call-normalization', normalizationFingerprint,
@@ -125,7 +139,7 @@ export async function buildLspKnowledgeGraph(
 
     console.log('[stage:jvm-artifact-enrichment] streaming ASM artifact facts');
     const artifactFingerprint = combineCheckpointFingerprint(
-      'jvm-artifact-enrichment-asm-stream-v1', crawlFingerprint,
+      'jvm-artifact-enrichment-asm-stream-v2-bazel-graph', crawlFingerprint,
       options.artifactMaxClasses ?? null,
       options.fetchArtifactSources,
       artifacts.map((artifact) => ({
@@ -134,6 +148,12 @@ export async function buildLspKnowledgeGraph(
         binaryJarPath: artifact.binaryJarPath,
         contentHash: hashArtifactDescriptor(artifact),
       })),
+    );
+    const bazelBuildGraph = buildBazelBuildGraphBatch(preparation.roots);
+    console.log(
+      `[stage:bazel-build-graph] ${bazelBuildGraph.targets.length} targets, `
+      + `${bazelBuildGraph.sources.length} sources, ${bazelBuildGraph.artifacts.length} artifacts, `
+      + `${bazelBuildGraph.relations.length} relations`,
     );
     const persisted = await persistStreamingKnowledgeGraph(
       options.output,
@@ -153,6 +173,7 @@ export async function buildLspKnowledgeGraph(
       },
       lbug as unknown as LadybugModuleLike,
       options.resume,
+      bazelBuildGraph,
     );
     logArtifactEnrichment(persisted.artifactEnrichment);
     return {
@@ -160,6 +181,7 @@ export async function buildLspKnowledgeGraph(
       callNormalizationBatch,
       artifactEnrichment: persisted.artifactEnrichment,
       output: persisted.output,
+      bazelBuildGraph,
     };
   } finally {
     await adapterRegistry.shutdownAll();
@@ -198,6 +220,7 @@ async function crawlWorkspace(
   // A stable run id lets independently checkpointed roots reconnect to the
   // same analysis run when an interrupted crawl resumes.
   const run = createAnalysisRun(workspacePath, `run:${crawlFingerprint}`);
+  run.configurationHash = options.runConfigHash;
   const artifactClasspathResolver = new ArtifactClasspathResolver();
   const cachedByRoot = new Map<string, JavaBuildRootCrawlResult>();
   for (const root of activeRoots) {
@@ -406,12 +429,15 @@ async function main(): Promise<void> {
     return;
   }
   const options = parseLspKnowledgeGraphBuildOptions(process.argv.slice(2));
-  const { batch, callNormalizationBatch, artifactEnrichment, output } =
+  const { batch, callNormalizationBatch, artifactEnrichment, bazelBuildGraph, output } =
     await buildLspKnowledgeGraph(options);
   console.log(JSON.stringify({
     output,
     crawlPlanner: options.crawlPlanner,
     bazelBuildMode: options.bazelBuildMode,
+    bazelTargetQuery: options.bazelTargetQuery,
+    runConfigPath: options.runConfigPath,
+    runConfigHash: options.runConfigHash,
     run: batch.analysisRuns[0],
     buildRoots: batch.buildRoots.length,
     servers: batch.servers.length,
@@ -425,6 +451,13 @@ async function main(): Promise<void> {
     relations: batch.relations.length,
     callNormalization: callNormalizationBatch.runs[0],
     artifactEnrichment: artifactEnrichment.run,
+    bazelBuildGraph: {
+      roots: bazelBuildGraph.runs.length,
+      targets: bazelBuildGraph.targets.length,
+      sources: bazelBuildGraph.sources.length,
+      artifacts: bazelBuildGraph.artifacts.length,
+      relations: bazelBuildGraph.relations.length,
+    },
   }, null, 2));
 }
 

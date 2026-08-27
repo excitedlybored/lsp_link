@@ -1,7 +1,23 @@
 # LadybugDB data model
 
-The writer in `indexer/` persists two evidence families in one LadybugDB
+The writer in `indexer/` persists four evidence families in one LadybugDB
 database while keeping their provenance and relation tables separate.
+
+## Bazel configured build model
+
+Successful Bazel preparation writes `BazelBuildGraphRun`, `BazelTarget`,
+`BazelSource`, and `BazelArtifact` nodes. `BazelRelation` retains direct
+`deps`, `exports`, `runtime_deps`, and `plugins` edges, source ownership, and
+the compile/runtime/source artifact roles observed for each selected target.
+Dependency labels outside the selected query remain explicit placeholder
+targets (`selected = false`) instead of disappearing from the graph.
+`BazelBuildGraphRun` also records the semantic scope hash, selectors, resolved
+target count, and excluded labels with reasons so the graph's boundary is
+auditable.
+
+This model is configured-build evidence and remains separate from LSP and JVM
+relations. It records why an artifact entered the classpath without claiming
+that Bazel configuration edges were language-server observations.
 
 ## LSP protocol model
 
@@ -66,6 +82,12 @@ MATCH (site:LspCallSite)-[:DerivedCallRelation {kind: 'NORMALIZES_TO'}]->(call:L
 RETURN call.stableKey, call.observationCount, call.status;
 ```
 
+```cypher
+MATCH (owner:BazelTarget)-[edge:BazelRelation {kind: 'DEPENDS_ON'}]->(dependency:BazelTarget)
+RETURN owner.label, edge.attribute, dependency.label;
+```
+
 Schema DDL lives in `indexer/src/lbug/schema.ts`,
 `indexer/src/derived/call-normalization/schema.ts`, and
-`indexer/src/artifact/schema.ts`. The analyzer opens the database read-only.
+`indexer/src/artifact/schema.ts`, and `indexer/src/bazel/schema.ts`. The
+analyzer opens the database read-only.

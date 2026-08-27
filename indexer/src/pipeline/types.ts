@@ -3,11 +3,14 @@ import type { JvmArtifactEnrichmentSummary } from '../artifact/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
 import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
-import type { BazelBuildMode } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+import type { BazelBuildMode, BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+import type { BazelScopeResolution } from '../../../lsp_server/adapters/java/bazel-project-model.js';
 import type {
   BazelCrawlSource,
   BazelSourceInventoryComparison,
 } from '../../../lsp_server/adapters/java/bazel-source-inventory.js';
+import type { BazelConfiguredTargetEvidence } from '../bazel/model.js';
+import type { BazelBuildGraphBatch } from '../bazel/model.js';
 
 export interface LspKnowledgeGraphBuildOptions {
   workspace: string;
@@ -21,6 +24,13 @@ export interface LspKnowledgeGraphBuildOptions {
   resume: boolean;
   crawlPlanner: CrawlPlannerMode;
   bazelBuildMode: BazelBuildMode;
+  bazelTargetQuery?: string;
+  bazelTargetScope?: BazelTargetScope;
+  runConfigPath?: string;
+  runConfigHash?: string;
+  bazelPreparationConcurrency?: number;
+  bazelPreparationTimeoutMs?: number;
+  failOnFailedBuildRoot: boolean;
 }
 
 export interface LspKnowledgeGraphBuildResult {
@@ -28,6 +38,7 @@ export interface LspKnowledgeGraphBuildResult {
   artifactEnrichment: JvmArtifactEnrichmentSummary;
   callNormalizationBatch: DerivedCallNormalizationBatch;
   output: string;
+  bazelBuildGraph: BazelBuildGraphBatch;
 }
 
 export interface JavaBuildRootPreparation {
@@ -39,6 +50,10 @@ export interface JavaBuildRootPreparation {
   sourceInventoryHash?: string;
   crawlSources?: BazelCrawlSource[];
   sourceInventoryComparison?: BazelSourceInventoryComparison;
+  configuredTargets?: BazelConfiguredTargetEvidence[];
+  rootId: string;
+  workspacePath?: string;
+  scopeResolution?: BazelScopeResolution;
 }
 
 export interface JavaBuildRootCrawlResult {

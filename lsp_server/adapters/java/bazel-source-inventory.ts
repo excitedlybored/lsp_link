@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import type { BazelScopeResolution } from './bazel-project-model.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -16,8 +17,17 @@ export interface BazelConfiguredSourceArtifact {
 
 export interface BazelConfiguredTargetSources {
   label: string;
+  ruleKind?: string;
+  dependencies?: BazelConfiguredTargetDependency[];
+  compileArtifacts?: string[];
+  runtimeArtifacts?: string[];
   directSources: BazelConfiguredSourceArtifact[];
   sourceJars: string[];
+}
+
+export interface BazelConfiguredTargetDependency {
+  label: string;
+  attribute: 'deps' | 'exports' | 'runtime_deps' | 'plugins';
 }
 
 export interface BazelConfiguredSourceAssociation {
@@ -53,7 +63,7 @@ export interface BazelSourceInventoryComparison {
 }
 
 export interface BazelSourceInventory {
-  schemaVersion: 1;
+  schemaVersion: 2;
   workspacePath: string;
   configurationHash: string;
   targetQuery: string;
@@ -61,6 +71,7 @@ export interface BazelSourceInventory {
   targets: BazelConfiguredTargetSources[];
   sources: BazelCrawlSource[];
   comparison: BazelSourceInventoryComparison;
+  scopeResolution?: BazelScopeResolution;
 }
 
 export interface CreateBazelSourceInventoryInput {
@@ -70,6 +81,7 @@ export interface CreateBazelSourceInventoryInput {
   repositorySources: string[];
   targets: BazelConfiguredTargetSources[];
   extractionRoot: string;
+  scopeResolution?: BazelScopeResolution;
 }
 
 interface CandidateSource extends BazelCrawlSource {
@@ -213,7 +225,7 @@ export async function createBazelSourceInventory(
     .map((candidate) => path.relative(input.workspacePath, candidate.path).split(path.sep).join('/'))
     .sort();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workspacePath: path.resolve(input.workspacePath),
     configurationHash: input.configurationHash,
     targetQuery: input.targetQuery,
@@ -229,6 +241,7 @@ export async function createBazelSourceInventory(
       duplicateSources,
       crawlSources: sources.length,
     },
+    scopeResolution: input.scopeResolution,
   };
 }
 
@@ -240,7 +253,7 @@ export function sourceInventoryHash(inventory: BazelSourceInventory): string {
 export function readBazelSourceInventory(inventoryPath: string): BazelSourceInventory | undefined {
   try {
     const value = JSON.parse(fs.readFileSync(inventoryPath, 'utf8')) as Partial<BazelSourceInventory>;
-    if (value.schemaVersion !== 1 || !Array.isArray(value.sources) || !Array.isArray(value.targets)) return undefined;
+    if (value.schemaVersion !== 2 || !Array.isArray(value.sources) || !Array.isArray(value.targets)) return undefined;
     if (!value.sources.every((source) => typeof source.path === 'string'
       && typeof source.analysisPath === 'string' && typeof source.contentHash === 'string'
       && Array.isArray(source.targetLabels)
@@ -349,6 +362,14 @@ export function validateBazelSourceJarEntry(entry: string, sourceJar: string): v
 function normalizeTargets(targets: BazelConfiguredTargetSources[]): BazelConfiguredTargetSources[] {
   return targets.map((target) => ({
     label: target.label,
+    ruleKind: target.ruleKind,
+    dependencies: [...(target.dependencies ?? [])]
+      .filter((dependency, index, all) => all.findIndex((candidate) =>
+        candidate.label === dependency.label && candidate.attribute === dependency.attribute) === index)
+      .sort((left, right) => left.attribute.localeCompare(right.attribute)
+        || left.label.localeCompare(right.label)),
+    compileArtifacts: uniquePaths(target.compileArtifacts ?? []),
+    runtimeArtifacts: uniquePaths(target.runtimeArtifacts ?? []),
     directSources: [...target.directSources]
       .map((source) => ({ ...source, path: path.resolve(source.path) }))
       .sort((left, right) => left.path.localeCompare(right.path)),

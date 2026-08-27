@@ -53,7 +53,7 @@ crawl, or `--checkpoint-directory PATH` to store checkpoints elsewhere.
 
 ## Documentation
 
-- [Command reference](docs/command.md)
+- [Indexer instructions and configuration reference](docs/instructions.md)
 - [Indexer details](indexer/README.md)
 - [Language-server and build-import architecture](docs/LSP_SERVER_ARCHITECTURE.md)
 - [LadybugDB data model](docs/LBUG_DATA_STRUCTURE.md)

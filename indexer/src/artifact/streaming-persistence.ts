@@ -5,6 +5,7 @@ import type { LspObservationBatch } from '../ingest/batch.js';
 import { openLspLadybugDatabase, type LadybugModuleLike } from '../lbug/repository.js';
 import type { PipelineCheckpointStore } from '../pipeline/checkpoints.js';
 import type { JvmArtifactEnrichmentSummary } from './model.js';
+import { emptyBazelBuildGraphBatch, type BazelBuildGraphBatch } from '../bazel/model.js';
 import {
   ArtifactBulkSpoolSink,
   bulkCopyArtifactGraph,
@@ -34,6 +35,7 @@ export async function persistStreamingKnowledgeGraph(
   enrichmentInput: StreamingJvmArtifactEnrichmentInput,
   ladybug: LadybugModuleLike,
   resume: boolean,
+  bazelBuildGraphBatch: BazelBuildGraphBatch = emptyBazelBuildGraphBatch(),
 ): Promise<{ output: string; artifactEnrichment: JvmArtifactEnrichmentSummary }> {
   const output = path.resolve(requestedOutputPath);
   if (fs.existsSync(output)) throw new Error(`Refusing to overwrite existing LSP database: ${output}`);
@@ -62,6 +64,8 @@ export async function persistStreamingKnowledgeGraph(
       await initial.repository.writeBatch(lspBatch);
       await initial.callNormalizationRepository.initializeSchema();
       await initial.callNormalizationRepository.writeBatch(callNormalizationBatch);
+      await initial.bazelBuildGraphRepository.initializeSchema();
+      await initial.bazelBuildGraphRepository.writeBatch(bazelBuildGraphBatch);
       await initial.artifactRepository.initializeSchema();
     } finally {
       await initial.close();

@@ -35,6 +35,25 @@ interface GeneratedBazelModel {
   sourceInventoryPath?: string;
   sourceInventoryHash?: string;
   handoffPath?: string;
+  scopeConfigHash?: string;
+}
+
+export interface BazelTargetScope {
+  includeTargetPatterns: string[];
+  includeRuleKinds: string[];
+  explicitTargets: string[];
+  excludeTargetNamePatterns: string[];
+  excludeLabels: string[];
+  excludeTags: string[];
+}
+
+export interface BazelScopeExclusion { label: string; reason: string }
+export interface BazelScopeResolution {
+  configHash: string;
+  selectorsJson: string;
+  targetQuery: string;
+  resolvedLabels: string[];
+  excluded: BazelScopeExclusion[];
 }
 
 interface WriteBazelHandoffInput {
@@ -47,6 +66,7 @@ interface WriteBazelHandoffInput {
   runtimeClasspath: string[];
   sourceJars: string[];
   handoffPath: string;
+  scopeConfigHash?: string;
 }
 
 function writeBazelHandoff(input: WriteBazelHandoffInput): void {
@@ -77,11 +97,16 @@ function writeBazelHandoff(input: WriteBazelHandoffInput): void {
       contentHash: hashFile(artifactPath),
       kinds: [...kinds].sort(),
     })).sort((left, right) => left.path.localeCompare(right.path)),
+    scopeConfigHash: input.scopeConfigHash,
   };
   writeJsonAtomically(input.handoffPath, handoff);
 }
 
-export function validatePrebuiltBazelHandoff(workspacePath: string): BazelModelGenerationResult {
+export function validatePrebuiltBazelHandoff(
+  workspacePath: string,
+  expectedTargetQuery?: string,
+  expectedScopeConfigHash?: string,
+): BazelModelGenerationResult {
   workspacePath = path.resolve(workspacePath);
   const expectedModelPath = path.resolve(
     workspacePath,
@@ -103,6 +128,15 @@ export function validatePrebuiltBazelHandoff(workspacePath: string): BazelModelG
     validateExistingFile(handoff.sourceInventoryPath, 'source inventory');
     const inventory = readBazelSourceInventory(handoff.sourceInventoryPath);
     if (!inventory) throw new Error(`invalid source inventory: ${handoff.sourceInventoryPath}`);
+    if (expectedTargetQuery !== undefined && inventory.targetQuery !== expectedTargetQuery) {
+      throw new Error(`handoff target query ${inventory.targetQuery} does not match ${expectedTargetQuery}`);
+    }
+    if (expectedScopeConfigHash !== undefined && inventory.scopeResolution?.configHash !== expectedScopeConfigHash) {
+      throw new Error('handoff target scope does not match the configured semantic scope');
+    }
+    if (handoff.scopeConfigHash !== inventory.scopeResolution?.configHash) {
+      throw new Error('handoff scope hash does not match the source inventory');
+    }
     if (inventory.configurationHash !== handoff.configurationHash) {
       throw new Error('source inventory configuration does not match the handoff');
     }
@@ -166,6 +200,8 @@ export function validatePrebuiltBazelHandoff(workspacePath: string): BazelModelG
       sourceInventoryHash: handoff.sourceInventoryHash,
       handoffPath,
       crawlSources: inventory.sources,
+      configuredTargets: inventory.targets,
+      scopeResolution: inventory.scopeResolution,
       sourceInventoryComparison: inventory.comparison,
     };
   } catch (error) {
@@ -284,6 +320,7 @@ interface BazelPrebuiltHandoff {
   sourceInventoryPath: string;
   sourceInventoryHash: string;
   artifacts: BazelHandoffArtifact[];
+  scopeConfigHash?: string;
 }
 
 export interface BazelModelGenerationResult {
@@ -296,6 +333,8 @@ export interface BazelModelGenerationResult {
   handoffPath?: string;
   buildMode?: BazelBuildMode;
   crawlSources?: BazelCrawlSource[];
+  configuredTargets?: BazelConfiguredTargetSources[];
+  scopeResolution?: BazelScopeResolution;
   sourceInventoryComparison?: BazelSourceInventoryComparison;
   reason?: string;
 }
@@ -324,6 +363,9 @@ export interface BazelModelGenerationOptions {
   signal?: AbortSignal;
   deadlineAt?: number;
   buildMode?: BazelBuildMode;
+  targetQuery?: string;
+  targetScope?: BazelTargetScope;
+  scopeConfigHash?: string;
 }
 
 export interface BazelPreparationOptions {
@@ -331,6 +373,9 @@ export interface BazelPreparationOptions {
   timeoutMs?: number;
   preferredRootIds?: string[];
   buildMode?: BazelBuildMode;
+  targetQuery?: string;
+  targetScope?: BazelTargetScope;
+  scopeConfigHash?: string;
   generate?: (workspacePath: string, options: BazelModelGenerationOptions) => Promise<BazelModelGenerationResult>;
 }
 
@@ -342,23 +387,42 @@ export async function ensureBazelProjectModel(
   workspacePath = path.resolve(workspacePath);
   if (!hasBazelWorkspaceMarker(workspacePath)) return { status: 'disabled' };
   const buildMode = options.buildMode ?? 'managed';
-  if (buildMode === 'prebuilt') return validatePrebuiltBazelHandoff(workspacePath);
+  if (buildMode === 'prebuilt') {
+    return validatePrebuiltBazelHandoff(
+      workspacePath,
+      options.targetQuery ?? process.env.GITNEXUS_JDT_BAZEL_TARGETS,
+      options.scopeConfigHash,
+    );
+  }
   if (envBoolean('GITNEXUS_JDT_BAZEL_AUTO_MODEL') === false) return { status: 'disabled' };
+
+  // A handoff certifies one fully completed preparation. Invalidate it before
+  // starting another attempt so a later failure cannot fall back to stale,
+  // previously successful artifacts during a prebuilt run.
+  const handoffPath = path.resolve(
+    workspacePath,
+    process.env.GITNEXUS_JDT_BAZEL_HANDOFF || HANDOFF_RELATIVE_PATH,
+  );
+  fs.rmSync(handoffPath, { force: true });
 
   const configuredPath = process.env.GITNEXUS_JDT_BAZEL_PROJECT_MODEL;
   const modelPath = path.resolve(workspacePath, configuredPath || MODEL_RELATIVE_PATH);
   const customModel = Boolean(configuredPath && fs.existsSync(modelPath));
 
-  const targetQuery = process.env.GITNEXUS_JDT_BAZEL_TARGETS || '//...';
+  const bazelBinary = findBazelBinary();
+  if (!bazelBinary) return { status: 'failed', reason: 'Neither bazelisk nor bazel was found on PATH.' };
+  const timeout = positiveInteger(process.env.GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
+
+  const scopeResolution = options.targetScope
+    ? await resolveBazelTargetScope(workspacePath, bazelBinary, options.targetScope, options.scopeConfigHash!, timeout, options)
+    : undefined;
+  const targetQuery = scopeResolution?.targetQuery
+    ?? options.targetQuery ?? process.env.GITNEXUS_JDT_BAZEL_TARGETS ?? '//...';
   const configurationHash = bazelConfigurationHash(workspacePath, targetQuery);
   const sourcePaths = discoverSourcePaths(workspacePath);
   const existing = readGeneratedModel(modelPath);
   if (existing && !customModel && existing.configurationHash !== configurationHash) quarantineStaleModel(modelPath);
 
-  const bazelBinary = findBazelBinary();
-  if (!bazelBinary) return { status: 'failed', reason: 'Neither bazelisk nor bazel was found on PATH.' };
-
-  const timeout = positiveInteger(process.env.GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS) ?? DEFAULT_TIMEOUT_MS;
   // Provider-based filtering is deliberate: custom/Starlark Java rules need not
   // have a native `java_*` rule kind, but JavaInfo is the stable contract.
   try {
@@ -416,11 +480,23 @@ export async function ensureBazelProjectModel(
     for (const target of directSources) {
       const current = targetMap.get(target.label) ?? { label: target.label, directSources: [], sourceJars: [] };
       current.directSources.push(...target.directSources);
+      current.ruleKind = target.ruleKind;
+      current.dependencies = target.dependencies;
       targetMap.set(target.label, current);
     }
     for (const [label, jars] of sourceJars) {
       const current = targetMap.get(label) ?? { label, directSources: [], sourceJars: [] };
       current.sourceJars.push(...jars);
+      targetMap.set(label, current);
+    }
+    for (const [label, artifacts] of configured.artifactsByLabel) {
+      const current = targetMap.get(label) ?? { label, directSources: [], sourceJars: [] };
+      current.compileArtifacts = artifacts;
+      targetMap.set(label, current);
+    }
+    for (const [label, artifacts] of runtime.artifactsByLabel) {
+      const current = targetMap.get(label) ?? { label, directSources: [], sourceJars: [] };
+      current.runtimeArtifacts = artifacts;
       targetMap.set(label, current);
     }
     const inventoryPath = path.join(workspacePath, SOURCE_INVENTORY_RELATIVE_PATH);
@@ -431,14 +507,11 @@ export async function ensureBazelProjectModel(
       repositorySources: discoverRepositoryJavaSources(workspacePath),
       targets: [...targetMap.values()],
       extractionRoot: path.join(workspacePath, '.gitnexus', 'jdtls', 'bazel-sources', configurationHash),
+      scopeResolution,
     });
     const inventoryHash = sourceInventoryHash(inventory);
     writeJsonAtomically(inventoryPath, inventory);
 
-    const handoffPath = path.resolve(
-      workspacePath,
-      process.env.GITNEXUS_JDT_BAZEL_HANDOFF || HANDOFF_RELATIVE_PATH,
-    );
     const model: GeneratedBazelModel = {
       classpath: configured.classpath,
       runtimeClasspath: runtime.classpath,
@@ -452,6 +525,7 @@ export async function ensureBazelProjectModel(
       sourceInventoryPath: inventoryPath,
       sourceInventoryHash: inventoryHash,
       handoffPath,
+      scopeConfigHash: scopeResolution?.configHash,
     };
     if (!customModel) writeJsonAtomically(modelPath, model);
     writeBazelHandoff({
@@ -464,6 +538,7 @@ export async function ensureBazelProjectModel(
       runtimeClasspath: customModel ? readModelClasspath(modelPath, workspacePath, 'runtimeClasspath') : runtime.classpath,
       sourceJars: [...targetMap.values()].flatMap((target) => target.sourceJars),
       handoffPath,
+      scopeConfigHash: scopeResolution?.configHash,
     });
     return {
       status: customModel ? 'cached' : 'generated',
@@ -475,7 +550,9 @@ export async function ensureBazelProjectModel(
       handoffPath,
       buildMode,
       crawlSources: inventory.sources,
+      configuredTargets: inventory.targets,
       sourceInventoryComparison: inventory.comparison,
+      scopeResolution,
     };
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -526,6 +603,9 @@ export async function prepareBazelProjectModels(
           signal: controller.signal,
           deadlineAt,
           buildMode: options.buildMode ?? 'managed',
+          targetQuery: options.targetQuery,
+          targetScope: options.targetScope,
+          scopeConfigHash: options.scopeConfigHash,
         });
       } catch (error) {
         result = { status: 'failed', reason: error instanceof Error ? error.message : String(error) };
@@ -603,12 +683,17 @@ function ensureSourceAspect(workspacePath: string): void {
   const aspect = [
     'def _gitnexus_source_aspect_impl(target, ctx):',
     '    sources = []',
+    '    dependencies = []',
     '    if hasattr(ctx.rule.attr, "srcs"):',
     '        for source_target in ctx.rule.attr.srcs:',
     '            for source in source_target.files.to_list():',
     '                sources.append({"path": source.path, "shortPath": source.short_path, "isSource": source.is_source})',
+    '    for attribute in ["deps", "exports", "runtime_deps", "plugins"]:',
+    '        if hasattr(ctx.rule.attr, attribute):',
+    '            for dependency in getattr(ctx.rule.attr, attribute):',
+    '                dependencies.append({"label": str(dependency.label), "attribute": attribute})',
     `    output = ctx.actions.declare_file(ctx.label.name + "${ASPECT_MANIFEST_SUFFIX}")`,
-    '    ctx.actions.write(output, json.encode({"label": str(ctx.label), "sources": sources}))',
+    '    ctx.actions.write(output, json.encode({"label": str(ctx.label), "ruleKind": ctx.rule.kind, "sources": sources, "dependencies": dependencies}))',
     '    return [OutputGroupInfo(gitnexus_source_manifest = depset([output]))]',
     '',
     'gitnexus_source_aspect = aspect(',
@@ -635,6 +720,8 @@ function readAspectManifests(workspacePath: string, executionRoot: string): Baze
   return manifests.map((manifestPath) => {
     const value = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
       label?: unknown;
+      ruleKind?: unknown;
+      dependencies?: Array<{ label?: unknown; attribute?: unknown }>;
       sources?: Array<{ path?: unknown; shortPath?: unknown; isSource?: unknown }>;
     };
     if (typeof value.label !== 'string' || !Array.isArray(value.sources)) {
@@ -642,6 +729,15 @@ function readAspectManifests(workspacePath: string, executionRoot: string): Baze
     }
     return {
       label: value.label,
+      ruleKind: typeof value.ruleKind === 'string' ? value.ruleKind : undefined,
+      dependencies: (value.dependencies ?? []).flatMap((dependency) =>
+        typeof dependency.label === 'string'
+          && ['deps', 'exports', 'runtime_deps', 'plugins'].includes(String(dependency.attribute))
+          ? [{
+            label: dependency.label,
+            attribute: dependency.attribute as NonNullable<BazelConfiguredTargetSources['dependencies']>[number]['attribute'],
+          }]
+          : []),
       directSources: value.sources.map((source) => {
         if (typeof source.path !== 'string') throw new Error(`Invalid source path in ${manifestPath}`);
         const isSource = source.isSource === true;
@@ -690,19 +786,27 @@ function customClasspathCount(modelPath: string): number | undefined {
   } catch { return undefined; }
 }
 
-function parseConfiguredTargets(output: string, executionRoot: string): { labels: string[]; classpath: string[] } {
+function parseConfiguredTargets(output: string, executionRoot: string): {
+  labels: string[];
+  classpath: string[];
+  artifactsByLabel: Map<string, string[]>;
+} {
   const labels = new Set<string>();
   const jars = new Set<string>();
+  const artifactsByLabel = new Map<string, string[]>();
   for (const line of output.split(/\r?\n/)) {
     const [label, ...artifactPaths] = line.trim().split('\t');
     if (label) labels.add(label);
+    const targetArtifacts: string[] = [];
     for (const artifactPath of artifactPaths) {
       if (!artifactPath.endsWith('.jar')) continue;
       const absolute = path.isAbsolute(artifactPath) ? artifactPath : path.resolve(executionRoot, artifactPath);
       jars.add(absolute);
+      targetArtifacts.push(absolute);
     }
+    if (label) artifactsByLabel.set(label, [...new Set(targetArtifacts)].sort());
   }
-  return { labels: [...labels].sort(), classpath: [...jars].sort() };
+  return { labels: [...labels].sort(), classpath: [...jars].sort(), artifactsByLabel };
 }
 
 function discoverSourcePaths(workspacePath: string): string[] {
@@ -764,6 +868,69 @@ function findBazelBinary(): string | undefined {
     }
   }
   return undefined;
+}
+
+export async function resolveBazelTargetScope(
+  workspacePath: string,
+  bazelBinary: string,
+  scope: BazelTargetScope,
+  configHash: string,
+  timeout: number,
+  options: Pick<BazelModelGenerationOptions, 'signal' | 'deadlineAt'> = {},
+): Promise<BazelScopeResolution> {
+  const candidates = new Map<string, string>();
+  const exclusions = new Map<string, string>();
+  for (const targetPattern of scope.includeTargetPatterns) {
+    const output = await runBazel(bazelBinary, ['query', targetPattern, '--output=label_kind'], workspacePath,
+      commandTimeout(timeout, options.deadlineAt), options.signal);
+    for (const line of output.split(/\r?\n/).filter(Boolean)) {
+      const match = line.match(/^(.*?) rule (\S+)$/);
+      if (match) candidates.set(match[2]!, match[1]!);
+    }
+    for (const tag of scope.excludeTags) {
+      const tagged = await runBazel(bazelBinary, [
+        'query', `attr("tags", "${escapeBazelQueryString(escapeRegex(tag))}", ${targetPattern})`, '--output=label',
+      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
+      for (const label of tagged.split(/\r?\n/).filter(Boolean)) exclusions.set(label, `tag:${tag}`);
+    }
+  }
+  for (const label of scope.explicitTargets) {
+    const output = await runBazel(bazelBinary, ['query', label, '--output=label_kind'], workspacePath,
+      commandTimeout(timeout, options.deadlineAt), options.signal);
+    const line = output.split(/\r?\n/).find(Boolean);
+    const match = line?.match(/^(.*?) rule (\S+)$/);
+    if (!match || match[2] !== label) throw new Error(`Explicit Bazel target was not resolved: ${label}`);
+    candidates.set(label, match[1]!);
+  }
+  const allowedKinds = new Set(scope.includeRuleKinds);
+  const explicit = new Set(scope.explicitTargets);
+  const exactExcludes = new Set(scope.excludeLabels);
+  const namePatterns = scope.excludeTargetNamePatterns.map((pattern) => new RegExp(pattern));
+  for (const [label, kind] of candidates) {
+    if (!allowedKinds.has(kind) && !explicit.has(label)) exclusions.set(label, `rule-kind:${kind}`);
+    if (exactExcludes.has(label)) exclusions.set(label, 'explicit-label');
+    const targetName = label.includes(':') ? label.slice(label.lastIndexOf(':') + 1) : label.slice(label.lastIndexOf('/') + 1);
+    const pattern = namePatterns.find((candidate) => candidate.test(targetName));
+    if (pattern) exclusions.set(label, `target-name:${pattern.source}`);
+  }
+  const resolvedLabels = [...candidates.keys()].filter((label) => !exclusions.has(label)).sort();
+  if (resolvedLabels.length === 0) throw new Error('Configured Bazel target scope resolved to no targets');
+  return {
+    configHash,
+    selectorsJson: JSON.stringify(scope),
+    targetQuery: `set(${resolvedLabels.join(' ')})`,
+    resolvedLabels,
+    excluded: [...exclusions].map(([label, reason]) => ({ label, reason }))
+      .sort((left, right) => left.label.localeCompare(right.label)),
+  };
+}
+
+function escapeBazelQueryString(value: string): string {
+  return value.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function runBazel(binary: string, args: string[], cwd: string, timeout: number, signal?: AbortSignal): Promise<string> {

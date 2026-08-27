@@ -20,6 +20,7 @@ import {
 import { LSP_RELATION_TABLE, LSP_SCHEMA_QUERIES } from './schema.js';
 import { JvmArtifactRepository } from '../artifact/repository.js';
 import { DerivedCallNormalizationRepository } from '../derived/call-normalization/repository.js';
+import { BazelBuildGraphRepository } from '../bazel/repository.js';
 
 export interface LbugQueryResultLike {
   close?(): void | Promise<void>;
@@ -54,6 +55,7 @@ export interface LspDatabaseHandle {
   repository: LspLadybugRepository;
   artifactRepository: JvmArtifactRepository;
   callNormalizationRepository: DerivedCallNormalizationRepository;
+  bazelBuildGraphRepository: BazelBuildGraphRepository;
   close(): Promise<void>;
 }
 
@@ -76,6 +78,7 @@ export function openLspLadybugDatabase(
     repository: new LspLadybugRepository(connection),
     artifactRepository: new JvmArtifactRepository(connection),
     callNormalizationRepository: new DerivedCallNormalizationRepository(connection),
+    bazelBuildGraphRepository: new BazelBuildGraphRepository(connection),
     async close(): Promise<void> {
       await connection.close?.();
       await database.close?.();

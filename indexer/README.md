@@ -17,6 +17,11 @@ Language servers
 The graph stores protocol facts without prematurely mapping symbols into
 language-specific approximations.
 
+Bazel preparation also persists a separate configured build graph. Direct
+target dependencies, owned sources, and compile/runtime/source artifact roles
+use `Bazel*` tables and `BazelRelation`; they are not projected into
+`LspRelation` or inferred from flattened JAR paths.
+
 ## Crawl planners
 
 `--crawl-planner legacy` retains the original per-document request schedule and

@@ -128,10 +128,11 @@ export class LspAdapterRegistry {
   public async prepareJavaBuildRoots(
     repositoryPath: string,
     rootIds?: string[],
-    options: Pick<BazelPreparationOptions, 'buildMode'> = {},
+    options: Pick<BazelPreparationOptions,
+      'buildMode' | 'targetQuery' | 'targetScope' | 'scopeConfigHash' | 'concurrency' | 'timeoutMs'> = {},
   ): Promise<BazelPreparationReport> {
     const key = path.resolve(repositoryPath);
-    const selectionKey = `${key}:${[...(rootIds ?? [])].sort().join(',')}:${options.buildMode ?? 'managed'}`;
+    const selectionKey = `${key}:${[...(rootIds ?? [])].sort().join(',')}:${options.buildMode ?? 'managed'}:${options.targetQuery ?? ''}:${options.scopeConfigHash ?? ''}`;
     const active = this.bazelPreparations.get(selectionKey);
     if (active) return active;
     const selected = rootIds ? new Set(rootIds) : undefined;

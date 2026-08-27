@@ -53,3 +53,6 @@ docs/language_specs/04_rpc_dynamic_proxy_temporal/temporal-sdk-java/
 
 # One-off scratch
 python_lbug/
+
+# Private local documents
+private/

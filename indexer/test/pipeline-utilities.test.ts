@@ -31,6 +31,8 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
     'facts-first',
     '--bazel-build-mode',
     'prebuilt',
+    '--bazel-target-query',
+    'set(//service:lib //shared:api)',
   ]);
   assert.equal(options.workspace, '/workspace');
   assert.equal(options.concurrency, 3);
@@ -42,6 +44,7 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
   assert.equal(options.resume, true);
   assert.equal(options.crawlPlanner, 'facts-first');
   assert.equal(options.bazelBuildMode, 'prebuilt');
+  assert.equal(options.bazelTargetQuery, 'set(//service:lib //shared:api)');
 });
 
 test('defaults to resumable checkpoints beside the requested output', () => {
@@ -91,8 +94,10 @@ test('rejects unknown Bazel build modes', () => {
 test('parses isolated Bazel preparation command options', () => {
   assert.deepEqual(parseBazelPreparationCommandOptions([
     '/workspace', '--concurrency', '2', '--timeout-ms', '9000',
+    '--bazel-target-query', 'set(//service:lib)',
   ]), {
     workspace: '/workspace', concurrency: 2, timeoutMs: 9000,
+    targetQuery: 'set(//service:lib)',
   });
 });
 
