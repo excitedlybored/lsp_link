@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "name": "default-core-java",
+  "bazel": {
+    "buildMode": "prebuilt",
+    "scope": {
+      "includeTargetPatterns": ["//..."],
+      "includeRuleKinds": ["java_binary", "java_library", "java_test"],
+      "explicitTargets": [],
+      "excludeTargetNamePatterns": [
+        ".*_deploy_bannedcheck$",
+        ".*-sonar$",
+        ".*-sq$"
+      ],
+      "excludeLabels": [],
+      "excludeTags": ["coverage", "reporting-only"]
+    },
+    "preparation": {
+      "concurrency": 4,
+      "timeoutMs": 600000
+    }
+  },
+  "crawl": {
+    "planner": "facts-first",
+    "concurrency": 4,
+    "resume": true
+  },
+  "artifacts": {
+    "concurrency": 4,
+    "maxClasses": null,
+    "fetchSources": true,
+    "classpathManifests": []
+  },
+  "quality": {
+    "failOnFailedBuildRoot": true
+  },
+  "checkpoints": {
+    "directory": null
+  }
+}

@@ -3,6 +3,31 @@
 Run commands from the repository root. Paths shown below are examples; replace
 the workspace and output paths with locations on your machine.
 
+## Run it
+
+From the `lsp_link` repository root, copy this block and change only
+`INDEX_WORKSPACE` and `INDEX_OUTPUT`:
+
+```bash
+INDEX_WORKSPACE="/absolute/path/to/enterprise-bazel-repository"
+INDEX_OUTPUT="/absolute/path/to/core-java.lbug"
+
+# Required first phase: prepare a complete, validated Bazel handoff.
+npm run index -- bazel-prepare "$INDEX_WORKSPACE" \
+  --config config/core-java.json
+
+# Required second phase: index the prepared handoff without running Bazel.
+npm run index -- build "$INDEX_WORKSPACE" \
+  --config config/core-java.json \
+  --output "$INDEX_OUTPUT"
+```
+
+The first command must finish successfully before running the second. The
+output path must not already exist. Even when the enterprise Bazel build has
+already completed, run `bazel-prepare`; it reuses Bazel's cache while producing
+the indexer-specific metadata and handoff. A successful second command writes
+the LadybugDB graph to `INDEX_OUTPUT`.
+
 ## Install
 
 Requirements:
@@ -37,15 +62,11 @@ successful enterprise build (optional cache warm-up)
     -> .lbug
 ```
 
-The default configuration for the core-Java use case is
-`private/core-java.json`. It selects Java libraries, Java applications, and
-Java tests across the workspace. This naturally retains production,
-QA/simulator, and relevant test code while filtering named validation and
-reporting targets before configured Bazel analysis.
-
-The `private` directory is ignored by Git. Keep local target labels or other
-repository-specific policy there; do not copy those details into tracked
-documentation or source code.
+The tracked default configuration for the core-Java use case is
+`config/core-java.json`. It selects Java libraries, Java applications, and Java
+tests across the workspace. This naturally retains production, QA/simulator,
+and relevant test code while filtering validation and reporting targets by
+generic target-name patterns and tags before configured Bazel analysis.
 
 Run the indexer workflow in two required phases against the same workspace and
 Bazel output cache:
@@ -54,11 +75,11 @@ Bazel output cache:
 # 1. Required even after a successful enterprise Bazel build. Resolve the
 #    indexer scope, reuse/build artifacts, and write the validated handoff.
 npm run index -- bazel-prepare /path/to/repository \
-  --config private/core-java.json
+  --config config/core-java.json
 
 # 2. Prebuilt indexing: consume that exact handoff without invoking Bazel.
 npm run index -- build /path/to/repository \
-  --config private/core-java.json \
+  --config config/core-java.json \
   --output /tmp/repository.lbug
 ```
 
@@ -234,13 +255,13 @@ Operational overrides are allowed:
 ```bash
 # Preparation-only operational overrides.
 npm run index -- bazel-prepare /path/to/repository \
-  --config private/core-java.json \
+  --config config/core-java.json \
   --concurrency 2 \
   --timeout-ms 1200000
 
 # Build/crawl operational overrides.
 npm run index -- build /path/to/repository \
-  --config private/core-java.json \
+  --config config/core-java.json \
   --output /tmp/repository.lbug \
   --concurrency 6 \
   --artifact-concurrency 6 \

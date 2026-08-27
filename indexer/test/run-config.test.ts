@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { parseBazelPreparationCommandOptions } from '../src/cli/bazel-prepare.js';
 import { parseLspKnowledgeGraphBuildOptions } from '../src/pipeline/cli-options.js';
 import { extractRunConfig, loadRunConfig } from '../src/pipeline/run-config.js';
+
+const TRACKED_DEFAULT_CONFIG = fileURLToPath(new URL('../../config/core-java.json', import.meta.url));
 
 type JsonObject = Record<string, any>;
 
@@ -63,6 +66,17 @@ function mutated(change: (value: JsonObject) => void): string {
   change(value);
   return configFile(value);
 }
+
+test('loads the tracked core-Java default without repository-specific labels', () => {
+  const config = loadRunConfig(TRACKED_DEFAULT_CONFIG);
+  assert.equal(config.name, 'default-core-java');
+  assert.equal(config.bazel.buildMode, 'prebuilt');
+  assert.equal(config.crawl.planner, 'facts-first');
+  assert.deepEqual(config.bazel.scope.includeTargetPatterns, ['//...']);
+  assert.deepEqual(config.bazel.scope.includeRuleKinds, ['java_binary', 'java_library', 'java_test']);
+  assert.deepEqual(config.bazel.scope.excludeLabels, []);
+  assert.equal(config.quality.failOnFailedBuildRoot, true);
+});
 
 test('loads every explicit version-1 config field', () => {
   const filename = configFile();
