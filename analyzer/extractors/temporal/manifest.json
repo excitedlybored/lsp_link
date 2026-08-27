@@ -1,7 +1,7 @@
 {
   "id": "temporal",
   "schemaVersion": 1,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Temporal Java workflows identified only from persisted LSP and JVM artifact evidence.",
   "dataSource": "ladybugdb-only",
   "identityPolicy": "framework-semantic-identities",
@@ -15,6 +15,24 @@
     "workflowClient": "io.temporal.client.WorkflowClient",
     "serviceClient": "io.temporal.serviceclient.WorkflowServiceStubs"
   },
+  "applicabilitySemanticTypes": [
+    "workflowContract"
+  ],
+  "completenessRequirements": {
+    "tables": [
+      "LspCoverage",
+      "LspAnalysisRun",
+      "LspBuildRoot",
+      "JvmArtifactEnrichmentRun"
+    ],
+    "lspCapabilities": [
+      "textDocument/documentSymbol",
+      "textDocument/hover",
+      "textDocument/implementation",
+      "callHierarchy/outgoingCalls",
+      "callHierarchy/incomingCalls"
+    ]
+  },
   "assemblerModule": "analyzer.extractors.temporal.assembler",
   "requiredTables": [
     "LspDocument",
@@ -26,6 +44,7 @@
     "LspRelation",
     "LspLogicalInvocation",
     "DerivedCallRelation",
+    "JvmClassResolution",
     "JvmClass",
     "LspJvmBinding"
   ],
@@ -36,7 +55,8 @@
       "description": "Temporal SDK classes present in the artifact-enrichment stage.",
       "file": "queries/sdk_classes.cypher",
       "parameters": {
-        "workflowContractType": {"semanticType": "workflowContract"}
+        "workflowContractType": {"semanticType": "workflowContract"},
+        "sdkNamespacePrefix": "io.temporal."
       }
     },
     {
@@ -96,7 +116,8 @@
       "file": "queries/temporal_sdk_calls.cypher",
       "parameters": {
         "workflowClientType": {"semanticType": "workflowClient"},
-        "serviceClientType": {"semanticType": "serviceClient"}
+        "serviceClientType": {"semanticType": "serviceClient"},
+        "sdkNamespacePrefix": "io.temporal."
       }
     }
   ]

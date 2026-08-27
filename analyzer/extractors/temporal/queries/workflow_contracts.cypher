@@ -1,11 +1,15 @@
 MATCH (document:LspDocument)-[defined:LspRelation]->(contract:LspInterfaceSymbol),
       (contract)-[contains:LspRelation]->(method:LspMethodSymbol),
       (document)-[hasHover:LspRelation]->(hover:LspHover),
-      (hover)-[binding:LspJvmBinding]->(semanticType:JvmClass)
+      (hover)-[binding:LspJvmBinding]->(semanticType:JvmClass),
+      (semanticTypeResolution:JvmClassResolution)
 WHERE defined.kind = 'DEFINES'
   AND contains.kind = 'CONTAINS'
   AND hasHover.kind = 'HAS_HOVER'
   AND binding.kind = 'HOVER_TARGET'
+  AND semanticTypeResolution.binaryName = semanticType.binaryName
+  AND semanticType.id = semanticTypeResolution.classId
+  AND semanticType.artifactId = semanticTypeResolution.artifactId
   AND (
     (semanticType.binaryName = $workflowContractType
       AND hover.requestLine = contract.startLine)
@@ -30,4 +34,3 @@ RETURN DISTINCT contract.id AS contractId,
        END AS evidence,
        binding.confidence AS confidence
 ORDER BY uri, startLine
-

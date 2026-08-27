@@ -1,9 +1,13 @@
 MATCH (document:LspDocument)-[defined:LspRelation]->(contract:LspInterfaceSymbol),
       (document)-[hasHover:LspRelation]->(hover:LspHover),
-      (hover)-[binding:LspJvmBinding]->(activityContractType:JvmClass)
+      (hover)-[binding:LspJvmBinding]->(activityContractType:JvmClass),
+      (activityContractResolution:JvmClassResolution)
 WHERE defined.kind = 'DEFINES'
   AND hasHover.kind = 'HAS_HOVER'
   AND binding.kind = 'HOVER_TARGET'
+  AND activityContractResolution.binaryName = activityContractType.binaryName
+  AND activityContractType.id = activityContractResolution.classId
+  AND activityContractType.artifactId = activityContractResolution.artifactId
   AND activityContractType.binaryName = $activityContractType
   AND hover.requestLine = contract.startLine
 OPTIONAL MATCH (document)-[definesPackage:LspRelation]->(package:LspPackageSymbol)
@@ -19,4 +23,3 @@ RETURN DISTINCT contract.id AS contractId,
        'activity-contract-type' AS evidence,
        binding.confidence AS confidence
 ORDER BY uri, startLine
-

@@ -36,6 +36,9 @@ class SemanticExtractor:
     identity_policy: str
     semantic_types: Mapping[str, str]
     required_tables: tuple[str, ...]
+    applicability_semantic_types: tuple[str, ...]
+    completeness_tables: tuple[str, ...]
+    coverage_capabilities: tuple[str, ...]
     queries: tuple[EvidenceQuery, ...]
     assembler_module: Optional[str] = None
 
@@ -58,6 +61,8 @@ class ExtractionReport:
     semantic_types: Mapping[str, str]
     database: str
     generated_at: str
+    qualification: str
+    index_health: dict[str, Any]
     summary: dict[str, Any]
     findings: dict[str, Any]
     query_results: dict[str, QueryResult]
@@ -73,6 +78,8 @@ class ExtractionReport:
             },
             "database": self.database,
             "generatedAt": self.generated_at,
+            "qualification": self.qualification,
+            "indexHealth": self.index_health,
             "summary": self.summary,
             "findings": self.findings,
         }
@@ -84,6 +91,10 @@ class ExtractionReport:
 
 
 Assembler = Callable[[Mapping[str, QueryResult]], tuple[dict[str, Any], dict[str, Any]]]
+
+
+def _limitation(code: str, message: str) -> dict[str, str]:
+    return {"code": code, "message": message}
 
 
 class ExtractionPipeline:
@@ -105,14 +116,25 @@ class ExtractionPipeline:
                 raise RuntimeError(
                     f"Extractor {extractor.id!r} requires missing tables: {missing}"
                 )
-            self._validate_semantic_types(client, extractor)
+            present_semantic_types = self._semantic_types_present(client, extractor)
+            index_health = self._assess_index_health(
+                client, extractor, present_semantic_types
+            )
 
-            results = {
-                query.id: self._execute(client, query)
-                for query in extractor.queries
-            }
-            assembler = self._load_assembler(extractor)
-            summary, findings = assembler(results)
+            if index_health["qualification"] == "not_applicable":
+                results: dict[str, QueryResult] = {}
+                summary = {
+                    "evidenceQueryCounts": {},
+                    "notApplicableReason": index_health["applicability"]["reason"],
+                }
+                findings: dict[str, Any] = {}
+            else:
+                results = {
+                    query.id: self._execute(client, query)
+                    for query in extractor.queries
+                }
+                assembler = self._load_assembler(extractor)
+                summary, findings = assembler(results)
             return ExtractionReport(
                 extractor_id=extractor.id,
                 extractor_version=extractor.version,
@@ -121,6 +143,8 @@ class ExtractionPipeline:
                 semantic_types=extractor.semantic_types,
                 database=str(client.db_path),
                 generated_at=datetime.now(timezone.utc).isoformat(),
+                qualification=index_health["qualification"],
+                index_health=index_health,
                 summary=summary,
                 findings=findings,
                 query_results=results,
@@ -162,23 +186,228 @@ class ExtractionPipeline:
         return assembler
 
     @staticmethod
-    def _validate_semantic_types(
+    def _semantic_types_present(
         client: LadybugClient,
         extractor: SemanticExtractor,
-    ) -> None:
-        missing = []
+    ) -> set[str]:
+        present: set[str] = set()
         for role, binary_name in extractor.semantic_types.items():
             result = client.conn.execute(
-                "MATCH (type:JvmClass) WHERE type.binaryName = $binaryName "
+                "MATCH (resolution:JvmClassResolution), (type:JvmClass) "
+                "WHERE resolution.binaryName = $binaryName "
+                "AND type.id = resolution.classId "
+                "AND type.artifactId = resolution.artifactId "
                 "RETURN type.id LIMIT 1",
                 parameters={"binaryName": binary_name},
             )
-            if not result.has_next():
-                missing.append(f"{role}={binary_name}")
-        if missing:
-            raise RuntimeError(
-                "Extractor semantic types are absent from LadybugDB: " + ", ".join(missing)
+            if result.has_next():
+                present.add(role)
+        return present
+
+    @staticmethod
+    def _assess_index_health(
+        client: LadybugClient,
+        extractor: SemanticExtractor,
+        present_semantic_types: set[str],
+    ) -> dict[str, Any]:
+        limitations: list[dict[str, str]] = []
+
+        all_analysis_runs = (
+            client.get_lsp_analysis_runs() if "LspAnalysisRun" in client.tables else []
+        )
+        selected_analysis_run = max(
+            all_analysis_runs,
+            key=lambda run: (run.completed_at or run.started_at or "", run.started_at or "", run.id),
+            default=None,
+        )
+        selected_run_id = selected_analysis_run.id if selected_analysis_run else None
+        analysis_runs = [
+            {
+                "id": run.id,
+                "status": run.status,
+                "errorCount": run.error_count,
+                "timeoutCount": run.timeout_count,
+                "completedAt": run.completed_at,
+            }
+            for run in ([selected_analysis_run] if selected_analysis_run else [])
+        ]
+        if not analysis_runs:
+            limitations.append(_limitation("analysis_run_unavailable", "No analysis-run health was persisted."))
+        for run in analysis_runs:
+            if run["status"] != "complete" or run["errorCount"] or run["timeoutCount"]:
+                limitations.append(_limitation(
+                    "analysis_run_incomplete",
+                    f"Analysis run {run['id']} is {run['status']} with "
+                    f"{run['errorCount']} errors and {run['timeoutCount']} timeouts.",
+                ))
+
+        all_roots = client.get_lsp_build_roots() if "LspBuildRoot" in client.tables else []
+        roots = [
+            root for root in all_roots
+            if selected_run_id is None or root.run_id == selected_run_id
+        ]
+        bazel_roots = [root for root in roots if "bazel" in {value.lower() for value in root.build_systems}]
+        failed_bazel_roots = [
+            {
+                "id": root.id,
+                "relativePath": root.relative_path,
+                "importStatus": root.import_status,
+            }
+            for root in bazel_roots
+            if root.import_status == "failed"
+        ]
+        incomplete_bazel_roots = [root for root in bazel_roots if root.import_status != "ready"]
+        if incomplete_bazel_roots:
+            limitations.append(_limitation(
+                "bazel_roots_incomplete",
+                f"{len(incomplete_bazel_roots)} Bazel root(s) were not ready.",
+            ))
+
+        matching_artifact_runs = [
+            run for run in client.get_jvm_enrichment_runs()
+            if selected_run_id is None or run.lsp_run_id == selected_run_id
+        ]
+        artifact_runs = [
+            {
+                "id": run.id,
+                "status": run.status,
+                "provider": run.provider,
+                "artifactCount": run.artifact_count,
+                "classCount": run.class_count,
+                "classpathErrorCount": run.classpath_error_count,
+                "errorCount": run.error_count,
+                "truncated": run.truncated,
+                "completedAt": run.completed_at,
+            }
+            for run in matching_artifact_runs
+        ]
+        if not artifact_runs:
+            limitations.append(_limitation(
+                "artifact_enrichment_unavailable",
+                "No artifact-enrichment health was persisted.",
+            ))
+        for run in artifact_runs:
+            if (
+                run["status"] != "complete"
+                or run["truncated"]
+                or run["errorCount"]
+                or run["classpathErrorCount"]
+            ):
+                limitations.append(_limitation(
+                    "artifact_enrichment_incomplete",
+                    f"Artifact enrichment {run['id']} is {run['status']} "
+                    f"(truncated={str(run['truncated']).lower()}, errors={run['errorCount']}, "
+                    f"classpathErrors={run['classpathErrorCount']}).",
+                ))
+
+        coverage_available = "LspCoverage" in client.tables
+        coverage_rows = client.get_lsp_coverage() if coverage_available else []
+        coverage_rows = [
+            row for row in coverage_rows
+            if selected_run_id is None or row.run_id == selected_run_id
+        ]
+        relevant_coverage: list[dict[str, Any]] = []
+        coverage_by_capability: dict[str, list[Any]] = {}
+        for coverage in coverage_rows:
+            coverage_by_capability.setdefault(coverage.capability, []).append(coverage)
+        complete_coverage_statuses = {"mapped", "empty"}
+        for capability in extractor.coverage_capabilities:
+            rows = coverage_by_capability.get(capability, [])
+            item = {
+                "capability": capability,
+                "available": bool(rows),
+                "statuses": sorted({row.status for row in rows}),
+                "eligibleCount": sum(row.eligible_count for row in rows),
+                "attemptedCount": sum(row.attempted_count for row in rows),
+                "successCount": sum(row.success_count for row in rows),
+                "failureCount": sum(row.failure_count for row in rows),
+                "timeoutCount": sum(row.timeout_count for row in rows),
+                "resultCount": sum(row.result_count for row in rows),
+                "mappedCount": sum(row.mapped_count for row in rows),
+                "unmappedCount": sum(row.unmapped_count for row in rows),
+            }
+            relevant_coverage.append(item)
+            if not rows:
+                limitations.append(_limitation(
+                    "lsp_coverage_missing",
+                    f"Relevant LSP capability {capability} has no coverage record.",
+                ))
+            elif (
+                not set(item["statuses"]).issubset(complete_coverage_statuses)
+                or item["failureCount"]
+                or item["timeoutCount"]
+                or item["unmappedCount"]
+            ):
+                limitations.append(_limitation(
+                    "lsp_coverage_incomplete",
+                    f"Relevant LSP capability {capability} has incomplete or unmapped coverage.",
+                ))
+
+        missing_completeness_tables = [
+            table for table in extractor.completeness_tables if table not in client.tables
+        ]
+        for table in missing_completeness_tables:
+            limitations.append(_limitation(
+                "completeness_signal_unavailable",
+                f"Completeness table {table} is unavailable in this schema.",
+            ))
+
+        missing_semantic_types = [
+            role for role in extractor.semantic_types if role not in present_semantic_types
+        ]
+        absent_applicability_types = [
+            role for role in extractor.applicability_semantic_types
+            if role not in present_semantic_types
+        ]
+        applicability_absent = bool(extractor.applicability_semantic_types) and (
+            len(absent_applicability_types) == len(extractor.applicability_semantic_types)
+        )
+        if limitations:
+            qualification = "partial"
+            applicability_reason = (
+                "Framework anchor types were not observed, but index limitations prevent "
+                "a reliable not-applicable conclusion."
+                if applicability_absent else "Framework evidence may be incomplete."
             )
+        elif applicability_absent:
+            qualification = "not_applicable"
+            applicability_reason = "None of the extractor's framework anchor types are present."
+        else:
+            qualification = "complete"
+            applicability_reason = "At least one framework anchor type is present."
+
+        return {
+            "qualification": qualification,
+            "selectedAnalysisRunId": selected_run_id,
+            "analysisRunCount": len(all_analysis_runs),
+            "analysisRuns": analysis_runs,
+            "bazel": {
+                "rootCount": len(bazel_roots),
+                "failedRoots": failed_bazel_roots,
+                "incompleteRootCount": len(incomplete_bazel_roots),
+            },
+            "artifactEnrichment": {
+                "available": bool(artifact_runs),
+                "runs": artifact_runs,
+                "errorCount": sum(run["errorCount"] for run in artifact_runs),
+                "classpathErrorCount": sum(run["classpathErrorCount"] for run in artifact_runs),
+                "truncated": any(run["truncated"] for run in artifact_runs),
+            },
+            "lspCoverage": {
+                "available": coverage_available,
+                "relevantCapabilities": relevant_coverage,
+                "failureCount": sum(item["failureCount"] for item in relevant_coverage),
+                "timeoutCount": sum(item["timeoutCount"] for item in relevant_coverage),
+                "unmappedCount": sum(item["unmappedCount"] for item in relevant_coverage),
+            },
+            "applicability": {
+                "anchorSemanticTypes": list(extractor.applicability_semantic_types),
+                "missingAnchorSemanticTypes": absent_applicability_types,
+                "missingSemanticTypes": missing_semantic_types,
+                "reason": applicability_reason,
+            },
+            "limitations": limitations,
+        }
 
 
 def _raw_assembler(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -260,6 +489,26 @@ def load_extractor(extractor_id: str) -> SemanticExtractor:
         raise ValueError(f"Extractor {extractor_id!r} must declare semanticTypes")
     if not all(isinstance(role, str) and isinstance(name, str) for role, name in semantic_types.items()):
         raise ValueError(f"Extractor {extractor_id!r} has invalid semanticTypes")
+    completeness = manifest.get("completenessRequirements", {})
+    if not isinstance(completeness, dict):
+        raise ValueError(
+            f"Extractor {extractor_id!r} has invalid completenessRequirements"
+        )
+    applicability_types = tuple(manifest.get("applicabilitySemanticTypes", ()))
+    unknown_applicability_types = [
+        role for role in applicability_types if role not in semantic_types
+    ]
+    if unknown_applicability_types:
+        raise ValueError(
+            f"Extractor {extractor_id!r} has unknown applicability semantic types: "
+            f"{unknown_applicability_types}"
+        )
+    completeness_tables = tuple(completeness.get("tables", ()))
+    coverage_capabilities = tuple(completeness.get("lspCapabilities", ()))
+    if not all(isinstance(value, str) for value in (*completeness_tables, *coverage_capabilities)):
+        raise ValueError(
+            f"Extractor {extractor_id!r} has invalid completeness requirements"
+        )
     queries = []
     query_ids: set[str] = set()
     for entry in manifest["queries"]:
@@ -294,6 +543,9 @@ def load_extractor(extractor_id: str) -> SemanticExtractor:
         identity_policy=manifest["identityPolicy"],
         semantic_types=semantic_types,
         required_tables=tuple(manifest.get("requiredTables", [])),
+        applicability_semantic_types=applicability_types,
+        completeness_tables=completeness_tables,
+        coverage_capabilities=coverage_capabilities,
         queries=tuple(queries),
         assembler_module=manifest.get("assemblerModule"),
     )

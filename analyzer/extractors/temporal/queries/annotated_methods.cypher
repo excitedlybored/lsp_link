@@ -1,11 +1,15 @@
 MATCH (owner:LspInterfaceSymbol)-[contains:LspRelation]->(method:LspMethodSymbol),
       (document:LspDocument)-[defined:LspRelation]->(owner),
       (document)-[hasHover:LspRelation]->(hover:LspHover),
-      (hover)-[binding:LspJvmBinding]->(semanticType:JvmClass)
+      (hover)-[binding:LspJvmBinding]->(semanticType:JvmClass),
+      (semanticTypeResolution:JvmClassResolution)
 WHERE contains.kind = 'CONTAINS'
   AND defined.kind = 'DEFINES'
   AND hasHover.kind = 'HAS_HOVER'
   AND binding.kind = 'HOVER_TARGET'
+  AND semanticTypeResolution.binaryName = semanticType.binaryName
+  AND semanticType.id = semanticTypeResolution.classId
+  AND semanticType.artifactId = semanticTypeResolution.artifactId
   AND (
     (
       hover.requestLine = method.startLine
@@ -43,4 +47,3 @@ RETURN DISTINCT owner.id AS ownerId,
        hover.id AS evidenceId,
        binding.confidence AS confidence
 ORDER BY uri, startLine
-

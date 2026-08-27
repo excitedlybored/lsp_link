@@ -1,17 +1,24 @@
 MATCH (caller)-[hasSite:LspRelation]->(site:LspCallSite),
       (site)-[resolves:LspRelation]->(callee),
       (callee)-[binding:LspJvmBinding]->(targetClass:JvmClass),
+      (targetResolution:JvmClassResolution),
+      (workflowClientResolution:JvmClassResolution),
       (workflowClientType:JvmClass),
+      (serviceClientResolution:JvmClassResolution),
       (serviceClientType:JvmClass)
 WHERE hasSite.kind = 'HAS_CALLSITE'
   AND resolves.kind = 'RESOLVES_TO'
   AND binding.kind = 'SYMBOL_OWNER'
-  AND workflowClientType.binaryName = $workflowClientType
-  AND serviceClientType.binaryName = $serviceClientType
-  AND (
-    targetClass.artifactId = workflowClientType.artifactId
-    OR targetClass.artifactId = serviceClientType.artifactId
-  )
+  AND workflowClientResolution.binaryName = $workflowClientType
+  AND workflowClientType.id = workflowClientResolution.classId
+  AND workflowClientType.artifactId = workflowClientResolution.artifactId
+  AND serviceClientResolution.binaryName = $serviceClientType
+  AND serviceClientType.id = serviceClientResolution.classId
+  AND serviceClientType.artifactId = serviceClientResolution.artifactId
+  AND targetResolution.binaryName = targetClass.binaryName
+  AND targetClass.id = targetResolution.classId
+  AND targetClass.artifactId = targetResolution.artifactId
+  AND targetClass.binaryName STARTS WITH $sdkNamespacePrefix
 OPTIONAL MATCH (site)-[normalizes:DerivedCallRelation]->(logical:LspLogicalInvocation)
 WHERE normalizes.kind = 'NORMALIZES_TO'
 RETURN DISTINCT site.id AS callSiteId,
