@@ -413,6 +413,8 @@ test('uses the recursive build aspect as the authoritative graph for configured 
     ]);
     assert.match(fs.readFileSync(buildLog, 'utf8'), /gitnexus_java_artifacts/);
     const aspect = fs.readFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-aspect.bzl'), 'utf8');
+    assert.match(aspect, /load\("@rules_java\/\/java\/private:java_info\.bzl", "JavaInfo"\)/);
+    assert.doesNotMatch(aspect, /java\/common:java_info\.bzl/);
     assert.match(aspect, /attr_aspects = \["deps", "exports", "runtime_deps", "plugins"\]/);
     assert.match(aspect, /java_info\.compile_jars/);
     assert.match(aspect, /java_info\.runtime_output_jars/);

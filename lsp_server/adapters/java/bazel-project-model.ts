@@ -666,7 +666,10 @@ function ensureSourceAspect(workspacePath: string): void {
   const buildPath = path.join(path.dirname(aspectPath), 'BUILD.bazel');
   fs.mkdirSync(path.dirname(aspectPath), { recursive: true });
   const aspect = [
-    'load("@rules_java//java/common:java_info.bzl", "JavaInfo")',
+    // Load the provider definition used by java_* rules. The public/common
+    // compatibility proxy can have a distinct provider identity on Bazel 8
+    // and rules_java releases that still define JavaInfo in java/private.
+    'load("@rules_java//java/private:java_info.bzl", "JavaInfo")',
     '',
     'GitNexusJavaGraphInfo = provider(fields = ["manifests", "artifacts"])',
     '',
