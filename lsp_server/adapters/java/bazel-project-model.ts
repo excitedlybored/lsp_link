@@ -15,6 +15,9 @@ import {
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_MAX_BUFFER_MB = 256;
+const MIN_MAX_BUFFER_MB = 32;
+const MAX_MAX_BUFFER_MB = 2048;
 const MODEL_RELATIVE_PATH = '.gitnexus/jdtls/bazel-project.json';
 const SOURCE_INVENTORY_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-inventory.json';
 const HANDOFF_RELATIVE_PATH = '.gitnexus/jdtls/bazel-handoff.json';
@@ -935,13 +938,34 @@ function escapeRegex(value: string): string {
 
 async function runBazel(binary: string, args: string[], cwd: string, timeout: number, signal?: AbortSignal): Promise<string> {
   try {
-    const result = await execFileAsync(binary, args, { cwd, timeout, signal, maxBuffer: 32 * 1024 * 1024 });
+    const result = await execFileAsync(binary, args, {
+      cwd,
+      timeout,
+      signal,
+      maxBuffer: bazelMaxBufferBytes(),
+    });
     return result.stdout;
   } catch (error) {
     const failure = error as Error & { killed?: boolean; stderr?: string };
     if (failure.killed || signal?.aborted) throw new Error(`timed out after ${timeout} ms`);
-    throw new Error((failure.stderr || failure.message).trim());
+    const stderr = failure.stderr?.trim();
+    const detail = stderr && !failure.message.includes(stderr)
+      ? `${failure.message.trim()}\n${stderr}`
+      : failure.message.trim();
+    throw new Error(detail);
   }
+}
+
+function bazelMaxBufferBytes(): number {
+  const configured = process.env.GITNEXUS_BAZEL_MAX_BUFFER_MB;
+  if (configured === undefined) return DEFAULT_MAX_BUFFER_MB * 1024 * 1024;
+  const megabytes = Number(configured);
+  if (!Number.isInteger(megabytes) || megabytes < MIN_MAX_BUFFER_MB || megabytes > MAX_MAX_BUFFER_MB) {
+    throw new Error(
+      `GITNEXUS_BAZEL_MAX_BUFFER_MB must be an integer from ${MIN_MAX_BUFFER_MB} to ${MAX_MAX_BUFFER_MB}, got ${configured}`,
+    );
+  }
+  return megabytes * 1024 * 1024;
 }
 
 function readGeneratedModel(modelPath: string): GeneratedBazelModel | undefined {

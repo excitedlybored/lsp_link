@@ -300,6 +300,10 @@ the tools' normal credential stores. Relevant environment variables include:
 - `GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS`: Bazel model timeout for legacy,
   non-configured flows; the config's `bazel.preparation.timeoutMs` controls
   configured preparation.
+- `GITNEXUS_BAZEL_MAX_BUFFER_MB`: maximum buffered stdout/stderr for one Bazel
+  command, in MiB. The default is `256`; accepted values are `32` through
+  `2048`. Increase it only when an unusually large configured graph still
+  exceeds the default.
 - `GITNEXUS_LBUG_BUFFER_POOL_MB`: LadybugDB buffer-pool size in MiB, minimum 64.
 - `GITNEXUS_LBUG_ROTATE_BATCHES`: positive number of committed COPY fragments
   between staging-connection rotations.
