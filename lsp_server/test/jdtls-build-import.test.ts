@@ -43,15 +43,26 @@ test('resolves a deterministic Java target scope before configured analysis', as
     'esac',
   ].join('\n'));
   fs.chmodSync(fakeBazel, 0o755);
-  const resolved = await resolveBazelTargetScope(root, fakeBazel, {
-    includeTargetPatterns: ['//...'], includeRuleKinds: ['java_library', 'java_test'],
-    explicitTargets: ['//custom:app'], excludeTargetNamePatterns: ['.*-sonar$'],
-    excludeLabels: [], excludeTags: ['coverage'],
-  }, 'scope-hash', 5_000);
+  const progress: string[] = [];
+  const originalConsoleError = console.error;
+  console.error = (...values: unknown[]) => progress.push(values.map(String).join(' '));
+  let resolved;
+  try {
+    resolved = await resolveBazelTargetScope(root, fakeBazel, {
+      includeTargetPatterns: ['//...'], includeRuleKinds: ['java_library', 'java_test'],
+      explicitTargets: ['//custom:app'], excludeTargetNamePatterns: ['.*-sonar$'],
+      excludeLabels: [], excludeTags: ['coverage'],
+    }, 'scope-hash', 5_000);
+  } finally {
+    console.error = originalConsoleError;
+  }
   assert.equal(resolved.targetQuery, 'set(//custom:app //service:lib //service:lib-test)');
   assert.deepEqual(resolved.resolvedLabels, ['//custom:app', '//service:lib', '//service:lib-test']);
   assert.ok(resolved.excluded.some((value) => value.label === '//reports:coverage' && value.reason === 'tag:coverage'));
   assert.ok(resolved.excluded.some((value) => value.label === '//service:service-sonar'));
+  assert.ok(progress.some((line) => line.includes('[bazel:scope-discovery-1-of-1] started')));
+  assert.ok(progress.some((line) => line.includes('[bazel:scope-discovery-1-of-1] completed')));
+  assert.ok(progress.some((line) => line.includes('[bazel:scope] resolved 3 selected targets; 2 excluded')));
 });
 
 test('discovers user-local Linux JDK installations used by the ASM worker', (t) => {
@@ -175,16 +186,14 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     `  printf '%s\\n' '${path.join(root, 'execroot')}'`,
     'elif [ "$1" = "cquery" ]; then',
     `  printf '%s\\n' "$*" >> '${cqueryLog}'`,
-    '  case "$*" in',
-    '    *source_jars*) printf "//:app\\n" ;;',
-    "    *) printf '//:app\\texternal/maven/spring-context.jar\\tbazel-out/app.jar\\n' ;;",
-    '  esac',
+    "  printf '//:app\\tC:external/maven/spring-context.jar\\tC:bazel-out/app.jar\\tR:external/maven/spring-context.jar\\tR:bazel-out/app.jar\\n'",
     'elif [ "$1" = "build" ]; then',
     `  printf '%s\n' "$*" >> '${buildLog}'`,
     `  mkdir -p '${path.join(root, 'execroot/external/maven')}' '${path.join(root, 'execroot/bazel-out')}'`,
     `  : > '${path.join(root, 'execroot/external/maven/spring-context.jar')}'`,
     `  : > '${path.join(root, 'execroot/bazel-out/app.jar')}'`,
-    `  printf '%s\n' '{"label":"//:app","ruleKind":"java_library","dependencies":[{"label":"//shared:api","attribute":"deps"}],"sources":[{"path":"src/main/java/example/Sample.java","shortPath":"src/main/java/example/Sample.java","isSource":true}]}' > '${path.join(root, 'execroot/bazel-out/app.gitnexus-sources.json')}'`,
+    `  printf '%s\n' '{"label":"//:app","ruleKind":"java_library","dependencies":[{"label":"//shared:api","attribute":"deps"}],"sources":[{"path":"src/main/java/example/Sample.java","shortPath":"src/main/java/example/Sample.java","isSource":true}],"compileArtifacts":["bazel-out/app.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(root, 'execroot/bazel-out/app.gitnexus-sources.json')}'`,
+    `  printf '%s\n' '{"label":"//shared:api","ruleKind":"java_library","dependencies":[],"sources":[],"compileArtifacts":["external/maven/spring-context.jar"],"runtimeArtifacts":["external/maven/spring-context.jar"],"sourceJars":[]}' > '${path.join(root, 'execroot/bazel-out/shared.gitnexus-sources.json')}'`,
     'else',
     '  exit 2',
     'fi',
@@ -213,15 +222,17 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     assert.deepEqual(generated.configuredTargets?.[0]?.dependencies, [
       { label: '//shared:api', attribute: 'deps' },
     ]);
-    assert.equal(generated.configuredTargets?.[0]?.compileArtifacts?.length, 2);
+    assert.equal(generated.configuredTargets?.[0]?.compileArtifacts?.length, 1);
     assert.ok(fs.readFileSync(cqueryLog, 'utf8').trim().split('\n').every((command) =>
-      command.includes('if len(') && command.includes('else ""')
+      command.includes('"C:"') && command.includes('"R:"') && command.includes('"S:"')
+        && command.includes('if len(') && command.includes('else ""')
     ));
     assert.equal(fs.readFileSync(buildLog, 'utf8').includes('--keep_going'), false);
 
     const refreshed = await ensureBazelProjectModel(root);
     assert.equal(refreshed.status, 'generated');
     assert.equal(refreshed.classpathEntries, 2);
+    assert.equal(fs.readFileSync(cqueryLog, 'utf8').trim().split('\n').length, 2);
 
     const forbiddenBazelCall = path.join(root, 'forbidden-bazel-call');
     fs.writeFileSync(fakeBazel, [
@@ -282,6 +293,75 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     const afterFailedPreparation = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
     assert.equal(afterFailedPreparation.status, 'failed');
     assert.match(afterFailedPreparation.reason ?? '', /invalid or missing handoff|ENOENT/);
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+  }
+});
+
+test('uses the recursive build aspect as the authoritative graph for configured scopes', async (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "recursive")',
+    'BUILD.bazel': 'java_library(name = "app", srcs = ["App.java"], deps = ["@third_party//:api"])',
+    'App.java': 'class App {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const executionRoot = path.join(root, 'execroot');
+  const cqueryMarker = path.join(root, 'unexpected-cquery');
+  const buildLog = path.join(root, 'build.log');
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    'if [ "$1" = "query" ]; then',
+    '  case "$*" in',
+    '    *"attr(\\\"tags\\\""*) exit 0 ;;',
+    '    *) printf "%s\\n" "java_library rule //:app" ;;',
+    '  esac',
+    'elif [ "$1" = "info" ]; then',
+    `  printf '%s\\n' '${executionRoot}'`,
+    'elif [ "$1" = "cquery" ]; then',
+    `  : > '${cqueryMarker}'`,
+    '  exit 91',
+    'elif [ "$1" = "build" ]; then',
+    `  printf '%s\\n' "$*" > '${buildLog}'`,
+    `  mkdir -p '${path.join(executionRoot, 'bazel-out')}' '${path.join(executionRoot, 'external/third_party')}'`,
+    `  : > '${path.join(executionRoot, 'bazel-out/app-hjar.jar')}'`,
+    `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
+    `  : > '${path.join(executionRoot, 'external/third_party/api-hjar.jar')}'`,
+    `  : > '${path.join(executionRoot, 'external/third_party/api.jar')}'`,
+    `  printf '%s\\n' '{"label":"//:app","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[{"label":"//:bridge","attribute":"deps"}],"sources":[{"path":"App.java","shortPath":"App.java","isSource":true}],"compileArtifacts":["bazel-out/app-hjar.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"label":"//:bridge","ruleKind":"custom_wrapper","hasJavaInfo":false,"dependencies":[{"label":"@third_party//:api","attribute":"deps"}],"sources":[],"compileArtifacts":[],"runtimeArtifacts":[],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/bridge.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"label":"@third_party//:api","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[],"sources":[],"compileArtifacts":["external/third_party/api-hjar.jar"],"runtimeArtifacts":["external/third_party/api.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/api.gitnexus-sources.json')}'`,
+    'else',
+    '  exit 2',
+    'fi',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  try {
+    const result = await ensureBazelProjectModel(root, {
+      targetScope: {
+        includeTargetPatterns: ['//...'], includeRuleKinds: ['java_library'], explicitTargets: [],
+        excludeTargetNamePatterns: [], excludeLabels: [], excludeTags: [],
+      },
+      scopeConfigHash: 'scope-hash',
+    });
+    assert.equal(result.status, 'generated', result.reason);
+    assert.equal(fs.existsSync(cqueryMarker), false);
+    assert.equal(result.classpathEntries, 2);
+    assert.deepEqual(result.configuredTargets?.map((target) => target.label), [
+      '@third_party//:api', '//:app', '//:bridge',
+    ]);
+    const model = JdtlsWorkspace.inspect(root).bazelProjectModel!;
+    assert.deepEqual(model.classpath, [
+      path.join(executionRoot, 'bazel-out/app-hjar.jar'),
+      path.join(executionRoot, 'external/third_party/api-hjar.jar'),
+    ]);
+    assert.match(fs.readFileSync(buildLog, 'utf8'), /gitnexus_java_artifacts/);
+    const aspect = fs.readFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-aspect.bzl'), 'utf8');
+    assert.match(aspect, /attr_aspects = \["deps", "exports", "runtime_deps", "plugins"\]/);
+    assert.match(aspect, /java_info\.compile_jars/);
+    assert.match(aspect, /java_info\.runtime_output_jars/);
+    assert.match(aspect, /java_info\.source_jars/);
   } finally {
     delete process.env.GITNEXUS_BAZEL_BIN;
   }
@@ -405,7 +485,7 @@ test('discovers Java from a configured source JAR when the repository has no che
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const executionRoot = path.join(root, 'execroot');
   fs.mkdirSync(path.join(executionRoot, 'bazel-out'), { recursive: true });
-  const sourceJar = path.join(executionRoot, 'bazel-out/generated-src.jar');
+  const sourceJar = path.join(executionRoot, 'bazel-out/generated.srcjar');
   execFileSync('zip', ['-q', '-r', sourceJar, '.'], { cwd: path.join(root, '.gitnexus/jar-input') });
   fs.writeFileSync(path.join(executionRoot, 'bazel-out/generated.jar'), '');
   const fakeBazel = path.join(root, 'fake-bazel');
@@ -414,12 +494,9 @@ test('discovers Java from a configured source JAR when the repository has no che
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${executionRoot}'`,
     'elif [ "$1" = "cquery" ]; then',
-    '  case "$*" in',
-    '    *source_jars*) printf "//:generated\\tbazel-out/generated-src.jar\\n" ;;',
-    '    *) printf "//:generated\\tbazel-out/generated.jar\\n" ;;',
-    '  esac',
+    '  printf "//:generated\\tC:bazel-out/generated.jar\\tR:bazel-out/generated.jar\\tS:bazel-out/generated.srcjar\\n"',
     'elif [ "$1" = "build" ]; then',
-    `  printf '%s\\n' '{"label":"//:generated","sources":[]}' > '${path.join(executionRoot, 'bazel-out/generated.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"label":"//:generated","sources":[],"compileArtifacts":["bazel-out/generated.jar"],"runtimeArtifacts":["bazel-out/generated.jar"],"sourceJars":["bazel-out/generated.srcjar"]}' > '${path.join(executionRoot, 'bazel-out/generated.gitnexus-sources.json')}'`,
     '  exit 0',
     'else',
     '  exit 2',
@@ -455,14 +532,11 @@ test('preserves a custom Bazel classpath model while generating its source sidec
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${executionRoot}'`,
     'elif [ "$1" = "cquery" ]; then',
-    '  case "$*" in',
-    '    *source_jars*) printf "//:app\\n" ;;',
-    '    *) printf "//:app\\tbazel-out/app.jar\\n" ;;',
-    '  esac',
+    '  printf "//:app\\tC:bazel-out/app.jar\\tR:bazel-out/app.jar\\n"',
     'elif [ "$1" = "build" ]; then',
     `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
     `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
-    `  printf '%s\\n' '{"label":"//:app","sources":[{"path":"App.java","shortPath":"App.java","isSource":true}]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"label":"//:app","sources":[{"path":"App.java","shortPath":"App.java","isSource":true}],"compileArtifacts":["bazel-out/app.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
     'else',
     '  exit 2',
     'fi',
@@ -503,14 +577,11 @@ test('includes Git-tracked unowned Java even under an ignored build directory', 
     'if [ "$1" = "info" ]; then',
     `  printf '%s\\n' '${executionRoot}'`,
     'elif [ "$1" = "cquery" ]; then',
-    '  case "$*" in',
-    '    *source_jars*) printf "//:app\\n" ;;',
-    '    *) printf "//:app\\tbazel-out/app.jar\\n" ;;',
-    '  esac',
+    '  printf "//:app\\tC:bazel-out/app.jar\\tR:bazel-out/app.jar\\n"',
     'elif [ "$1" = "build" ]; then',
     `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
     `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
-    `  printf '%s\\n' '{"label":"//:app","sources":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"label":"//:app","sources":[],"compileArtifacts":["bazel-out/app.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
     'else',
     '  exit 2',
     'fi',

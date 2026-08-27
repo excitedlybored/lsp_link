@@ -1,8 +1,7 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { globSync } from 'glob';
 import {
   createBazelSourceInventory,
@@ -13,8 +12,8 @@ import {
   type BazelSourceInventoryComparison,
 } from './bazel-source-inventory.js';
 
-const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 120_000;
+const PROGRESS_INTERVAL_MS = 15_000;
 const DEFAULT_MAX_BUFFER_MB = 256;
 const MIN_MAX_BUFFER_MB = 32;
 const MAX_MAX_BUFFER_MB = 2048;
@@ -30,7 +29,7 @@ interface GeneratedBazelModel {
   runtimeClasspath: string[];
   sourcePaths: string[];
   generatedSourcePaths: string[];
-  generatedBy: 'gitnexus-bazel-cquery';
+  generatedBy: 'gitnexus-bazel-java-graph' | 'gitnexus-bazel-cquery';
   generatedAt: string;
   configurationHash: string;
   bazelBinary: string;
@@ -57,6 +56,10 @@ export interface BazelScopeResolution {
   targetQuery: string;
   resolvedLabels: string[];
   excluded: BazelScopeExclusion[];
+}
+
+interface BazelAspectTarget extends BazelConfiguredTargetSources {
+  hasJavaInfo: boolean;
 }
 
 interface WriteBazelHandoffInput {
@@ -429,35 +432,26 @@ export async function ensureBazelProjectModel(
   // Provider-based filtering is deliberate: custom/Starlark Java rules need not
   // have a native `java_*` rule kind, but JavaInfo is the stable contract.
   try {
-    const executionRoot = (await runBazel(bazelBinary, ['info', 'execution_root'], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal)).trim();
-    // Bazel 8 / rules_java no longer exposes this provider under the literal
-    // `JavaInfo` key. Canonical keys include the defining bzl label and retain
-    // `%JavaInfo` as the stable suffix across bzlmod repository versions.
-    const expression = javaInfoCqueryExpression(
-      '(v.compilation_info.compilation_classpath if hasattr(v, "compilation_info") else v.transitive_compile_time_jars).to_list()',
+    const executionRoot = (await runBazel(
+      bazelBinary, ['info', 'execution_root'], workspacePath,
+      commandTimeout(timeout, options.deadlineAt), options.signal, 'execution-root',
+    )).trim();
+    // Structured scopes use the recursive aspect as the authoritative graph.
+    // Raw CLI queries retain cquery compatibility, but collect all artifact
+    // roles in one configured-analysis invocation instead of three.
+    const legacyConfigured = scopeResolution ? undefined : parseCombinedConfiguredTargets(
+      await runBazel(bazelBinary, [
+        'cquery', targetQuery, '--output=starlark', `--starlark:expr=${combinedJavaInfoCqueryExpression()}`,
+      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, 'cquery-java-artifacts'),
+      executionRoot,
     );
-    const output = await runBazel(bazelBinary, [
-      'cquery', targetQuery, '--output=starlark', `--starlark:expr=${expression}`,
-    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
-    const configured = parseConfiguredTargets(output, executionRoot);
-    const runtimeExpression = javaInfoCqueryExpression('v.transitive_runtime_jars.to_list()');
-    const runtimeOutput = await runBazel(bazelBinary, [
-      'cquery', targetQuery, '--output=starlark', `--starlark:expr=${runtimeExpression}`,
-    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
-    const runtime = parseConfiguredTargets(runtimeOutput, executionRoot);
-    const sourceJarExpression = javaInfoCqueryExpression('v.source_jars');
-    const sourceJarOutput = await runBazel(bazelBinary, [
-      'cquery', targetQuery, '--output=starlark', `--starlark:expr=${sourceJarExpression}`,
-    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
-    const sourceJars = parseConfiguredArtifacts(sourceJarOutput, executionRoot, (artifact) =>
-      artifact.endsWith('.jar') || artifact.endsWith('.srcjar')
-    );
-    if (configured.labels.length === 0) {
-      return { status: 'failed', reason: `Bazel cquery returned no JavaInfo targets for ${targetQuery}.` };
+    const rootLabels = scopeResolution?.resolvedLabels ?? legacyConfigured?.labels ?? [];
+    if (rootLabels.length === 0) {
+      return { status: 'failed', reason: `Bazel returned no JavaInfo targets for ${targetQuery}.` };
     }
     const targetFile = path.join(workspacePath, '.gitnexus/jdtls/bazel-targets.txt');
     fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-    fs.writeFileSync(targetFile, `${configured.labels.join('\n')}\n`);
+    fs.writeFileSync(targetFile, `${rootLabels.join('\n')}\n`);
     ensureSourceAspect(workspacePath);
     removeStaleAspectManifests(executionRoot);
     // Always ask Bazel to refresh configured sources. Bazel's own action cache
@@ -465,42 +459,36 @@ export async function ensureBazelProjectModel(
     await runBazel(bazelBinary, [
       'build', '--strict_java_deps=off', `--target_pattern_file=${targetFile}`,
       `--aspects=//.gitnexus/jdtls:${path.basename(ASPECT_RELATIVE_PATH)}%gitnexus_source_aspect`,
-      '--output_groups=+gitnexus_source_manifest,+_direct_source_jars',
-    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
-    const missing = [...configured.classpath, ...runtime.classpath].filter((jar) => !fs.existsSync(jar));
-    if (missing.length > 0) {
-      return { status: 'failed', reason: `Bazel did not materialize ${missing.length} configured Java compile-time jars.` };
-    }
+      '--output_groups=+gitnexus_source_manifest,+gitnexus_java_artifacts',
+    ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, 'aspect-build');
 
     const directSources = readAspectManifests(workspacePath, executionRoot);
-    const manifestLabels = new Set(directSources.map((target) => target.label));
-    const missingManifests = configured.labels.filter((label) => !manifestLabels.has(label));
-    if (missingManifests.length > 0) {
-      throw new Error(`Bazel source aspect returned no manifest for ${missingManifests.length} JavaInfo targets.`);
+    const manifestsByLabel = new Map(directSources.map((target) => [target.label, target]));
+    const invalidRoots = rootLabels.filter((label) => !manifestsByLabel.get(label)?.hasJavaInfo);
+    if (invalidRoots.length > 0) {
+      throw new Error(`Bazel source aspect found ${invalidRoots.length} selected targets without JavaInfo.`);
     }
-    const targetMap = new Map<string, BazelConfiguredTargetSources>();
-    for (const label of configured.labels) targetMap.set(label, { label, directSources: [], sourceJars: [] });
-    for (const target of directSources) {
-      const current = targetMap.get(target.label) ?? { label: target.label, directSources: [], sourceJars: [] };
-      current.directSources.push(...target.directSources);
-      current.ruleKind = target.ruleKind;
-      current.dependencies = target.dependencies;
-      targetMap.set(target.label, current);
+    const targetMap = new Map(directSources.map((target) => [target.label, target]));
+    if (legacyConfigured) {
+      for (const [label, sourceJars] of legacyConfigured.sourceJarsByLabel) {
+        const target = targetMap.get(label);
+        if (target && target.sourceJars.length === 0) target.sourceJars = sourceJars;
+      }
     }
-    for (const [label, jars] of sourceJars) {
-      const current = targetMap.get(label) ?? { label, directSources: [], sourceJars: [] };
-      current.sourceJars.push(...jars);
-      targetMap.set(label, current);
-    }
-    for (const [label, artifacts] of configured.artifactsByLabel) {
-      const current = targetMap.get(label) ?? { label, directSources: [], sourceJars: [] };
-      current.compileArtifacts = artifacts;
-      targetMap.set(label, current);
-    }
-    for (const [label, artifacts] of runtime.artifactsByLabel) {
-      const current = targetMap.get(label) ?? { label, directSources: [], sourceJars: [] };
-      current.runtimeArtifacts = artifacts;
-      targetMap.set(label, current);
+    const compileReachable = reachableTargetLabels(rootLabels, targetMap, new Set(['deps', 'exports', 'plugins']));
+    const runtimeReachable = reachableTargetLabels(
+      rootLabels, targetMap, new Set(['deps', 'exports', 'runtime_deps', 'plugins']),
+    );
+    const aspectCompileClasspath = uniqueSorted([...compileReachable]
+      .flatMap((label) => targetMap.get(label)?.compileArtifacts ?? []));
+    const aspectRuntimeClasspath = uniqueSorted([...runtimeReachable]
+      .flatMap((label) => targetMap.get(label)?.runtimeArtifacts ?? []));
+    const configuredClasspath = scopeResolution ? aspectCompileClasspath : legacyConfigured!.compileClasspath;
+    const runtimeClasspath = scopeResolution ? aspectRuntimeClasspath : legacyConfigured!.runtimeClasspath;
+    const missing = [...configuredClasspath, ...runtimeClasspath,
+      ...directSources.flatMap((target) => target.sourceJars)].filter((artifact) => !fs.existsSync(artifact));
+    if (missing.length > 0) {
+      return { status: 'failed', reason: `Bazel did not materialize ${new Set(missing).size} configured Java artifacts.` };
     }
     const inventoryPath = path.join(workspacePath, SOURCE_INVENTORY_RELATIVE_PATH);
     const inventory = await createBazelSourceInventory({
@@ -516,11 +504,11 @@ export async function ensureBazelProjectModel(
     writeJsonAtomically(inventoryPath, inventory);
 
     const model: GeneratedBazelModel = {
-      classpath: configured.classpath,
-      runtimeClasspath: runtime.classpath,
+      classpath: configuredClasspath,
+      runtimeClasspath,
       sourcePaths,
       generatedSourcePaths: discoverGeneratedSourcePaths(executionRoot),
-      generatedBy: 'gitnexus-bazel-cquery',
+      generatedBy: 'gitnexus-bazel-java-graph',
       generatedAt: new Date().toISOString(),
       configurationHash,
       bazelBinary,
@@ -537,8 +525,8 @@ export async function ensureBazelProjectModel(
       modelPath,
       inventoryPath,
       inventoryHash,
-      compileClasspath: customModel ? readModelClasspath(modelPath, workspacePath, 'classpath') : configured.classpath,
-      runtimeClasspath: customModel ? readModelClasspath(modelPath, workspacePath, 'runtimeClasspath') : runtime.classpath,
+      compileClasspath: customModel ? readModelClasspath(modelPath, workspacePath, 'classpath') : configuredClasspath,
+      runtimeClasspath: customModel ? readModelClasspath(modelPath, workspacePath, 'runtimeClasspath') : runtimeClasspath,
       sourceJars: [...targetMap.values()].flatMap((target) => target.sourceJars),
       handoffPath,
       scopeConfigHash: scopeResolution?.configHash,
@@ -546,7 +534,7 @@ export async function ensureBazelProjectModel(
     return {
       status: customModel ? 'cached' : 'generated',
       modelPath,
-      classpathEntries: customModel ? customClasspathCount(modelPath) : configured.classpath.length,
+      classpathEntries: customModel ? customClasspathCount(modelPath) : configuredClasspath.length,
       configurationHash,
       sourceInventoryPath: inventoryPath,
       sourceInventoryHash: inventoryHash,
@@ -656,26 +644,12 @@ function hasBazelWorkspaceMarker(workspacePath: string): boolean {
   return ['MODULE.bazel', 'WORKSPACE', 'WORKSPACE.bazel'].some((name) => fs.existsSync(path.join(workspacePath, name)));
 }
 
-function parseConfiguredArtifacts(
-  output: string,
-  executionRoot: string,
-  accept: (artifactPath: string) => boolean,
-): Map<string, string[]> {
-  const result = new Map<string, string[]>();
-  for (const line of output.split(/\r?\n/)) {
-    const [label, ...artifactPaths] = line.trim().split('\t');
-    if (!label) continue;
-    const artifacts = artifactPaths.filter(accept)
-      .map((artifact) => path.isAbsolute(artifact) ? artifact : path.resolve(executionRoot, artifact));
-    result.set(label, [...new Set(artifacts)].sort());
-  }
-  return result;
-}
-
-function javaInfoCqueryExpression(artifacts: string): string {
+function combinedJavaInfoCqueryExpression(): string {
   const javaInfoKeys = '[k for k in providers(target).keys() if str(k).endswith("%JavaInfo")]';
   return `"\\t".join([str(target.label)] + `
-    + `[f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in ${artifacts}]) `
+    + `["C:" + f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in (v.compilation_info.compilation_classpath if hasattr(v, "compilation_info") else v.transitive_compile_time_jars).to_list()] + `
+    + `["R:" + f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in v.transitive_runtime_jars.to_list()] + `
+    + `["S:" + f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in v.source_jars]) `
     + `if len(${javaInfoKeys}) > 0 else ""`;
 }
 
@@ -684,9 +658,15 @@ function ensureSourceAspect(workspacePath: string): void {
   const buildPath = path.join(path.dirname(aspectPath), 'BUILD.bazel');
   fs.mkdirSync(path.dirname(aspectPath), { recursive: true });
   const aspect = [
+    'load("@rules_java//java/common:java_info.bzl", "JavaInfo")',
+    '',
+    'GitNexusJavaGraphInfo = provider(fields = ["manifests", "artifacts"])',
+    '',
     'def _gitnexus_source_aspect_impl(target, ctx):',
     '    sources = []',
     '    dependencies = []',
+    '    transitive_manifests = []',
+    '    transitive_artifacts = []',
     '    if hasattr(ctx.rule.attr, "srcs"):',
     '        for source_target in ctx.rule.attr.srcs:',
     '            for source in source_target.files.to_list():',
@@ -695,13 +675,43 @@ function ensureSourceAspect(workspacePath: string): void {
     '        if hasattr(ctx.rule.attr, attribute):',
     '            for dependency in getattr(ctx.rule.attr, attribute):',
     '                dependencies.append({"label": str(dependency.label), "attribute": attribute})',
+    '                if GitNexusJavaGraphInfo in dependency:',
+    '                    transitive_manifests.append(dependency[GitNexusJavaGraphInfo].manifests)',
+    '                    transitive_artifacts.append(dependency[GitNexusJavaGraphInfo].artifacts)',
+    '    direct_manifests = []',
+    '    direct_artifacts = []',
+    '    compile_jars = []',
+    '    runtime_jars = []',
+    '    source_jars = []',
+    '    has_java_info = JavaInfo in target',
+    '    if has_java_info:',
+    '        java_info = target[JavaInfo]',
+    '        compile_jars = java_info.compile_jars.to_list()',
+    '        runtime_jars = list(java_info.runtime_output_jars)',
+    '        source_jars = list(java_info.source_jars)',
+    '        direct_artifacts = compile_jars + runtime_jars + source_jars',
     `    output = ctx.actions.declare_file(ctx.label.name + "${ASPECT_MANIFEST_SUFFIX}")`,
-    '    ctx.actions.write(output, json.encode({"label": str(ctx.label), "ruleKind": ctx.rule.kind, "sources": sources, "dependencies": dependencies}))',
-    '    return [OutputGroupInfo(gitnexus_source_manifest = depset([output]))]',
+    '    ctx.actions.write(output, json.encode({',
+    '            "label": str(ctx.label),',
+    '            "ruleKind": ctx.rule.kind,',
+    '            "hasJavaInfo": has_java_info,',
+    '            "sources": sources,',
+    '            "dependencies": dependencies,',
+    '            "compileArtifacts": [artifact.path for artifact in compile_jars],',
+    '            "runtimeArtifacts": [artifact.path for artifact in runtime_jars],',
+    '            "sourceJars": [artifact.path for artifact in source_jars],',
+    '    }))',
+    '    direct_manifests = [output]',
+    '    manifests = depset(direct = direct_manifests, transitive = transitive_manifests)',
+    '    artifacts = depset(direct = direct_artifacts, transitive = transitive_artifacts)',
+    '    return [',
+    '        GitNexusJavaGraphInfo(manifests = manifests, artifacts = artifacts),',
+    '        OutputGroupInfo(gitnexus_source_manifest = manifests, gitnexus_java_artifacts = artifacts),',
+    '    ]',
     '',
     'gitnexus_source_aspect = aspect(',
     '    implementation = _gitnexus_source_aspect_impl,',
-    '    attr_aspects = [],',
+    '    attr_aspects = ["deps", "exports", "runtime_deps", "plugins"],',
     ')',
     '',
   ].join('\n');
@@ -716,7 +726,7 @@ function removeStaleAspectManifests(executionRoot: string): void {
   })) fs.rmSync(manifest, { force: true });
 }
 
-function readAspectManifests(workspacePath: string, executionRoot: string): BazelConfiguredTargetSources[] {
+function readAspectManifests(workspacePath: string, executionRoot: string): BazelAspectTarget[] {
   const manifests = globSync(`bazel-out/**/*${ASPECT_MANIFEST_SUFFIX}`, {
     cwd: executionRoot, absolute: true, nodir: true,
   }).sort();
@@ -726,12 +736,18 @@ function readAspectManifests(workspacePath: string, executionRoot: string): Baze
       ruleKind?: unknown;
       dependencies?: Array<{ label?: unknown; attribute?: unknown }>;
       sources?: Array<{ path?: unknown; shortPath?: unknown; isSource?: unknown }>;
+      compileArtifacts?: unknown;
+      runtimeArtifacts?: unknown;
+      sourceJars?: unknown;
+      hasJavaInfo?: unknown;
     };
     if (typeof value.label !== 'string' || !Array.isArray(value.sources)) {
       throw new Error(`Invalid Bazel source aspect manifest: ${manifestPath}`);
     }
     return {
       label: value.label,
+      // Missing only in hand-written legacy fixtures/manifests.
+      hasJavaInfo: value.hasJavaInfo === undefined ? true : value.hasJavaInfo === true,
       ruleKind: typeof value.ruleKind === 'string' ? value.ruleKind : undefined,
       dependencies: (value.dependencies ?? []).flatMap((dependency) =>
         typeof dependency.label === 'string'
@@ -750,9 +766,21 @@ function readAspectManifests(workspacePath: string, executionRoot: string): Baze
           : path.resolve(executionRoot, source.path);
         return { path: sourcePath, shortPath, isSource };
       }),
-      sourceJars: [],
+      compileArtifacts: resolveManifestArtifacts(value.compileArtifacts, executionRoot, manifestPath),
+      runtimeArtifacts: resolveManifestArtifacts(value.runtimeArtifacts, executionRoot, manifestPath),
+      sourceJars: resolveManifestArtifacts(value.sourceJars, executionRoot, manifestPath),
     };
   });
+}
+
+function resolveManifestArtifacts(value: unknown, executionRoot: string, manifestPath: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((artifact) => typeof artifact !== 'string')) {
+    throw new Error(`Invalid artifact paths in ${manifestPath}`);
+  }
+  return uniqueSorted(value.map((artifact) => path.isAbsolute(artifact as string)
+    ? artifact as string
+    : path.resolve(executionRoot, artifact as string)));
 }
 
 function discoverRepositoryJavaSources(workspacePath: string): string[] {
@@ -789,27 +817,62 @@ function customClasspathCount(modelPath: string): number | undefined {
   } catch { return undefined; }
 }
 
-function parseConfiguredTargets(output: string, executionRoot: string): {
+function parseCombinedConfiguredTargets(output: string, executionRoot: string): {
   labels: string[];
-  classpath: string[];
-  artifactsByLabel: Map<string, string[]>;
+  compileClasspath: string[];
+  runtimeClasspath: string[];
+  sourceJarsByLabel: Map<string, string[]>;
 } {
   const labels = new Set<string>();
-  const jars = new Set<string>();
-  const artifactsByLabel = new Map<string, string[]>();
+  const compileJars = new Set<string>();
+  const runtimeJars = new Set<string>();
+  const sourceJarsByLabel = new Map<string, string[]>();
   for (const line of output.split(/\r?\n/)) {
-    const [label, ...artifactPaths] = line.trim().split('\t');
+    const [label, ...records] = line.trim().split('\t');
     if (label) labels.add(label);
-    const targetArtifacts: string[] = [];
-    for (const artifactPath of artifactPaths) {
-      if (!artifactPath.endsWith('.jar')) continue;
+    const targetSourceJars: string[] = [];
+    for (const record of records) {
+      const role = record.slice(0, 2);
+      const artifactPath = record.slice(2);
+      const acceptedArtifact = role === 'S:'
+        ? artifactPath.endsWith('.jar') || artifactPath.endsWith('.srcjar')
+        : artifactPath.endsWith('.jar');
+      if (!['C:', 'R:', 'S:'].includes(role) || !acceptedArtifact) continue;
       const absolute = path.isAbsolute(artifactPath) ? artifactPath : path.resolve(executionRoot, artifactPath);
-      jars.add(absolute);
-      targetArtifacts.push(absolute);
+      if (role === 'C:') compileJars.add(absolute);
+      else if (role === 'R:') runtimeJars.add(absolute);
+      else targetSourceJars.push(absolute);
     }
-    if (label) artifactsByLabel.set(label, [...new Set(targetArtifacts)].sort());
+    if (label) sourceJarsByLabel.set(label, uniqueSorted(targetSourceJars));
   }
-  return { labels: [...labels].sort(), classpath: [...jars].sort(), artifactsByLabel };
+  return {
+    labels: [...labels].sort(),
+    compileClasspath: [...compileJars].sort(),
+    runtimeClasspath: [...runtimeJars].sort(),
+    sourceJarsByLabel,
+  };
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function reachableTargetLabels(
+  roots: string[],
+  targets: Map<string, BazelConfiguredTargetSources>,
+  attributes: Set<NonNullable<BazelConfiguredTargetSources['dependencies']>[number]['attribute']>,
+): Set<string> {
+  const reachable = new Set<string>();
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const label = pending.pop()!;
+    if (reachable.has(label)) continue;
+    reachable.add(label);
+    for (const dependency of targets.get(label)?.dependencies ?? []) {
+      if (attributes.has(dependency.attribute)) pending.push(dependency.label);
+    }
+  }
+  return reachable;
 }
 
 function discoverSourcePaths(workspacePath: string): string[] {
@@ -883,9 +946,10 @@ export async function resolveBazelTargetScope(
 ): Promise<BazelScopeResolution> {
   const candidates = new Map<string, string>();
   const exclusions = new Map<string, string>();
-  for (const targetPattern of scope.includeTargetPatterns) {
+  for (const [patternIndex, targetPattern] of scope.includeTargetPatterns.entries()) {
     const output = await runBazel(bazelBinary, ['query', targetPattern, '--output=label_kind'], workspacePath,
-      commandTimeout(timeout, options.deadlineAt), options.signal);
+      commandTimeout(timeout, options.deadlineAt), options.signal,
+      `scope-discovery-${patternIndex + 1}-of-${scope.includeTargetPatterns.length}`);
     for (const line of output.split(/\r?\n/).filter(Boolean)) {
       const match = line.match(/^(.*?) rule (\S+)$/);
       if (match) candidates.set(match[2]!, match[1]!);
@@ -893,13 +957,14 @@ export async function resolveBazelTargetScope(
     for (const tag of scope.excludeTags) {
       const tagged = await runBazel(bazelBinary, [
         'query', `attr("tags", "${escapeBazelQueryString(escapeRegex(tag))}", ${targetPattern})`, '--output=label',
-      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal);
+      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, `scope-tag-exclusion-${tag}`);
       for (const label of tagged.split(/\r?\n/).filter(Boolean)) exclusions.set(label, `tag:${tag}`);
     }
   }
-  for (const label of scope.explicitTargets) {
+  for (const [targetIndex, label] of scope.explicitTargets.entries()) {
     const output = await runBazel(bazelBinary, ['query', label, '--output=label_kind'], workspacePath,
-      commandTimeout(timeout, options.deadlineAt), options.signal);
+      commandTimeout(timeout, options.deadlineAt), options.signal,
+      `scope-explicit-target-${targetIndex + 1}-of-${scope.explicitTargets.length}`);
     const line = output.split(/\r?\n/).find(Boolean);
     const match = line?.match(/^(.*?) rule (\S+)$/);
     if (!match || match[2] !== label) throw new Error(`Explicit Bazel target was not resolved: ${label}`);
@@ -918,6 +983,9 @@ export async function resolveBazelTargetScope(
   }
   const resolvedLabels = [...candidates.keys()].filter((label) => !exclusions.has(label)).sort();
   if (resolvedLabels.length === 0) throw new Error('Configured Bazel target scope resolved to no targets');
+  console.error(
+    `[bazel:scope] resolved ${resolvedLabels.length} selected targets; ${exclusions.size} excluded`,
+  );
   return {
     configHash,
     selectorsJson: JSON.stringify(scope),
@@ -936,24 +1004,114 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-async function runBazel(binary: string, args: string[], cwd: string, timeout: number, signal?: AbortSignal): Promise<string> {
-  try {
-    const result = await execFileAsync(binary, args, {
-      cwd,
-      timeout,
-      signal,
-      maxBuffer: bazelMaxBufferBytes(),
+async function runBazel(
+  binary: string,
+  args: string[],
+  cwd: string,
+  timeout: number,
+  signal?: AbortSignal,
+  progressLabel = args[0] ?? 'command',
+): Promise<string> {
+  const maxBytes = bazelMaxBufferBytes();
+  const startedAt = Date.now();
+  console.error(`[bazel:${progressLabel}] started`);
+  return new Promise<string>((resolve, reject) => {
+    const child = spawn(binary, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let outputBytes = 0;
+    let latestStatus = '';
+    let timedOut = false;
+    let aborted = false;
+    let overflow = false;
+    let settled = false;
+
+    const cleanup = (): void => {
+      clearInterval(heartbeat);
+      clearTimeout(timeoutHandle);
+      signal?.removeEventListener('abort', abortListener);
+    };
+    const finish = (error?: Error, output?: string): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve(output ?? '');
+    };
+    const stop = (): void => {
+      if (!child.killed) child.kill('SIGTERM');
+    };
+    const abortListener = (): void => {
+      aborted = true;
+      stop();
+    };
+    const record = (chunks: Buffer[], chunk: Buffer, isStderr: boolean): void => {
+      outputBytes += chunk.length;
+      if (outputBytes > maxBytes) {
+        overflow = true;
+        stop();
+        return;
+      }
+      chunks.push(chunk);
+      if (isStderr) {
+        const lines = stripAnsi(chunk.toString('utf8')).split(/[\r\n]+/).map((line) => line.trim()).filter(Boolean);
+        if (lines.length > 0) latestStatus = lines.at(-1)!.slice(0, 240);
+      }
+    };
+    child.stdout.on('data', (chunk: Buffer) => record(stdout, chunk, false));
+    child.stderr.on('data', (chunk: Buffer) => record(stderr, chunk, true));
+    child.on('error', (error) => finish(error));
+    child.on('close', (code, closeSignal) => {
+      const elapsed = formatElapsed(Date.now() - startedAt);
+      if (timedOut) return finish(new Error(`Bazel ${progressLabel} timed out after ${timeout} ms`));
+      if (aborted || signal?.aborted) return finish(new Error(`Bazel ${progressLabel} was aborted`));
+      if (overflow) {
+        return finish(new Error(
+          `Bazel ${progressLabel} output exceeded ${formatBytes(maxBytes)}; increase GITNEXUS_BAZEL_MAX_BUFFER_MB`,
+        ));
+      }
+      const stderrText = Buffer.concat(stderr).toString('utf8').trim();
+      if (code !== 0) {
+        const exit = closeSignal ? `signal ${closeSignal}` : `exit code ${String(code)}`;
+        return finish(new Error(`Bazel ${progressLabel} failed with ${exit}${stderrText ? `\n${stderrText}` : ''}`));
+      }
+      console.error(
+        `[bazel:${progressLabel}] completed in ${elapsed}; captured ${formatBytes(outputBytes)}`,
+      );
+      return finish(undefined, Buffer.concat(stdout).toString('utf8'));
     });
-    return result.stdout;
-  } catch (error) {
-    const failure = error as Error & { killed?: boolean; stderr?: string };
-    if (failure.killed || signal?.aborted) throw new Error(`timed out after ${timeout} ms`);
-    const stderr = failure.stderr?.trim();
-    const detail = stderr && !failure.message.includes(stderr)
-      ? `${failure.message.trim()}\n${stderr}`
-      : failure.message.trim();
-    throw new Error(detail);
-  }
+
+    const heartbeat = setInterval(() => {
+      const status = latestStatus ? `; latest: ${latestStatus}` : '';
+      console.error(
+        `[bazel:${progressLabel}] running — elapsed ${formatElapsed(Date.now() - startedAt)}; captured ${formatBytes(outputBytes)}${status}`,
+      );
+    }, PROGRESS_INTERVAL_MS);
+    heartbeat.unref();
+    const timeoutHandle = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, timeout);
+    timeoutHandle.unref();
+    signal?.addEventListener('abort', abortListener, { once: true });
+    if (signal?.aborted) abortListener();
+  });
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function formatElapsed(milliseconds: number): string {
+  const totalSeconds = Math.floor(milliseconds / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function bazelMaxBufferBytes(): number {
@@ -971,7 +1129,8 @@ function bazelMaxBufferBytes(): number {
 function readGeneratedModel(modelPath: string): GeneratedBazelModel | undefined {
   try {
     const value = JSON.parse(fs.readFileSync(modelPath, 'utf8')) as Partial<GeneratedBazelModel>;
-    return value.generatedBy === 'gitnexus-bazel-cquery' && Array.isArray(value.classpath)
+    return ['gitnexus-bazel-java-graph', 'gitnexus-bazel-cquery'].includes(String(value.generatedBy))
+      && Array.isArray(value.classpath)
       ? value as GeneratedBazelModel
       : undefined;
   } catch {

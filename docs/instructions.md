@@ -28,6 +28,12 @@ already completed, run `bazel-prepare`; it reuses Bazel's cache while producing
 the indexer-specific metadata and handoff. A successful second command writes
 the LadybugDB graph to `INDEX_OUTPUT`.
 
+Preparation prints a start and completion line for target discovery, tag
+filtering, execution-root lookup, and the recursive Java aspect build. A Bazel
+stage that runs longer than 15 seconds emits a heartbeat with elapsed time,
+captured output size, and Bazel's latest status line. A quiet interval between
+heartbeats is therefore expected and does not indicate a hang.
+
 ## Install
 
 Requirements:
@@ -90,8 +96,10 @@ handoff. A normal `bazel build` can warm Bazel's cache, but it does not replace
 `bazel-prepare`, which generates the target/source inventory required here.
 
 The name `prebuilt` describes the second command only. `bazel-prepare` still
-runs the filtered queries and aspect build needed to create indexer-specific
-metadata. Once preparation succeeds, `build` in prebuilt mode performs no
+runs unconfigured scope queries and the recursive aspect build needed to create
+indexer-specific metadata. A configured run does not perform a separate large
+`cquery`: the successful aspect build is authoritative for the Java graph and
+artifacts. Once preparation succeeds, `build` in prebuilt mode performs no
 `query`, `cquery`, or `bazel build` operation.
 
 Preparation does not use Bazel's `--keep_going` mode. The complete retained
@@ -188,8 +196,8 @@ This is the generic shape of a complete version-1 configuration:
 
 Discovery first runs unconfigured `bazel query --output=label_kind`. Rule-kind,
 exact-label, target-name, and tag filtering happens before the deterministic
-`set(...)` expression is passed to `cquery`. The final labels are sorted and
-deduplicated. An empty resolved scope is an error.
+root list is passed to the recursive build aspect. The final labels are sorted
+and deduplicated. An empty resolved scope is an error.
 
 | Field | Required | Values and behavior |
 | --- | --- | --- |
@@ -205,6 +213,16 @@ Exclusions are recorded with reasons as provenance, but excluded targets do not
 become configured-target evidence nodes. Dependencies of selected roots are
 still captured through Bazel `JavaInfo`; the scope controls top-level roots, not
 manual pruning of their required classpaths.
+
+The build aspect recursively traverses `deps`, `exports`, `runtime_deps`, and
+`plugins`. For each Java target it records the label, direct sources, direct
+dependency labels, direct compile JARs, runtime output JARs, and source JARs.
+An aspect output group causes those artifacts to be materialized by the same
+successful `bazel build`. The indexer reconstructs the complete classpath from
+the recursive direct records, avoiding repeated transitive classpaths. For
+backward-compatible runs without `--config`, one combined `cquery` collects all
+three artifact roles before the aspect build; it replaces the previous three
+separate `cquery` invocations.
 
 ### `crawl`
 
