@@ -11,6 +11,7 @@ import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-reg
 import type { JavaBuildRootCrawlResult, JavaBuildRootPreparation } from './types.js';
 import type { ILspAdapter } from '../../../lsp_server/contracts/lsp-adapter.interface.js';
 import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
+import type { CrawlProfile } from '../ingest/crawl-profile.js';
 
 export async function crawlJavaBuildRoot(
   adapterRegistry: LspAdapterRegistry,
@@ -25,6 +26,7 @@ export async function crawlJavaBuildRoot(
   processShardId?: string,
   requireSharedAdapter = false,
   crawlPlanner: CrawlPlannerMode = 'legacy',
+  crawlProfile: CrawlProfile = 'exhaustive',
 ): Promise<JavaBuildRootCrawlResult> {
   const buildRoot = createBuildRoot(run, root, preparation);
   const server = createLspServer(run, root, processShardId);
@@ -72,6 +74,7 @@ export async function crawlJavaBuildRoot(
       adapter,
       repositoryPath,
       plannerMode: crawlPlanner,
+      profile: crawlProfile,
     });
     const artifactResolution = await artifactClasspathResolver.resolveArtifacts({
       root,

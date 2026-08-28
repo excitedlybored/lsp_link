@@ -489,7 +489,11 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   private async sendQuery<T>(method: string, params: unknown): Promise<T | undefined> {
     try {
       return await this.request<T>(method, params);
-    } catch {
+    } catch (error) {
+      // Timeouts are evidence that a supported capability was attempted but
+      // did not complete. Preserve them for the crawler's coverage ledger and
+      // circuit breaker instead of misreporting an empty successful result.
+      if (error instanceof Error && /timeout|timed out/i.test(error.message)) throw error;
       return undefined;
     }
   }

@@ -17,6 +17,9 @@ only the canonical fixture is retained.
 
 ## Larger Java repositories
 
+- [`bazel-layered-java-monorepo-5000/`](bazel-layered-java-monorepo-5000/):
+  deterministic generator for a single-root, three-layer Bazel Java monorepo
+  containing exactly 5,000 Java documents across 500 component packages.
 - [`bazel-springboot-temporal-monorepo/`](bazel-springboot-temporal-monorepo/):
   multi-root Bazel Spring Boot, Temporal, Kafka, MongoDB, and GKE fixture.
 - [`spring-petclinic/`](spring-petclinic/): mixed Maven and Gradle Spring sample.

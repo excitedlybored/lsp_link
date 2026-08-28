@@ -105,7 +105,9 @@ export async function persistStreamingKnowledgeGraph(
   }, async (artifact) => {
     completed.add(artifact.id);
     manifest!.completedArtifactIds = [...completed].sort();
-    checkpointStore.save(stage, artifactFingerprint, manifest!);
+    // Artifact completion is checkpointed after every atomic spool, but a log
+    // line per JAR overwhelms useful progress on large classpaths.
+    checkpointStore.save(stage, artifactFingerprint, manifest!, false);
   });
   let artifactEnrichment: JvmArtifactEnrichmentSummary;
   try {

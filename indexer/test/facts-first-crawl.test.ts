@@ -107,6 +107,94 @@ test('facts-first crawl preserves semantic inventory while covering cross-docume
   }
 });
 
+test('core crawl bounds requests, reports progress, and records intentionally omitted capabilities', async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'core-crawl-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const filePath = path.join(workspace, 'Core.java');
+  fs.writeFileSync(filePath, 'class Core { void run() {} }\n');
+  const uri = pathToFileURL(filePath).href;
+  const requested: string[] = [];
+  const progress: string[] = [];
+  const fixture = crawlFixture(workspace);
+  const adapter: CompleteCrawlAdapter = {
+    id: 'jdtls',
+    getServerCapabilities: () => ({
+      documentSymbolProvider: true, referencesProvider: true, definitionProvider: true,
+      hoverProvider: true, callHierarchyProvider: true, typeHierarchyProvider: true,
+      semanticTokensProvider: { full: true, legend: { tokenTypes: [], tokenModifiers: [] } },
+    }),
+    documentUri: () => uri,
+    async openDocument() {}, async closeDocument() {},
+    async documentSymbols() { return [item('Core', 5, uri, range(0, 0, 0, 29), range(0, 6, 0, 10))]; },
+    async prepareCallHierarchy() { return []; }, async getOutgoingCalls() { return []; },
+    async getIncomingCalls() { return []; },
+    async request<T>(method: string): Promise<T> { requested.push(method); return [] as T; },
+    takeNotifications: () => [],
+  };
+  const batch = await crawlLspBuildRoot({
+    ...fixture, documents: [workspaceDocument(filePath, fixture.buildRoot.id)], adapter,
+    profile: 'core', plannerMode: 'facts-first',
+    onProgress: (value) => progress.push(`${value.pass}:${value.completed}/${value.total}`),
+  });
+
+  assert.deepEqual(requested, []);
+  assert.ok(progress.includes('document-symbols:1/1'));
+  assert.equal(progress.some((value) => value.startsWith('symbol-references:')), false);
+  const references = batch.coverage.find((value) => value.capability === 'textDocument/references');
+  assert.equal(references?.status, 'excluded');
+  const hover = batch.coverage.find((value) => value.capability === 'textDocument/hover');
+  assert.equal(hover?.status, 'excluded');
+  assert.match(hover?.exclusionReason ?? '', /core crawl profile/);
+});
+
+test('capability circuit breaker stops repeated timeouts without hiding them as empty results', async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'crawl-breaker-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const filePath = path.join(workspace, 'Broken.java');
+  fs.writeFileSync(filePath, 'class Broken {}\n');
+  const uri = pathToFileURL(filePath).href;
+  const fixture = crawlFixture(workspace);
+  let requests = 0;
+  const symbols = Array.from({ length: 5 }, (_, index) =>
+    item(`Broken${index}`, 5, uri, range(0, 0, 0, 15), range(0, index, 0, index + 1)));
+  const adapter: CompleteCrawlAdapter = {
+    id: 'jdtls', getServerCapabilities: () => ({ documentSymbolProvider: true, referencesProvider: true }),
+    documentUri: () => uri, async openDocument() {}, async closeDocument() {},
+    async documentSymbols() { return symbols; },
+    async prepareCallHierarchy() { return []; }, async getOutgoingCalls() { return []; },
+    async getIncomingCalls() { return []; },
+    async request<T>(): Promise<T> { requests += 1; throw new Error('Request timed out after 1000ms'); },
+    takeNotifications: () => [],
+  };
+  const batch = await crawlLspBuildRoot({
+    ...fixture, documents: [workspaceDocument(filePath, fixture.buildRoot.id)], adapter, profile: 'exhaustive',
+  });
+  const references = batch.coverage.find((value) => value.capability === 'textDocument/references');
+  assert.equal(requests, 3);
+  assert.equal(references?.timeoutCount, 3);
+  assert.equal(references?.attemptedCount, 3);
+  assert.equal(references?.eligibleCount, 5);
+  assert.equal(references?.status, 'timeout');
+  assert.match(references?.exclusionReason ?? '', /circuit breaker opened/);
+});
+
+function crawlFixture(workspace: string) {
+  const run: LspAnalysisRun = {
+    id: 'run', workspaceUri: pathToFileURL(workspace).href, repositoryPath: workspace,
+    protocolVersion: '3.18', positionEncoding: 'utf-16', status: 'complete',
+    startedAt: '2026-08-25T00:00:00Z', requestedLanguages: ['java'], errorCount: 0, timeoutCount: 0,
+  };
+  const buildRoot: LspBuildRoot = {
+    id: 'bazel:.', runId: run.id, workspaceUri: run.workspaceUri, repositoryPath: workspace,
+    relativePath: '.', buildSystems: ['bazel'], importStatus: 'ready', excludedRootIds: [],
+  };
+  const server: LspServer = {
+    id: 'server', runId: run.id, name: 'jdtls', languageId: 'java', status: 'complete',
+    capabilitiesJson: '{}', buildRootId: buildRoot.id,
+  };
+  return { run, server, buildRoot, repositoryPath: workspace };
+}
+
 function item(
   name: string, kind: number, uri: string, itemRange: LspRange, selectionRange: LspRange,
 ): RawCallHierarchyItem {

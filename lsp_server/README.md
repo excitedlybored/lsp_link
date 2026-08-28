@@ -115,6 +115,8 @@ entries, and extracts with bounded concurrency and a per-JAR timeout. Override t
 Main-repository source JARs participate in the JDT document inventory; external dependency source JARs
 remain artifact provenance and are not extracted as project documents. Bazel 8 `@@//` main-repository
 labels are safely joined with `//` query labels without altering external repository identities.
+The source aspect accepts both public compatibility and private `rules_java` `JavaInfo` provider identities,
+which supports repositories that mix standard Java rules with custom Java-producing rules.
 
 Enterprise builds may isolate Bazel access from indexing. `npm run index -- bazel-prepare <workspace>` runs
 the user-owned Bazel analysis/build phase and emits `.gitnexus/jdtls/bazel-handoff.json` last. A later

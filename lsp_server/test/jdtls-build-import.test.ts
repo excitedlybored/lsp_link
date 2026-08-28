@@ -263,6 +263,7 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     `  printf '%s\\n' "$*" >> '${cqueryLog}'`,
     "  printf '//:app\\tC:external/maven/spring-context.jar\\tC:bazel-out/app.jar\\tR:external/maven/spring-context.jar\\tR:bazel-out/app.jar\\n'",
     'elif [ "$1" = "build" ]; then',
+    `  printf '%s\n' '{"lockFileVersion":1}' > '${path.join(root, 'MODULE.bazel.lock')}'`,
     `  printf '%s\n' "$*" >> '${buildLog}'`,
     `  mkdir -p '${path.join(root, 'execroot/external/maven')}' '${path.join(root, 'execroot/bazel-out')}'`,
     `  : > '${path.join(root, 'execroot/external/maven/spring-context.jar')}'`,
@@ -461,8 +462,10 @@ test('uses the recursive build aspect as the authoritative graph for configured 
     assert.deepEqual(model.generatedSourcePaths, []);
     assert.match(fs.readFileSync(buildLog, 'utf8'), /gitnexus_java_artifacts/);
     const aspect = fs.readFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-aspect.bzl'), 'utf8');
-    assert.match(aspect, /load\("@rules_java\/\/java\/private:java_info\.bzl", "JavaInfo"\)/);
-    assert.doesNotMatch(aspect, /java\/common:java_info\.bzl/);
+    assert.match(aspect, /load\("@rules_java\/\/java:defs\.bzl", PublicJavaInfo = "JavaInfo"\)/);
+    assert.match(aspect, /load\("@rules_java\/\/java\/private:java_info\.bzl", PrivateJavaInfo = "JavaInfo"\)/);
+    assert.match(aspect, /if PublicJavaInfo in target:/);
+    assert.match(aspect, /elif PrivateJavaInfo in target:/);
     assert.match(aspect, /attr_aspects = \["deps", "exports", "runtime_deps", "plugins"\]/);
     assert.match(aspect, /java_info\.compile_jars/);
     assert.match(aspect, /java_info\.runtime_output_jars/);
@@ -1004,6 +1007,44 @@ test('uses package-correct roots for unconventional Bazel repository sources', (
     prepared.projectModels[0].sourceMappings.find((mapping) => mapping.sourcePath.endsWith('Misaligned.java'))!.analysisPath,
     /package-corrected.*com[/\\]acme[/\\]Misaligned\.java/,
   );
+});
+
+test('consolidates large Bazel inventories into a bounded set of JDT source roots', (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "large_sources")',
+    '.gitnexus/jdtls/bazel-project.json': JSON.stringify({
+      classpath: [], runtimeClasspath: [], sourcePaths: [], generatedSourcePaths: [],
+      sourceInventoryPath: '.gitnexus/jdtls/bazel-source-inventory.json',
+    }),
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sources = Array.from({ length: 129 }, (_, index) => {
+    const sourcePath = path.join(root, `target-${index}`, 'src/main/java', `p${index}`, `Type${index}.java`);
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, `package p${index}; class Type${index} {}\n`);
+    return {
+      path: sourcePath, analysisPath: sourcePath, origin: 'repository', contentHash: `hash-${index}`,
+      targetLabels: [`//target-${index}:lib`], originalRepositoryPaths: [sourcePath],
+      configuredSourceAssociations: [], sourceJarAssociations: [],
+    };
+  });
+  fs.writeFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-inventory.json'), JSON.stringify({
+    schemaVersion: 3, workspacePath: root, configurationHash: 'configuration', targetQuery: '//...',
+    generatedAt: new Date().toISOString(), targets: [], sources,
+    comparison: {
+      repositorySources: sources.length, configuredRepositorySources: sources.length, generatedSources: 0,
+      sourceJarOnlySources: 0, externalTargetsRetained: 0, externalSourceJarAssociationsExcluded: 0,
+      unownedRepositorySources: [], duplicateSources: 0, crawlSources: sources.length,
+    },
+  }));
+
+  const discovered = discoverJavaBuildRoots(root)[0];
+  const prepared = prepareJdtlsShardWorkspace(root, planJdtlsBuildRootShards([discovered], 1)[0]);
+  const model = prepared.projectModels[0];
+  assert.equal(model.sourceMappings.length, 129);
+  assert.ok(model.sourcePaths.length <= 64, `expected at most 64 roots, got ${model.sourcePaths.length}`);
+  assert.ok(model.sourceMappings.every((mapping) =>
+    mapping.analysisPath.includes(`${path.sep}consolidated-sources${path.sep}`) && fs.existsSync(mapping.analysisPath)));
 });
 
 test('prepares many Bazel roots with bounded concurrency and per-root results', async () => {

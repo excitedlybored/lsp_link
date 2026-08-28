@@ -427,10 +427,10 @@ export async function ensureBazelProjectModel(
     : undefined;
   const targetQuery = scopeResolution?.targetQuery
     ?? options.targetQuery ?? process.env.GITNEXUS_JDT_BAZEL_TARGETS ?? '//...';
-  const configurationHash = bazelConfigurationHash(workspacePath, targetQuery);
+  const initialConfigurationHash = bazelConfigurationHash(workspacePath, targetQuery);
   const sourcePaths = discoverSourcePaths(workspacePath);
   const existing = readGeneratedModel(modelPath);
-  if (existing && !customModel && existing.configurationHash !== configurationHash) quarantineStaleModel(modelPath);
+  if (existing && !customModel && existing.configurationHash !== initialConfigurationHash) quarantineStaleModel(modelPath);
 
   // Provider-based filtering is deliberate: custom/Starlark Java rules need not
   // have a native `java_*` rule kind, but JavaInfo is the stable contract.
@@ -497,6 +497,10 @@ export async function ensureBazelProjectModel(
     if (missing.length > 0) {
       return { status: 'failed', reason: `Bazel did not materialize ${new Set(missing).size} configured Java artifacts.` };
     }
+    // Bazel may create or update MODULE.bazel.lock during the authoritative
+    // aspect build. Certify the post-build configuration so a fresh Bzlmod
+    // workspace is immediately valid for prebuilt indexing.
+    const configurationHash = bazelConfigurationHash(workspacePath, targetQuery);
     const inventoryPath = path.join(workspacePath, SOURCE_INVENTORY_RELATIVE_PATH);
     const inventory = await createBazelSourceInventory({
       workspacePath,
@@ -676,10 +680,11 @@ function ensureSourceAspect(workspacePath: string): void {
   const buildPath = path.join(path.dirname(aspectPath), 'BUILD.bazel');
   fs.mkdirSync(path.dirname(aspectPath), { recursive: true });
   const aspect = [
-    // Load the provider definition used by java_* rules. The public/common
-    // compatibility proxy can have a distinct provider identity on Bazel 8
-    // and rules_java releases that still define JavaInfo in java/private.
-    'load("@rules_java//java/private:java_info.bzl", "JavaInfo")',
+    // rules_java may expose native java_* rules through its public
+    // compatibility provider while custom rules still return its private
+    // provider. Preserve both identities so one aspect works with each form.
+    'load("@rules_java//java:defs.bzl", PublicJavaInfo = "JavaInfo")',
+    'load("@rules_java//java/private:java_info.bzl", PrivateJavaInfo = "JavaInfo")',
     '',
     'GitNexusJavaGraphInfo = provider(fields = ["manifests", "artifacts"])',
     '',
@@ -704,9 +709,13 @@ function ensureSourceAspect(workspacePath: string): void {
     '    compile_jars = []',
     '    runtime_jars = []',
     '    source_jars = []',
-    '    has_java_info = JavaInfo in target',
+    '    java_info = None',
+    '    if PublicJavaInfo in target:',
+    '        java_info = target[PublicJavaInfo]',
+    '    elif PrivateJavaInfo in target:',
+    '        java_info = target[PrivateJavaInfo]',
+    '    has_java_info = java_info != None',
     '    if has_java_info:',
-    '        java_info = target[JavaInfo]',
     '        compile_jars = java_info.compile_jars.to_list()',
     '        runtime_jars = list(java_info.runtime_output_jars)',
     '        source_jars = list(java_info.source_jars)',

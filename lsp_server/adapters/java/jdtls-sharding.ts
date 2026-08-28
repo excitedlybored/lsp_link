@@ -109,11 +109,13 @@ function loadProjectModel(root: JavaBuildRoot): JdtlsProjectModel {
     ? path.resolve(root.workspacePath, bazel.sourceInventoryPath)
     : path.join(root.workspacePath, '.gitnexus', 'jdtls', 'bazel-source-inventory.json');
   const sourceInventory = readBazelSourceInventory(configuredInventoryPath);
-  const sourceMappings = sourceInventory?.sources.map((source) => sourceMapping(
-    source,
-    sourceInventory.workspacePath,
-    sourceInventory.configurationHash,
-  )) ?? [];
+  const sourceMappings = sourceInventory
+    ? sourceMappingsForInventory(
+      sourceInventory.sources,
+      sourceInventory.workspacePath,
+      sourceInventory.configurationHash,
+    )
+    : [];
   const sourcePaths = stringArray(bazel?.sourcePaths).map((entry) => path.resolve(root.workspacePath, entry));
   const eclipse = readEclipseClasspath(root.workspacePath);
   const discovered = discoverSourcePaths(root.workspacePath);
@@ -195,6 +197,57 @@ function sourceMapping(
     return { sourcePath: path.resolve(source.path), analysisPath, sourceRoot };
   }
   return { sourcePath: path.resolve(source.path), analysisPath, sourceRoot: layout.sourceRoot };
+}
+
+/**
+ * Large Bazel workspaces commonly expose one src/main/java directory per
+ * target. Thousands of Eclipse classpath source entries make JDT import and
+ * resource reconciliation disproportionately expensive. Stage package-correct
+ * documents into a bounded set of roots while retaining URI mappings back to
+ * the authoritative inventory path.
+ */
+function sourceMappingsForInventory(
+  sources: BazelCrawlSource[],
+  workspacePath: string,
+  configurationHash: string,
+): JdtlsSourceMapping[] {
+  const mappings = sources.map((source) => sourceMapping(source, workspacePath, configurationHash));
+  if (mappings.length <= 128) return mappings;
+  const root = path.join(
+    workspacePath, '.gitnexus', 'jdtls', 'consolidated-sources', configurationHash,
+  );
+  fs.rmSync(root, { recursive: true, force: true });
+  const occupied = new Set<string>();
+  return mappings.map((mapping) => {
+    const layout = packageSourceLayout(mapping.analysisPath);
+    const relative = path.relative(mapping.sourceRoot, mapping.analysisPath);
+    const safeRelative = !relative.startsWith('..') && !path.isAbsolute(relative)
+      ? relative
+      : layout.packageName
+        ? path.join(...layout.packageName.split('.'), path.basename(mapping.analysisPath))
+        : path.basename(mapping.analysisPath);
+    const seed = Number.parseInt(
+      createHash('sha256').update(mapping.sourcePath).digest('hex').slice(0, 8), 16,
+    );
+    let attempt = 0;
+    let bucket = seed % 64;
+    let bucketRoot = path.join(root, `source-${bucket.toString().padStart(2, '0')}`);
+    let destination = path.join(bucketRoot, safeRelative);
+    while (occupied.has(destination)) {
+      attempt += 1;
+      bucket = (seed + attempt) % 64;
+      const bank = Math.floor(attempt / 64);
+      bucketRoot = path.join(
+        root,
+        `source-${bucket.toString().padStart(2, '0')}${bank === 0 ? '' : `-${bank}`}`,
+      );
+      destination = path.join(bucketRoot, safeRelative);
+    }
+    occupied.add(destination);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(mapping.analysisPath, destination);
+    return { sourcePath: mapping.sourcePath, analysisPath: destination, sourceRoot: bucketRoot };
+  });
 }
 
 function packageSourceLayout(javaFile: string): {

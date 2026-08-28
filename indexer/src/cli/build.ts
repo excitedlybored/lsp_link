@@ -95,10 +95,11 @@ export async function buildLspKnowledgeGraph(
     {
       // Increment whenever crawl semantics change so a checkpoint cannot hide
       // a newly fixed or newly collected LSP observation.
-      stageVersion: 3,
+      stageVersion: 4,
       buildRoots: activeRoots.map(({ id, relativePath, systems }) => ({ id, relativePath, systems })),
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
       crawlPlanner: options.crawlPlanner,
+      crawlProfile: options.crawlProfile,
       bazelBuildMode: options.bazelBuildMode,
       bazelTargetQuery: options.bazelTargetQuery ?? null,
       runConfigHash: options.runConfigHash ?? null,
@@ -267,6 +268,7 @@ async function crawlWorkspace(
           shard.id,
           true,
           options.crawlPlanner,
+          options.crawlProfile,
         );
         result.artifacts = retainArtifactClasspathEntries(
           result.artifacts,
@@ -433,6 +435,7 @@ async function main(): Promise<void> {
     await buildLspKnowledgeGraph(options);
   console.log(JSON.stringify({
     output,
+    crawlProfile: options.crawlProfile,
     crawlPlanner: options.crawlPlanner,
     bazelBuildMode: options.bazelBuildMode,
     bazelTargetQuery: options.bazelTargetQuery,

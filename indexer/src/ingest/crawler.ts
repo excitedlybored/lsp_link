@@ -47,6 +47,7 @@ import {
   type CrawlPlannerDecision,
   type CrawlPlannerMode,
 } from './crawl-planner.js';
+import type { CrawlProfile } from './crawl-profile.js';
 
 export interface RawCallHierarchyItem extends DocumentSymbolObservation {
   uri: string;
@@ -87,7 +88,18 @@ export interface CompleteCrawlInput {
   adapter: CompleteCrawlAdapter;
   repositoryPath: string;
   plannerMode?: CrawlPlannerMode;
+  profile?: CrawlProfile;
   onPlannerDecision?: (decision: CrawlPlannerDecision) => void;
+  onProgress?: (progress: CrawlProgress) => void;
+}
+
+export interface CrawlProgress {
+  buildRootId: string;
+  pass: 'document-symbols' | 'symbol-references' | 'document-facts';
+  completed: number;
+  total: number;
+  elapsedMs: number;
+  ratePerSecond: number;
 }
 
 interface RawLocation {
@@ -135,6 +147,7 @@ interface CoverageState {
   externalCount: number;
   unmappedCount: number;
   exclusionReason?: string;
+  consecutiveTimeoutCount: number;
 }
 
 interface ObservationCounts {
@@ -154,6 +167,7 @@ const NON_IDENTIFIER_TOKEN_TYPES = new Set([
 ]);
 const VALUE_TOKEN_TYPES = new Set(['parameter', 'variable', 'property', 'enumMember']);
 const IMPLEMENTABLE_TOKEN_TYPES = new Set(['class', 'interface', 'type', 'method']);
+const CORE_CAPABILITIES = new Set(['textDocument/documentSymbol']);
 
 /**
  * Complete protocol crawl for one build root. It never consults a parser graph
@@ -162,6 +176,7 @@ const IMPLEMENTABLE_TOKEN_TYPES = new Set(['class', 'interface', 'type', 'method
 export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspObservationBatch> {
   const { run, server, buildRoot, documents, adapter, repositoryPath } = input;
   const plannerMode = input.plannerMode ?? 'legacy';
+  const profile = input.profile ?? 'exhaustive';
   const plannerStats = { queried: 0, covered: 0 };
   const recordPlannerDecision = (decision: CrawlPlannerDecision): void => {
     plannerStats[decision.action === 'query' ? 'queried' : 'covered'] += 1;
@@ -172,6 +187,14 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
   const coverage = new Map<string, CoverageState>();
   for (const capability of LSP_KG_CAPABILITIES) {
     coverage.set(capability, createCoverageState(capability, support.get(capability) ?? false));
+  }
+  if (profile === 'core') {
+    for (const capability of LSP_KG_CAPABILITIES) {
+      if (!CORE_CAPABILITIES.has(capability)) {
+        markCoverageExcluded(coverage, capability,
+          'core crawl profile relies on Bazel and bytecode evidence for optional semantic relationships');
+      }
+    }
   }
 
   // Delta/range semantic tokens are update/partial variants, not additional
@@ -189,7 +212,8 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
   const symbolsByDocument = new Map<string, LspSymbol[]>();
 
   // Pass 1: JDT LS itself defines every source symbol and hierarchy.
-  for (const document of documents) {
+  const documentSymbolProgress = progressReporter(input, 'document-symbols', documents.length);
+  for (const [documentIndex, document] of documents.entries()) {
     const filePath = requireFilePath(document);
     await observeCapability(coverage, 'textDocument/documentSymbol', async () => {
       await adapter.openDocument(filePath);
@@ -206,6 +230,7 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
         await adapter.closeDocument(filePath);
       }
     });
+    documentSymbolProgress(documentIndex + 1);
   }
 
   // Run/build-root/document provenance is emitted after didOpen outcomes are known.
@@ -215,38 +240,43 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
   // In facts-first mode this phase completes across the root before token gap
   // filling, so references from declarations in later documents can cover
   // occurrences in earlier documents.
-  for (const document of documents) {
+  const symbolReferenceProgress = progressReporter(input, 'symbol-references', documents.length);
+  for (const [documentIndex, document] of (profile === 'exhaustive' ? documents : []).entries()) {
     const filePath = requireFilePath(document);
     const symbols = symbolsByDocument.get(document.id) ?? [];
     await adapter.openDocument(filePath);
     try {
       for (const symbol of symbols) {
         const position = symbol.selectionRange.start;
-        await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
-          filePath, position, 'textDocument/definition', 'definition');
-        await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
-          filePath, position, 'textDocument/declaration', 'declaration');
-        if (TYPE_DEFINITION_KINDS.has(symbol.kind)) {
+        if (profile === 'exhaustive') {
+          await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
+            filePath, position, 'textDocument/definition', 'definition');
+          await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
+            filePath, position, 'textDocument/declaration', 'declaration');
+        }
+        if (profile === 'exhaustive' && TYPE_DEFINITION_KINDS.has(symbol.kind)) {
           await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
             filePath, position, 'textDocument/typeDefinition', 'type_definition');
         }
         await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
           filePath, position, 'textDocument/references', 'reference', { includeDeclaration: true });
-        await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
-          filePath, position, 'textDocument/implementation', 'implementation', undefined, true);
-        await collectSymbolHover(adapter, coverage, batch, run, server, document, symbol, filePath, position);
+        if (profile === 'exhaustive') {
+          await collectSymbolLocations(adapter, registry, coverage, batch, run, server, document, symbol,
+            filePath, position, 'textDocument/implementation', 'implementation', undefined, true);
+          await collectSymbolHover(adapter, coverage, batch, run, server, document, symbol, filePath, position);
+        }
 
-        if (CALLABLE_KINDS.has(symbol.kind)) {
+        if (profile === 'exhaustive' && CALLABLE_KINDS.has(symbol.kind)) {
           await collectCallHierarchy(adapter, registry, coverage, batch, run, server, document, symbol, filePath, 'outgoing');
           await collectCallHierarchy(adapter, registry, coverage, batch, run, server, document, symbol, filePath, 'incoming');
         }
-        if (TYPE_KINDS.has(symbol.kind)) {
+        if (profile === 'exhaustive' && TYPE_KINDS.has(symbol.kind)) {
           await collectTypeHierarchy(adapter, registry, coverage, batch, run, server, document, symbol, filePath, 'supertypes');
           await collectTypeHierarchy(adapter, registry, coverage, batch, run, server, document, symbol, filePath, 'subtypes');
         }
       }
 
-      if (plannerMode === 'legacy') {
+      if (profile === 'exhaustive' && plannerMode === 'legacy') {
         await collectDocumentFacts(
           adapter, registry, coverage, batch, run, server, document, filePath, symbols,
           capabilities, plannerMode, new ReferenceCoverageIndex(batch.occurrences), recordPlannerDecision,
@@ -255,11 +285,13 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
     } finally {
       await adapter.closeDocument(filePath);
     }
+    symbolReferenceProgress(documentIndex + 1);
   }
 
-  if (plannerMode === 'facts-first') {
+  if (profile === 'exhaustive' && plannerMode === 'facts-first') {
     const referenceCoverage = new ReferenceCoverageIndex(batch.occurrences);
-    for (const document of documents) {
+    const documentFactsProgress = progressReporter(input, 'document-facts', documents.length);
+    for (const [documentIndex, document] of documents.entries()) {
       const filePath = requireFilePath(document);
       const symbols = symbolsByDocument.get(document.id) ?? [];
       await adapter.openDocument(filePath);
@@ -271,12 +303,13 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
       } finally {
         await adapter.closeDocument(filePath);
       }
+      documentFactsProgress(documentIndex + 1);
     }
   }
 
   batch = mergeObservationBatches(batch, registry.takeMaterializedBatch());
   const coverageBatch = buildCoverageBatch(run, server, coverage);
-  if (plannerMode === 'facts-first') {
+  if (profile === 'exhaustive' && plannerMode === 'facts-first') {
     console.log(
       `[${buildRoot.id}] facts-first token plan: ${plannerStats.covered} covered by references, `
       + `${plannerStats.queried} unresolved positions queried`,
@@ -880,6 +913,7 @@ async function observeCapability(
   state.attemptedCount += 1;
   try {
     const result = await execute();
+    state.consecutiveTimeoutCount = 0;
     state.successCount += 1;
     state.resultCount += result.resultCount;
     state.mappedCount += result.mappedCount ?? 0;
@@ -887,8 +921,19 @@ async function observeCapability(
     state.unmappedCount += result.unmappedCount ?? 0;
     if (result.resultCount === 0) state.emptyCount += 1;
   } catch (error) {
-    if (error instanceof Error && /timeout|timed out/i.test(error.message)) state.timeoutCount += 1;
-    else state.failureCount += 1;
+    if (error instanceof Error && /timeout|timed out/i.test(error.message)) {
+      state.timeoutCount += 1;
+      state.consecutiveTimeoutCount += 1;
+    } else {
+      state.failureCount += 1;
+      state.consecutiveTimeoutCount = 0;
+    }
+    const failed = state.failureCount + state.timeoutCount;
+    if (state.consecutiveTimeoutCount >= 3
+      || (state.attemptedCount >= 20 && failed / state.attemptedCount >= 0.25)) {
+      state.exclusionReason = `capability circuit breaker opened after ${state.attemptedCount} attempts `
+        + `(${state.timeoutCount} timeouts, ${state.failureCount} failures)`;
+    }
   }
 }
 
@@ -1115,7 +1160,7 @@ function createCoverageState(capability: string, supported: boolean): CoverageSt
   return {
     capability, supported, eligibleCount: 0, attemptedCount: 0, successCount: 0,
     emptyCount: 0, failureCount: 0, timeoutCount: 0, resultCount: 0,
-    mappedCount: 0, externalCount: 0, unmappedCount: 0,
+    mappedCount: 0, externalCount: 0, unmappedCount: 0, consecutiveTimeoutCount: 0,
   };
 }
 
@@ -1131,12 +1176,41 @@ function getCoverageState(states: Map<string, CoverageState>, capability: string
 
 function determineCoverageStatus(state: CoverageState): LspCoverage['status'] {
   if (!state.supported) return 'unsupported';
-  if (state.exclusionReason || state.eligibleCount === 0) return 'excluded';
+  if ((state.exclusionReason && state.attemptedCount === 0) || state.eligibleCount === 0) return 'excluded';
   if (state.successCount > 0 && (state.failureCount > 0 || state.timeoutCount > 0)) return 'partial';
   if (state.timeoutCount > 0) return 'timeout';
   if (state.failureCount > 0) return 'failed';
   if (state.resultCount === 0) return 'empty';
   return state.unmappedCount > 0 ? 'unmapped' : state.mappedCount > 0 ? 'mapped' : 'observed';
+}
+
+function progressReporter(
+  input: CompleteCrawlInput,
+  pass: CrawlProgress['pass'],
+  total: number,
+): (completed: number) => void {
+  const startedAt = Date.now();
+  let lastReportedAt = 0;
+  const interval = Math.max(1, Math.min(100, Math.ceil(total / 100)));
+  return (completed: number): void => {
+    const now = Date.now();
+    if (completed !== total && completed % interval !== 0 && now - lastReportedAt < 15_000) return;
+    lastReportedAt = now;
+    const elapsedMs = now - startedAt;
+    const progress: CrawlProgress = {
+      buildRootId: input.buildRoot.id,
+      pass,
+      completed,
+      total,
+      elapsedMs,
+      ratePerSecond: elapsedMs === 0 ? 0 : completed / (elapsedMs / 1000),
+    };
+    input.onProgress?.(progress);
+    console.log(
+      `[${input.buildRoot.id}] ${pass}: ${completed}/${total} `
+      + `(${total === 0 ? 100 : Math.floor(completed * 100 / total)}%, ${progress.ratePerSecond.toFixed(2)} docs/s)`,
+    );
+  };
 }
 
 function semanticTokenLegend(capabilities: Record<string, unknown>): {

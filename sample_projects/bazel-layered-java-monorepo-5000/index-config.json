@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "name": "default-core-java",
+  "name": "layered-java-5000",
   "bazel": {
     "buildMode": "prebuilt",
     "scope": {
@@ -12,12 +12,15 @@
         ".*-sonar$",
         ".*-sq$"
       ],
-      "excludeLabels": [],
+      "excludeLabels": [
+        "//:coverage-summary",
+        "//:dependency-report"
+      ],
       "excludeTags": ["coverage", "reporting-only"]
     },
     "preparation": {
       "concurrency": 4,
-      "timeoutMs": 600000
+      "timeoutMs": 3600000
     }
   },
   "crawl": {

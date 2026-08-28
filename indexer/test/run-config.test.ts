@@ -9,6 +9,10 @@ import { parseLspKnowledgeGraphBuildOptions } from '../src/pipeline/cli-options.
 import { extractRunConfig, loadRunConfig } from '../src/pipeline/run-config.js';
 
 const TRACKED_DEFAULT_CONFIG = fileURLToPath(new URL('../../config/core-java.json', import.meta.url));
+const SCALE_SAMPLE_CONFIG = fileURLToPath(new URL(
+  '../../sample_projects/bazel-layered-java-monorepo-5000/index-config.json',
+  import.meta.url,
+));
 
 type JsonObject = Record<string, any>;
 
@@ -28,7 +32,7 @@ function completeConfig(): JsonObject {
       },
       preparation: { concurrency: 3, timeoutMs: 9000 },
     },
-    crawl: { planner: 'facts-first', concurrency: 2, resume: false },
+    crawl: { profile: 'core', planner: 'facts-first', concurrency: 2, resume: false },
     artifacts: {
       concurrency: 5,
       maxClasses: 1200,
@@ -72,6 +76,7 @@ test('loads the tracked core-Java default without repository-specific labels', (
   assert.equal(config.name, 'default-core-java');
   assert.equal(config.bazel.buildMode, 'prebuilt');
   assert.equal(config.crawl.planner, 'facts-first');
+  assert.equal(config.crawl.profile, 'core');
   assert.deepEqual(config.bazel.scope.includeTargetPatterns, ['//...']);
   assert.deepEqual(config.bazel.scope.includeRuleKinds, ['java_binary', 'java_library', 'java_test']);
   assert.deepEqual(config.bazel.scope.excludeLabels, []);
@@ -97,7 +102,7 @@ test('loads every explicit version-1 config field', () => {
     excludeTags: ['coverage', 'reporting-only'],
   });
   assert.deepEqual(config.bazel.preparation, { concurrency: 3, timeoutMs: 9000 });
-  assert.deepEqual(config.crawl, { planner: 'facts-first', concurrency: 2, resume: false });
+  assert.deepEqual(config.crawl, { profile: 'core', planner: 'facts-first', concurrency: 2, resume: false });
   assert.deepEqual(config.artifacts, {
     concurrency: 5,
     maxClasses: 1200,
@@ -122,7 +127,7 @@ test('applies every omitted-field default', () => {
     excludeTags: [],
   });
   assert.deepEqual(config.bazel.preparation, { concurrency: 4, timeoutMs: 600_000 });
-  assert.deepEqual(config.crawl, { planner: 'legacy', concurrency: 4, resume: true });
+  assert.deepEqual(config.crawl, { profile: 'exhaustive', planner: 'legacy', concurrency: 4, resume: true });
   assert.deepEqual(config.artifacts, {
     concurrency: 4,
     maxClasses: undefined,
@@ -139,6 +144,7 @@ test('accepts all enum values, nullable fields, and numeric boundaries', () => {
   value.bazel.preparation.concurrency = 1;
   value.bazel.preparation.timeoutMs = 1;
   value.crawl.planner = 'legacy';
+  value.crawl.profile = 'exhaustive';
   value.crawl.concurrency = 1;
   value.artifacts.concurrency = 16;
   value.artifacts.maxClasses = null;
@@ -149,6 +155,7 @@ test('accepts all enum values, nullable fields, and numeric boundaries', () => {
   assert.equal(config.bazel.preparation.concurrency, 1);
   assert.equal(config.bazel.preparation.timeoutMs, 1);
   assert.equal(config.crawl.planner, 'legacy');
+  assert.equal(config.crawl.profile, 'exhaustive');
   assert.equal(config.crawl.concurrency, 1);
   assert.equal(config.artifacts.concurrency, 16);
   assert.equal(config.artifacts.maxClasses, undefined);
@@ -219,6 +226,7 @@ test('each semantic field changes the semantic hash', () => {
     ['scope.excludeLabels', (value) => { value.bazel.scope.excludeLabels = []; }],
     ['scope.excludeTags', (value) => { value.bazel.scope.excludeTags = []; }],
     ['crawl.planner', (value) => { value.crawl.planner = 'legacy'; }],
+    ['crawl.profile', (value) => { value.crawl.profile = 'exhaustive'; }],
     ['artifacts.maxClasses', (value) => { value.artifacts.maxClasses = 1; }],
     ['artifacts.fetchSources', (value) => { value.artifacts.fetchSources = true; }],
     ['artifacts.classpathManifests', (value) => { value.artifacts.classpathManifests = []; }],
@@ -245,6 +253,7 @@ test('rejects invalid name, enums, booleans, regexes, and paths', () => {
     ['name', (value) => { value.name = ''; }, /config\.name must be a non-empty string/],
     ['buildMode', (value) => { value.bazel.buildMode = 'automatic'; }, /config\.bazel\.buildMode must be one of/],
     ['planner', (value) => { value.crawl.planner = 'fast'; }, /config\.crawl\.planner must be one of/],
+    ['profile', (value) => { value.crawl.profile = 'fast'; }, /config\.crawl\.profile must be one of/],
     ['resume', (value) => { value.crawl.resume = 'yes'; }, /config\.crawl\.resume must be boolean/],
     ['fetchSources', (value) => { value.artifacts.fetchSources = 1; }, /config\.artifacts\.fetchSources must be boolean/],
     ['failOnFailedBuildRoot', (value) => { value.quality.failOnFailedBuildRoot = null; }, /config\.quality\.failOnFailedBuildRoot must be boolean/],
@@ -271,6 +280,7 @@ test('rejects null for every non-nullable optional field', () => {
     ['scope.excludeTags', (value) => { value.bazel.scope.excludeTags = null; }],
     ['crawl', (value) => { value.crawl = null; }],
     ['crawl.planner', (value) => { value.crawl.planner = null; }],
+    ['crawl.profile', (value) => { value.crawl.profile = null; }],
     ['crawl.concurrency', (value) => { value.crawl.concurrency = null; }],
     ['crawl.resume', (value) => { value.crawl.resume = null; }],
     ['artifacts', (value) => { value.artifacts = null; }],
@@ -353,6 +363,7 @@ test('maps every config field used by the build command', () => {
   assert.equal(options.bazelPreparationConcurrency, config.bazel.preparation.concurrency);
   assert.equal(options.bazelPreparationTimeoutMs, config.bazel.preparation.timeoutMs);
   assert.equal(options.crawlPlanner, config.crawl.planner);
+  assert.equal(options.crawlProfile, config.crawl.profile);
   assert.equal(options.concurrency, config.crawl.concurrency);
   assert.equal(options.resume, config.crawl.resume);
   assert.equal(options.artifactConcurrency, config.artifacts.concurrency);
@@ -412,4 +423,15 @@ test('maps config into managed preparation and allows only its operational overr
   assert.throws(() => parseBazelPreparationCommandOptions([
     'bazel-prepare', '/workspace', '--config', filename, '--bazel-target-query', '//app:lib',
   ]), /cannot override semantic settings/);
+});
+
+test('loads the 5,000-document layered Bazel sample policy', () => {
+  const config = loadRunConfig(SCALE_SAMPLE_CONFIG);
+  assert.equal(config.name, 'layered-java-5000');
+  assert.equal(config.bazel.buildMode, 'prebuilt');
+  assert.equal(config.bazel.preparation.timeoutMs, 3_600_000);
+  assert.equal(config.crawl.profile, 'core');
+  assert.deepEqual(config.bazel.scope.includeRuleKinds, ['java_binary', 'java_library', 'java_test']);
+  assert.deepEqual(config.bazel.scope.excludeLabels, ['//:coverage-summary', '//:dependency-report']);
+  assert.deepEqual(config.bazel.scope.excludeTags, ['coverage', 'reporting-only']);
 });

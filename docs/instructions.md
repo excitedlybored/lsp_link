@@ -34,6 +34,13 @@ stage that runs longer than 15 seconds emits a heartbeat with elapsed time,
 captured output size, and Bazel's latest status line. A quiet interval between
 heartbeats is therefore expected and does not indicate a hang.
 
+During indexing, each LSP pass reports `completed/total`, percentage, and its
+current documents-per-second rate. The `core` profile performs one bounded
+`document-symbols` pass. The `exhaustive` profile additionally reports the
+symbol-reference and document-fact passes. Repeated capability timeouts open a
+per-capability circuit breaker; the run continues and the timeout/partial
+coverage remains explicit in the graph.
+
 The aspect build writes a per-run Build Event Protocol (BEP) JSON stream. After
 the build, `bazel:aspect-output-discovery` follows the output group's shared
 `NamedSetOfFiles` references and reads only manifests reported by that build.
@@ -127,7 +134,8 @@ a new handoff is written. Starting a new preparation invalidates the previous
 handoff, so a failed attempt cannot be followed by prebuilt indexing of stale
 artifacts from an older successful run.
 
-The default policy uses `prebuilt` indexing, the `facts-first` planner,
+The default policy uses `prebuilt` indexing, the `core` crawl profile, the
+`facts-first` planner,
 resumable checkpoints, four-way preparation/crawl/artifact concurrency, source
 JAR fetching, and strict failed-root enforcement. It has no artifact-class
 limit and uses the output-derived checkpoint directory unless overridden.
@@ -165,6 +173,7 @@ This is the generic shape of a complete version-1 configuration:
     }
   },
   "crawl": {
+    "profile": "core",
     "planner": "facts-first",
     "concurrency": 4,
     "resume": true
@@ -248,6 +257,12 @@ canonical `@@//package:target`. These two main-repository forms are normalized
 for graph joins. External canonical repository names are preserved, so labels
 from different dependencies cannot be conflated.
 
+The recursive aspect recognizes both the public compatibility `JavaInfo`
+provider used by standard `rules_java` wrappers and the private provider used
+by some custom Java rules. A selected root is rejected only when neither
+provider identity is present. This keeps mixed standard/custom rule graphs
+strict without mistaking a provider-identity difference for missing Java data.
+
 The recursive graph retains external targets and their compile, runtime, and
 source-artifact relationships. JDT document crawling is intentionally limited
 to main-repository checked-in sources, configured generated sources, and source
@@ -262,6 +277,7 @@ fails preparation.
 
 | Field | Required | Values and behavior |
 | --- | --- | --- |
+| `profile` | No | `"core"` or `"exhaustive"`; default `"exhaustive"`. `core` collects document symbols while relying on the authoritative Bazel graph and bytecode enrichment for dependency, reference, type, call, and artifact relationships. Reference, hover, hierarchy, semantic-token, signature, and diagnostic requests are explicitly recorded as excluded. `exhaustive` requests the complete LSP capability matrix. The tracked large-repository policy uses `core`. |
 | `planner` | No | `"legacy"` or `"facts-first"`; default `"legacy"`. `legacy` preserves the original request schedule. `facts-first` gathers declaration-scoped facts across a complete root before querying semantic-token gaps and is recommended for this Java run. Planner choice participates in semantic/config and checkpoint validation. |
 | `concurrency` | No | Positive integer; default `4`. Number of persistent JDT.LS crawl shards. |
 | `resume` | No | Boolean; default `true`. Reuse compatible checkpoints when available. `false` starts a new crawl without deleting existing diagnostic checkpoints. |
@@ -387,6 +403,13 @@ finalization, and persistence, so work after archive extraction is visible.
 This scope correction uses source-inventory schema version 3. Run
 `bazel-prepare` once after upgrading; later `prebuilt` runs can reuse the new
 handoff and inventory.
+
+For large inventories, the JDT project preparation consolidates otherwise
+target-local source directories into at most 64 package-correct source roots
+(additional roots are used only for real package/name collisions). Original
+inventory paths and URI mappings are preserved. This bounds Eclipse import and
+resource-reconciliation cost without changing the source documents in the
+published graph.
 
 ## Inspect a completed graph
 

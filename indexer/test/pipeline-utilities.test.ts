@@ -43,6 +43,7 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
   assert.equal(options.checkpointDirectory, '/checkpoints/run-1');
   assert.equal(options.resume, true);
   assert.equal(options.crawlPlanner, 'facts-first');
+  assert.equal(options.crawlProfile, 'exhaustive');
   assert.equal(options.bazelBuildMode, 'prebuilt');
   assert.equal(options.bazelTargetQuery, 'set(//service:lib //shared:api)');
 });
@@ -54,6 +55,7 @@ test('defaults to resumable checkpoints beside the requested output', () => {
   assert.equal(options.checkpointDirectory, '/tmp/result.lbug.checkpoints');
   assert.equal(options.resume, false);
   assert.equal(options.crawlPlanner, 'legacy');
+  assert.equal(options.crawlProfile, 'exhaustive');
   assert.equal(options.bazelBuildMode, 'managed');
 });
 

@@ -41,7 +41,7 @@ export class PipelineCheckpointStore {
     }
   }
 
-  save<T>(stage: string, fingerprint: string, payload: T): void {
+  save<T>(stage: string, fingerprint: string, payload: T, log = true): void {
     fs.mkdirSync(this.directory, { recursive: true });
     const checkpointPath = this.pathFor(stage);
     const temporaryPath = `${checkpointPath}.${process.pid}.tmp`;
@@ -58,7 +58,7 @@ export class PipelineCheckpointStore {
     } finally {
       if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath);
     }
-    console.log(`[checkpoint:${stage}] saved ${checkpointPath}`);
+    if (log) console.log(`[checkpoint:${stage}] saved ${checkpointPath}`);
   }
 
   rootStage(rootId: string): string {

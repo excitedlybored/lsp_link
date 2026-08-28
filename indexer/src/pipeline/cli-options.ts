@@ -3,6 +3,7 @@ import type { LspKnowledgeGraphBuildOptions } from './types.js';
 import { CRAWL_PLANNER_MODES, type CrawlPlannerMode } from '../ingest/crawl-planner.js';
 import type { BazelBuildMode } from '../../../lsp_server/adapters/java/bazel-project-model.js';
 import { extractRunConfig } from './run-config.js';
+import type { CrawlProfile } from '../ingest/crawl-profile.js';
 
 const BAZEL_BUILD_MODES: BazelBuildMode[] = ['managed', 'prebuilt'];
 
@@ -20,6 +21,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   let checkpointDirectory: string | undefined = config?.checkpoints.directory;
   let resume = config?.crawl.resume ?? true;
   let crawlPlanner: CrawlPlannerMode = config?.crawl.planner ?? 'legacy';
+  const crawlProfile: CrawlProfile = config?.crawl.profile ?? 'exhaustive';
   let bazelBuildMode: BazelBuildMode = config?.bazel.buildMode ?? 'managed';
   let bazelTargetQuery: string | undefined;
   const artifactManifestPaths: string[] = [...(config?.artifacts.classpathManifests ?? [])];
@@ -73,6 +75,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     checkpointDirectory: checkpointDirectory ?? `${output}.checkpoints`,
     resume,
     crawlPlanner,
+    crawlProfile,
     bazelBuildMode,
     bazelTargetQuery,
     bazelTargetScope: config?.bazel.scope,
