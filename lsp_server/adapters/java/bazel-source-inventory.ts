@@ -62,13 +62,15 @@ export interface BazelSourceInventoryComparison {
   configuredRepositorySources: number;
   generatedSources: number;
   sourceJarOnlySources: number;
+  externalTargetsRetained: number;
+  externalSourceJarAssociationsExcluded: number;
   unownedRepositorySources: string[];
   duplicateSources: number;
   crawlSources: number;
 }
 
 export interface BazelSourceInventory {
-  schemaVersion: 2;
+  schemaVersion: 3;
   workspacePath: string;
   configurationHash: string;
   targetQuery: string;
@@ -125,8 +127,16 @@ export async function createBazelSourceInventory(
   input: CreateBazelSourceInventoryInput,
 ): Promise<BazelSourceInventory> {
   const targets = normalizeTargets(input.targets);
+  const crawlTargets = targets.filter((target) => isMainRepositoryLabel(target.label));
+  const externalTargetsRetained = targets.length - crawlTargets.length;
+  const externalSourceJarAssociationsExcluded = targets
+    .filter((target) => !isMainRepositoryLabel(target.label))
+    .reduce((count, target) => count + target.sourceJars.length, 0);
+  console.error(
+    `[bazel:source-inventory] crawl scope ${crawlTargets.length} main-repository targets; retained ${externalTargetsRetained} external targets as artifact evidence; excluded ${externalSourceJarAssociationsExcluded} external source-JAR associations`,
+  );
   const targetLabelsByPath = new Map<string, Set<string>>();
-  for (const target of targets) {
+  for (const target of crawlTargets) {
     for (const source of target.directSources) {
       const resolved = path.resolve(source.path);
       const labels = targetLabelsByPath.get(resolved) ?? new Set<string>();
@@ -135,7 +145,11 @@ export async function createBazelSourceInventory(
     }
   }
 
-  const jarCandidates = await extractSourceJarCandidates(targets, input);
+  const jarCandidates = await extractSourceJarCandidates(crawlTargets, input);
+  const finalizationStartedAt = Date.now();
+  console.error(
+    `[bazel:source-inventory] finalizing ${input.repositorySources.length} repository sources, ${targetLabelsByPath.size} configured source paths, and ${jarCandidates.length} extracted source documents`,
+  );
 
   const jarByHash = groupCandidatesByHash(jarCandidates);
   const repositoryCandidates: CandidateSource[] = input.repositorySources
@@ -231,8 +245,11 @@ export async function createBazelSourceInventory(
     .filter((candidate) => candidate.targetLabels.length === 0)
     .map((candidate) => path.relative(input.workspacePath, candidate.path).split(path.sep).join('/'))
     .sort();
+  console.error(
+    `[bazel:source-inventory] finalized ${sources.length} crawl documents in ${formatElapsed(Date.now() - finalizationStartedAt)}; deduplicated ${duplicateSources}`,
+  );
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     workspacePath: path.resolve(input.workspacePath),
     configurationHash: input.configurationHash,
     targetQuery: input.targetQuery,
@@ -244,6 +261,8 @@ export async function createBazelSourceInventory(
       configuredRepositorySources: repositoryCandidates.length - unownedRepositorySources.length,
       generatedSources: sources.filter((source) => source.origin === 'generated').length,
       sourceJarOnlySources: sources.filter((source) => source.origin === 'source_jar').length,
+      externalTargetsRetained,
+      externalSourceJarAssociationsExcluded,
       unownedRepositorySources,
       duplicateSources,
       crawlSources: sources.length,
@@ -260,7 +279,7 @@ export function sourceInventoryHash(inventory: BazelSourceInventory): string {
 export function readBazelSourceInventory(inventoryPath: string): BazelSourceInventory | undefined {
   try {
     const value = JSON.parse(fs.readFileSync(inventoryPath, 'utf8')) as Partial<BazelSourceInventory>;
-    if (value.schemaVersion !== 2 || !Array.isArray(value.sources) || !Array.isArray(value.targets)) return undefined;
+    if (value.schemaVersion !== 3 || !Array.isArray(value.sources) || !Array.isArray(value.targets)) return undefined;
     if (!value.sources.every((source) => typeof source.path === 'string'
       && typeof source.analysisPath === 'string' && typeof source.contentHash === 'string'
       && Array.isArray(source.targetLabels)
@@ -588,6 +607,10 @@ function environmentPositiveInteger(name: string): number | undefined {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer.`);
   return parsed;
+}
+
+function isMainRepositoryLabel(label: string): boolean {
+  return label.startsWith('//') || label.startsWith('@//') || label.startsWith('@@//');
 }
 
 function isMissingExecutable(error: unknown): boolean {

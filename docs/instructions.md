@@ -60,6 +60,17 @@ Installation uses the checked-in packages under `vendor/npm` and verifies the
 bundled Eclipse JDT.LS runtime. Set `GITNEXUS_JDT_JAVA_HOME` if the required JDK
 is not in a conventional location.
 
+The installer also verifies that the vendored LadybugDB native addon loads. On
+macOS, if loading fails specifically because OpenSSL 3 is outside the addon's
+embedded Homebrew search paths, the installer resolves `brew --prefix openssl@3`,
+adds that library directory as an RPATH to the installed local
+addon, applies an ad-hoc signature, and verifies loading again. It does not
+modify the vendored tarball or patch unrelated loader failures. If Homebrew is
+not discoverable, set `GITNEXUS_OPENSSL3_LIB` to the directory containing both
+`libssl.3.dylib` and `libcrypto.3.dylib`, then rerun `./install.sh`. The repair
+requires the standard macOS `otool`, `install_name_tool`, and `codesign`
+utilities.
+
 ## Recommended Bazel Java run
 
 In this project, `prebuilt` means **prepared for the indexer with a successful
@@ -232,6 +243,21 @@ backward-compatible runs without `--config`, one combined `cquery` collects all
 three artifact roles before the aspect build; it replaces the previous three
 separate `cquery` invocations.
 
+Bazel 8 may report the main repository as either `//package:target` or the
+canonical `@@//package:target`. These two main-repository forms are normalized
+for graph joins. External canonical repository names are preserved, so labels
+from different dependencies cannot be conflated.
+
+The recursive graph retains external targets and their compile, runtime, and
+source-artifact relationships. JDT document crawling is intentionally limited
+to main-repository checked-in sources, configured generated sources, and source
+JARs produced by main-repository targets. External dependency source JARs are
+artifact evidence rather than project documents; they are not extracted into
+the crawl inventory. This keeps optional or malformed dependency source
+archives from failing preparation and prevents dependency sources from
+inflating the application graph. A malformed main-repository source JAR still
+fails preparation.
+
 ### `crawl`
 
 | Field | Required | Values and behavior |
@@ -323,6 +349,9 @@ the tools' normal credential stores. Relevant environment variables include:
 
 - `GITNEXUS_BAZEL_BIN`: explicit `bazel`/`bazelisk` executable path.
 - `GITNEXUS_JDT_JAVA_HOME`: JDK home used by JDT.LS.
+- `GITNEXUS_OPENSSL3_LIB`: macOS-only OpenSSL 3 library-directory override used
+  by installation-time LadybugDB native-addon verification. Normally the
+  installer discovers it with `brew --prefix openssl@3`.
 - `GITNEXUS_JDT_BAZEL_MODEL_TIMEOUT_MS`: Bazel model timeout for legacy,
   non-configured flows; the config's `bazel.preparation.timeoutMs` controls
   configured preparation.
@@ -353,6 +382,11 @@ elapsed time as work finishes, with a heartbeat every 15 seconds while active.
 Each archive is normally extracted with one bounded process regardless of how
 many Java documents it contains; a batched JDK fallback is used when `unzip` is
 not installed.
+The stage also reports its effective main/external target counts, inventory
+finalization, and persistence, so work after archive extraction is visible.
+This scope correction uses source-inventory schema version 3. Run
+`bazel-prepare` once after upgrading; later `prebuilt` runs can reuse the new
+handoff and inventory.
 
 ## Inspect a completed graph
 

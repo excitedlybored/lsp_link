@@ -11,7 +11,9 @@ echo "=================================================="
 echo "[1/5] Installing Node.js packages from vendor/npm (strictly offline)..."
 npm ci --offline
 
-echo "[2/5] Verifying vendored Node LSP packages installed correctly..."
+# Verify JavaScript packages and the LadybugDB native addon. On macOS the
+# helper repairs only a confirmed custom-prefix OpenSSL loader failure.
+echo "[2/5] Verifying vendored Node packages installed correctly..."
 node -e "
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +24,7 @@ for (const p of pkgs) {
   console.log('  ' + p + '@' + v + ' OK');
 }
 "
+node scripts/prepare-ladybug-native.mjs
 
 # 3. Verify the bundled Java language-server distribution before Java indexing.
 echo "[3/5] Verifying bundled Eclipse JDT.LS runtime..."

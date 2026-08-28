@@ -470,7 +470,8 @@ export async function ensureBazelProjectModel(
     const manifestPaths = await readAspectManifestPathsFromBep(aspectBepPath, executionRoot);
     const directSources = readAspectManifests(manifestPaths, workspacePath, executionRoot);
     const manifestsByLabel = new Map(directSources.map((target) => [target.label, target]));
-    const invalidRoots = rootLabels.filter((label) => !manifestsByLabel.get(label)?.hasJavaInfo);
+    const normalizedRootLabels = rootLabels.map(normalizeBazelMainRepositoryLabel);
+    const invalidRoots = normalizedRootLabels.filter((label) => !manifestsByLabel.get(label)?.hasJavaInfo);
     if (invalidRoots.length > 0) {
       throw new Error(`Bazel source aspect found ${invalidRoots.length} selected targets without JavaInfo.`);
     }
@@ -481,9 +482,9 @@ export async function ensureBazelProjectModel(
         if (target && target.sourceJars.length === 0) target.sourceJars = sourceJars;
       }
     }
-    const compileReachable = reachableTargetLabels(rootLabels, targetMap, new Set(['deps', 'exports', 'plugins']));
+    const compileReachable = reachableTargetLabels(normalizedRootLabels, targetMap, new Set(['deps', 'exports', 'plugins']));
     const runtimeReachable = reachableTargetLabels(
-      rootLabels, targetMap, new Set(['deps', 'exports', 'runtime_deps', 'plugins']),
+      normalizedRootLabels, targetMap, new Set(['deps', 'exports', 'runtime_deps', 'plugins']),
     );
     const aspectCompileClasspath = uniqueSorted([...compileReachable]
       .flatMap((label) => targetMap.get(label)?.compileArtifacts ?? []));
@@ -508,14 +509,21 @@ export async function ensureBazelProjectModel(
       deadlineAt: options.deadlineAt,
       signal: options.signal,
     });
+    const persistenceStartedAt = Date.now();
+    console.error(`[bazel:source-inventory-persist] started; hashing and writing ${inventory.sources.length} documents`);
     const inventoryHash = sourceInventoryHash(inventory);
     writeJsonAtomically(inventoryPath, inventory);
+    console.error(
+      `[bazel:source-inventory-persist] completed in ${formatElapsed(Date.now() - persistenceStartedAt)}`,
+    );
 
     const model: GeneratedBazelModel = {
       classpath: configuredClasspath,
       runtimeClasspath,
       sourcePaths,
-      generatedSourcePaths: discoverGeneratedSourcePaths(executionRoot),
+      // The aspect-backed inventory already contains every configured generated
+      // Java source. A recursive bazel-out scan is redundant and unbounded.
+      generatedSourcePaths: [],
       generatedBy: 'gitnexus-bazel-java-graph',
       generatedAt: new Date().toISOString(),
       configurationHash,
@@ -871,7 +879,7 @@ function readAspectManifests(
       throw new Error(`Invalid Bazel source aspect manifest: ${manifestPath}`);
     }
     return {
-      label: value.label,
+      label: normalizeBazelMainRepositoryLabel(value.label),
       // Missing only in hand-written legacy fixtures/manifests.
       hasJavaInfo: value.hasJavaInfo === undefined ? true : value.hasJavaInfo === true,
       ruleKind: typeof value.ruleKind === 'string' ? value.ruleKind : undefined,
@@ -879,7 +887,7 @@ function readAspectManifests(
         typeof dependency.label === 'string'
           && ['deps', 'exports', 'runtime_deps', 'plugins'].includes(String(dependency.attribute))
           ? [{
-            label: dependency.label,
+            label: normalizeBazelMainRepositoryLabel(dependency.label),
             attribute: dependency.attribute as NonNullable<BazelConfiguredTargetSources['dependencies']>[number]['attribute'],
           }]
           : []),
@@ -959,7 +967,8 @@ function parseCombinedConfiguredTargets(output: string, executionRoot: string): 
   const sourceJarsByLabel = new Map<string, string[]>();
   for (const line of output.split(/\r?\n/)) {
     const [label, ...records] = line.trim().split('\t');
-    if (label) labels.add(label);
+    const normalizedLabel = label ? normalizeBazelMainRepositoryLabel(label) : '';
+    if (normalizedLabel) labels.add(normalizedLabel);
     const targetSourceJars: string[] = [];
     for (const record of records) {
       const role = record.slice(0, 2);
@@ -973,7 +982,7 @@ function parseCombinedConfiguredTargets(output: string, executionRoot: string): 
       else if (role === 'R:') runtimeJars.add(absolute);
       else targetSourceJars.push(absolute);
     }
-    if (label) sourceJarsByLabel.set(label, uniqueSorted(targetSourceJars));
+    if (normalizedLabel) sourceJarsByLabel.set(normalizedLabel, uniqueSorted(targetSourceJars));
   }
   return {
     labels: [...labels].sort(),
@@ -985,6 +994,13 @@ function parseCombinedConfiguredTargets(output: string, executionRoot: string): 
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+/** Bazel 8 may render the main repository canonically as @@// while query uses //. */
+export function normalizeBazelMainRepositoryLabel(label: string): string {
+  if (label.startsWith('@@//')) return label.slice(2);
+  if (label.startsWith('@//')) return label.slice(1);
+  return label;
 }
 
 function reachableTargetLabels(
@@ -1016,21 +1032,6 @@ function discoverSourcePaths(workspacePath: string): string[] {
     const normalized = file.split(path.sep).join('/');
     const conventional = normalized.match(/^(.*?src\/(?:main|test)\/java)(?:\/|$)/)?.[1];
     roots.add(conventional || path.posix.dirname(normalized));
-  }
-  return [...roots].sort();
-}
-
-/** JavaInfo materialization may create annotation-processor and Starlark-generated Java sources. */
-function discoverGeneratedSourcePaths(executionRoot: string): string[] {
-  const roots = new Set<string>();
-  for (const file of globSync('bazel-out/**/*.java', {
-    cwd: executionRoot,
-    nodir: true,
-    ignore: ['**/external/**'],
-  })) {
-    const normalized = file.split(path.sep).join('/');
-    const marker = normalized.match(/^(.*?\/(?:generated|gensrc|generated-sources)(?:\/|$))/)?.[1];
-    roots.add(path.resolve(executionRoot, marker ?? path.posix.dirname(normalized)));
   }
   return [...roots].sort();
 }
@@ -1082,13 +1083,15 @@ export async function resolveBazelTargetScope(
       `scope-discovery-${patternIndex + 1}-of-${scope.includeTargetPatterns.length}`);
     for (const line of output.split(/\r?\n/).filter(Boolean)) {
       const match = line.match(/^(.*?) rule (\S+)$/);
-      if (match) candidates.set(match[2]!, match[1]!);
+      if (match) candidates.set(normalizeBazelMainRepositoryLabel(match[2]!), match[1]!);
     }
     for (const tag of scope.excludeTags) {
       const tagged = await runBazel(bazelBinary, [
         'query', `attr("tags", "${escapeBazelQueryString(escapeRegex(tag))}", ${targetPattern})`, '--output=label',
       ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, `scope-tag-exclusion-${tag}`);
-      for (const label of tagged.split(/\r?\n/).filter(Boolean)) exclusions.set(label, `tag:${tag}`);
+      for (const label of tagged.split(/\r?\n/).filter(Boolean)) {
+        exclusions.set(normalizeBazelMainRepositoryLabel(label), `tag:${tag}`);
+      }
     }
   }
   for (const [targetIndex, label] of scope.explicitTargets.entries()) {
@@ -1097,12 +1100,16 @@ export async function resolveBazelTargetScope(
       `scope-explicit-target-${targetIndex + 1}-of-${scope.explicitTargets.length}`);
     const line = output.split(/\r?\n/).find(Boolean);
     const match = line?.match(/^(.*?) rule (\S+)$/);
-    if (!match || match[2] !== label) throw new Error(`Explicit Bazel target was not resolved: ${label}`);
-    candidates.set(label, match[1]!);
+    const normalizedRequested = normalizeBazelMainRepositoryLabel(label);
+    const normalizedResolved = match ? normalizeBazelMainRepositoryLabel(match[2]!) : undefined;
+    if (!match || normalizedResolved !== normalizedRequested) {
+      throw new Error(`Explicit Bazel target was not resolved: ${label}`);
+    }
+    candidates.set(normalizedRequested, match[1]!);
   }
   const allowedKinds = new Set(scope.includeRuleKinds);
-  const explicit = new Set(scope.explicitTargets);
-  const exactExcludes = new Set(scope.excludeLabels);
+  const explicit = new Set(scope.explicitTargets.map(normalizeBazelMainRepositoryLabel));
+  const exactExcludes = new Set(scope.excludeLabels.map(normalizeBazelMainRepositoryLabel));
   const namePatterns = scope.excludeTargetNamePatterns.map((pattern) => new RegExp(pattern));
   for (const [label, kind] of candidates) {
     if (!allowedKinds.has(kind) && !explicit.has(label)) exclusions.set(label, `rule-kind:${kind}`);

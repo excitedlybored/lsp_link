@@ -112,6 +112,9 @@ Source JAR materialization deduplicates identical archives globally, validates a
 entries, and extracts with bounded concurrency and a per-JAR timeout. Override the defaults with
 `GITNEXUS_BAZEL_SOURCE_JAR_CONCURRENCY` (default `4`, maximum `16`) and
 `GITNEXUS_BAZEL_SOURCE_JAR_TIMEOUT_MS` (default `120000`).
+Main-repository source JARs participate in the JDT document inventory; external dependency source JARs
+remain artifact provenance and are not extracted as project documents. Bazel 8 `@@//` main-repository
+labels are safely joined with `//` query labels without altering external repository identities.
 
 Enterprise builds may isolate Bazel access from indexing. `npm run index -- bazel-prepare <workspace>` runs
 the user-owned Bazel analysis/build phase and emits `.gitnexus/jdtls/bazel-handoff.json` last. A later

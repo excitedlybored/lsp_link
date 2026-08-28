@@ -14,11 +14,17 @@ import {
   jdtlsResolutionClasspath,
   ownerBuildRoot,
 } from '../adapters/java/jdtls-runtime.js';
-import { ensureBazelProjectModel, prepareBazelProjectModels, resolveBazelTargetScope } from '../adapters/java/bazel-project-model.js';
+import {
+  ensureBazelProjectModel,
+  normalizeBazelMainRepositoryLabel,
+  prepareBazelProjectModels,
+  resolveBazelTargetScope,
+} from '../adapters/java/bazel-project-model.js';
 import { planJdtlsBuildRootShards, prepareJdtlsShardWorkspace } from '../adapters/java/jdtls-sharding.js';
 import { isJdtlsEmptyTypeDefinitionResponse } from '../adapters/java/jdtls-adapter.js';
 import {
   createBazelSourceInventory,
+  readBazelSourceInventory,
   sourceInventoryHash,
   validateBazelSourceJarEntry,
 } from '../adapters/java/bazel-source-inventory.js';
@@ -37,9 +43,9 @@ test('resolves a deterministic Java target scope before configured analysis', as
   fs.writeFileSync(fakeBazel, [
     '#!/bin/sh',
     'case "$*" in',
-    '  *"attr(\\\"tags\\\""*) printf "%s\\n" "//reports:coverage" ;;',
+    '  *"attr(\\\"tags\\\""*) printf "%s\\n" "@@//reports:coverage" ;;',
     '  *"//custom:app"*) printf "%s\\n" "springboot rule //custom:app" ;;',
-    '  *) printf "%s\\n" "java_library rule //service:lib" "java_test rule //service:lib-test" "java_library rule //reports:coverage" "sonarqube rule //service:service-sonar" ;;',
+    '  *) printf "%s\\n" "java_library rule @@//service:lib" "java_test rule @@//service:lib-test" "java_library rule @@//reports:coverage" "sonarqube rule @@//service:service-sonar" ;;',
     'esac',
   ].join('\n'));
   fs.chmodSync(fakeBazel, 0o755);
@@ -63,6 +69,31 @@ test('resolves a deterministic Java target scope before configured analysis', as
   assert.ok(progress.some((line) => line.includes('[bazel:scope-discovery-1-of-1] started')));
   assert.ok(progress.some((line) => line.includes('[bazel:scope-discovery-1-of-1] completed')));
   assert.ok(progress.some((line) => line.includes('[bazel:scope] resolved 3 selected targets; 2 excluded')));
+});
+
+test('normalizes only Bazel main-repository label prefixes', () => {
+  assert.equal(normalizeBazelMainRepositoryLabel('//app:lib'), '//app:lib');
+  assert.equal(normalizeBazelMainRepositoryLabel('@//app:lib'), '//app:lib');
+  assert.equal(normalizeBazelMainRepositoryLabel('@@//app:lib'), '//app:lib');
+  assert.equal(normalizeBazelMainRepositoryLabel('@third_party//app:lib'), '@third_party//app:lib');
+  assert.equal(normalizeBazelMainRepositoryLabel('@@third_party+//app:lib'), '@@third_party+//app:lib');
+});
+
+test('rejects pre-fix source inventory schemas', (t) => {
+  const root = fixture({});
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const inventoryPath = path.join(root, 'old-inventory.json');
+  fs.writeFileSync(inventoryPath, JSON.stringify({
+    schemaVersion: 2,
+    workspacePath: root,
+    configurationHash: 'old',
+    targetQuery: '//...',
+    generatedAt: new Date().toISOString(),
+    targets: [],
+    sources: [],
+    comparison: {},
+  }));
+  assert.equal(readBazelSourceInventory(inventoryPath), undefined);
 });
 
 test('discovers user-local Linux JDK installations used by the ASM worker', (t) => {
@@ -379,9 +410,12 @@ test('uses the recursive build aspect as the authoritative graph for configured 
     `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
     `  : > '${path.join(executionRoot, 'external/third_party/api-hjar.jar')}'`,
     `  : > '${path.join(executionRoot, 'external/third_party/api.jar')}'`,
-    `  printf '%s\\n' '{"label":"//:app","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[{"label":"//:bridge","attribute":"deps"}],"sources":[{"path":"App.java","shortPath":"App.java","isSource":true}],"compileArtifacts":["bazel-out/app-hjar.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
-    `  printf '%s\\n' '{"label":"//:bridge","ruleKind":"custom_wrapper","hasJavaInfo":false,"dependencies":[{"label":"@third_party//:api","attribute":"deps"}],"sources":[],"compileArtifacts":[],"runtimeArtifacts":[],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/bridge.gitnexus-sources.json')}'`,
-    `  printf '%s\\n' '{"label":"@third_party//:api","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[],"sources":[],"compileArtifacts":["external/third_party/api-hjar.jar"],"runtimeArtifacts":["external/third_party/api.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/api.gitnexus-sources.json')}'`,
+    `  printf 'not a zip archive\\n' > '${path.join(executionRoot, 'external/third_party/api-sources.jar')}'`,
+    `  mkdir -p '${path.join(executionRoot, 'bazel-out/unreferenced/generated')}'`,
+    `  printf 'class MustNotBeScanned {}\\n' > '${path.join(executionRoot, 'bazel-out/unreferenced/generated/MustNotBeScanned.java')}'`,
+    `  printf '%s\\n' '{"label":"@@//:app","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[{"label":"@@//:bridge","attribute":"deps"}],"sources":[{"path":"App.java","shortPath":"App.java","isSource":true}],"compileArtifacts":["bazel-out/app-hjar.jar"],"runtimeArtifacts":["bazel-out/app.jar"],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"label":"@@//:bridge","ruleKind":"custom_wrapper","hasJavaInfo":false,"dependencies":[{"label":"@@third_party+//:api","attribute":"deps"}],"sources":[],"compileArtifacts":[],"runtimeArtifacts":[],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/bridge.gitnexus-sources.json')}'`,
+    `  printf '%s\\n' '{"label":"@@third_party+//:api","ruleKind":"java_library","hasJavaInfo":true,"dependencies":[],"sources":[],"compileArtifacts":["external/third_party/api-hjar.jar"],"runtimeArtifacts":["external/third_party/api.jar"],"sourceJars":["external/third_party/api-sources.jar"]}' > '${path.join(executionRoot, 'bazel-out/api.gitnexus-sources.json')}'`,
     fakeBepManifestWrite([
       'bazel-out/app.gitnexus-sources.json', 'bazel-out/bridge.gitnexus-sources.json',
       'bazel-out/api.gitnexus-sources.json',
@@ -404,13 +438,27 @@ test('uses the recursive build aspect as the authoritative graph for configured 
     assert.equal(fs.existsSync(cqueryMarker), false);
     assert.equal(result.classpathEntries, 2);
     assert.deepEqual(result.configuredTargets?.map((target) => target.label), [
-      '@third_party//:api', '//:app', '//:bridge',
+      '@@third_party+//:api', '//:app', '//:bridge',
     ]);
+    assert.deepEqual(result.configuredTargets?.find((target) => target.label === '//:app')?.dependencies, [
+      { label: '//:bridge', attribute: 'deps' },
+    ]);
+    assert.deepEqual(result.configuredTargets?.find((target) => target.label === '//:bridge')?.dependencies, [
+      { label: '@@third_party+//:api', attribute: 'deps' },
+    ]);
+    assert.equal(result.sourceInventoryComparison?.externalTargetsRetained, 1);
+    assert.equal(result.sourceInventoryComparison?.externalSourceJarAssociationsExcluded, 1);
+    assert.equal(result.crawlSources?.length, 1);
+    assert.equal(
+      result.configuredTargets?.find((target) => target.label === '@@third_party+//:api')?.sourceJars.length,
+      1,
+    );
     const model = JdtlsWorkspace.inspect(root).bazelProjectModel!;
     assert.deepEqual(model.classpath, [
       path.join(executionRoot, 'bazel-out/app-hjar.jar'),
       path.join(executionRoot, 'external/third_party/api-hjar.jar'),
     ]);
+    assert.deepEqual(model.generatedSourcePaths, []);
     assert.match(fs.readFileSync(buildLog, 'utf8'), /gitnexus_java_artifacts/);
     const aspect = fs.readFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-aspect.bzl'), 'utf8');
     assert.match(aspect, /load\("@rules_java\/\/java\/private:java_info\.bzl", "JavaInfo"\)/);
@@ -419,6 +467,49 @@ test('uses the recursive build aspect as the authoritative graph for configured 
     assert.match(aspect, /java_info\.compile_jars/);
     assert.match(aspect, /java_info\.runtime_output_jars/);
     assert.match(aspect, /java_info\.source_jars/);
+  } finally {
+    delete process.env.GITNEXUS_BAZEL_BIN;
+  }
+});
+
+test('still fails when a normalized selected root genuinely lacks JavaInfo', async (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "strict_java_info")',
+    'BUILD.bazel': 'java_library(name = "app", srcs = ["App.java"])',
+    'App.java': 'class App {}\n',
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const executionRoot = path.join(root, 'execroot');
+  const fakeBazel = path.join(root, 'fake-bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    ...fakeBepPrelude(),
+    'if [ "$1" = "query" ]; then',
+    '  printf "%s\\n" "java_library rule //:app"',
+    'elif [ "$1" = "info" ]; then',
+    `  printf '%s\\n' '${executionRoot}'`,
+    'elif [ "$1" = "build" ]; then',
+    `  mkdir -p '${path.join(executionRoot, 'bazel-out')}'`,
+    `  : > '${path.join(executionRoot, 'bazel-out/app.jar')}'`,
+    `  printf '%s\\n' '{"label":"@@//:app","ruleKind":"java_library","hasJavaInfo":false,"dependencies":[],"sources":[],"compileArtifacts":[],"runtimeArtifacts":[],"sourceJars":[]}' > '${path.join(executionRoot, 'bazel-out/app.gitnexus-sources.json')}'`,
+    fakeBepManifestWrite(['bazel-out/app.gitnexus-sources.json'], true),
+    'else',
+    '  exit 2',
+    'fi',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+  process.env.GITNEXUS_BAZEL_BIN = fakeBazel;
+  try {
+    const result = await ensureBazelProjectModel(root, {
+      targetScope: {
+        includeTargetPatterns: ['//...'], includeRuleKinds: ['java_library'], explicitTargets: [],
+        excludeTargetNamePatterns: [], excludeLabels: [], excludeTags: [],
+      },
+      scopeConfigHash: 'scope-hash',
+    });
+    assert.equal(result.status, 'failed');
+    assert.match(result.reason ?? '', /1 selected targets without JavaInfo/);
+    assert.equal(fs.existsSync(path.join(root, '.gitnexus/jdtls/bazel-handoff.json')), false);
   } finally {
     delete process.env.GITNEXUS_BAZEL_BIN;
   }
@@ -535,6 +626,8 @@ test('builds a repository-union Bazel source inventory and content-deduplicates 
   assert.ok(inventory.sources.every((source) => source.targetLabels.includes('//:alias')));
   assert.ok(progress.some((line) => line.includes('extracting 1 content-unique source JARs')));
   assert.ok(progress.some((line) => line.includes('completed 1/1 source JARs (100%)')));
+  assert.ok(progress.some((line) => line.includes('finalizing 1 repository sources')));
+  assert.ok(progress.some((line) => line.includes('finalized 3 crawl documents')));
   assert.match(inventory.sources.find((source) => source.path === original)!.analysisPath, /bazel-sources/);
   const jarHash = createHash('sha256').update(fs.readFileSync(sourceJar)).digest('hex').slice(0, 24);
   assert.ok(inventory.sources.some((source) => source.analysisPath.includes(jarHash)));
@@ -894,11 +987,11 @@ test('uses package-correct roots for unconventional Bazel repository sources', (
     configuredSourceAssociations: [], sourceJarAssociations: [],
   });
   fs.writeFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-inventory.json'), JSON.stringify({
-    schemaVersion: 2, workspacePath: root, configurationHash: 'configuration', targetQuery: '//...',
+    schemaVersion: 3, workspacePath: root, configurationHash: 'configuration', targetQuery: '//...',
     generatedAt: new Date().toISOString(), targets: [], sources,
     comparison: {
       repositorySources: 3, configuredRepositorySources: 0, generatedSources: 0,
-      sourceJarOnlySources: 0,
+      sourceJarOnlySources: 0, externalTargetsRetained: 0, externalSourceJarAssociationsExcluded: 0,
       unownedRepositorySources: ['odd/Misaligned.java', 'odd/com/acme/A.java', 'odd/com/acme/B.java'],
       duplicateSources: 0, crawlSources: 3,
     },
