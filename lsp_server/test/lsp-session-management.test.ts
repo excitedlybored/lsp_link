@@ -11,6 +11,11 @@ import {
   prepareJdtlsShardWorkspace,
   type JdtlsBuildRootShard,
 } from '../adapters/java/jdtls-sharding.js';
+import {
+  JdtlsStartupTelemetry,
+  jdtlsStartupHeartbeatMs,
+  jdtlsStartupTimeoutMs,
+} from '../adapters/java/jdtls-startup-telemetry.js';
 import type { JavaBuildRoot } from '../adapters/java/jdtls-runtime.js';
 import { findBundledKotlinLsp } from '../adapters/kotlin/kotlin-lsp-adapter.js';
 import type { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
@@ -26,6 +31,15 @@ class TestStdioAdapter extends BaseStdioLspAdapter {
   protected async buildProcessLaunch() { return { command: 'unused', args: [] }; }
   attach(connection: { sendRequest: (...args: unknown[]) => Promise<unknown>; sendNotification?: (...args: unknown[]) => Promise<void> }): void {
     this.connection = connection as never;
+  }
+}
+
+class DiagnosticStdioAdapter extends TestStdioAdapter {
+  feedStderr(value: string): void {
+    this.recordProcessStderr(value);
+  }
+  startupError(message: string): Error {
+    return this.enrichStartupError(new Error(message));
   }
 }
 
@@ -196,6 +210,60 @@ test('reduces JDT process count to remain inside the total heap budget', () => {
   const plan = planJdtlsBuildRootShardsWithinBudget(roots, 4, counts, 4);
   assert.equal(plan.length, 2);
   assert.equal(plan.reduce((sum, shard) => sum + shard.sourceFileCount, 0), 4_000);
+});
+
+test('scales one JDT startup deadline across source files and classpath entries', () => {
+  assert.equal(jdtlsStartupTimeoutMs(100, 20, {}), 180_000);
+  assert.equal(jdtlsStartupTimeoutMs(8_741, 1_686, {}), 749_950);
+  assert.equal(jdtlsStartupTimeoutMs(100_000, 20_000, {}), 900_000);
+  assert.equal(jdtlsStartupTimeoutMs(1, 1, { GITNEXUS_JDT_STARTUP_TIMEOUT_MS: '420000' }), 420_000);
+  assert.equal(jdtlsStartupTimeoutMs(1, 1, { GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS: '360000' }), 360_000);
+  assert.throws(
+    () => jdtlsStartupTimeoutMs(1, 1, { GITNEXUS_JDT_STARTUP_TIMEOUT_MS: 'never' }),
+    /must be a positive number/,
+  );
+  assert.equal(jdtlsStartupHeartbeatMs({}), 15_000);
+  assert.equal(jdtlsStartupHeartbeatMs({ GITNEXUS_JDT_STARTUP_HEARTBEAT_MS: '25000' }), 25_000);
+});
+
+test('reports deterministic JDT phase, memory, process, and pending-root telemetry', () => {
+  let now = 1_000;
+  const lines: string[] = [];
+  const telemetry = new JdtlsStartupTelemetry({
+    shardId: 'jdtls-shard-1', sourceFileCount: 8_741, classpathEntryCount: 1_686,
+    heapXmx: '6G', timeoutMs: 600_000, heartbeatMs: 60_000,
+    now: () => now, log: (line) => lines.push(line), processRssMiB: () => 512.25,
+    processMetadata: () => ({ processId: 4321 }),
+  });
+  telemetry.start();
+  telemetry.setPendingRoots(1);
+  telemetry.setPhase('classpath-readiness');
+  now += 15_000;
+  telemetry.reportHeartbeat();
+  telemetry.finish('complete');
+
+  const events = lines.map((line) => JSON.parse(line.replace(/^\[jdtls-startup\] /, '')));
+  assert.deepEqual(events.map((event) => event.event), ['start', 'phase', 'heartbeat', 'complete']);
+  assert.deepEqual(events[2], {
+    event: 'heartbeat', shardId: 'jdtls-shard-1', phase: 'classpath-readiness',
+    elapsedMs: 15_000, remainingMs: 585_000, sourceFiles: 8_741,
+    classpathEntries: 1_686, pendingRoots: 1, heapXmx: '6G', processId: 4321,
+    nodeRssMiB: events[2].nodeRssMiB, jdtRssMiB: 512.25,
+  });
+  now = telemetry.deadlineAt + 1;
+  assert.throws(() => telemetry.remainingMs('project-import'), /deadline exceeded during project-import/);
+});
+
+test('retains bounded language-server stderr for startup diagnostics', () => {
+  const adapter = new DiagnosticStdioAdapter();
+  adapter.feedStderr(`discard-me-${'x'.repeat(70_000)}-diagnostic-tail`);
+  const error = adapter.startupError('startup failed');
+  assert.match(error.message, /startup failed/);
+  assert.match(error.message, /diagnostic-tail/);
+  assert.doesNotMatch(error.message, /discard-me/);
+  const metadata = adapter.getSessionMetadata();
+  assert.ok((metadata.processStderrTail?.length ?? 0) <= 64 * 1024);
+  assert.match(metadata.processStderrTail ?? '', /diagnostic-tail$/);
 });
 
 function fakeAdapter(start: () => Promise<void>): ILspAdapter {

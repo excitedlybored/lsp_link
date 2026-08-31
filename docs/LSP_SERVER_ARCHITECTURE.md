@@ -91,6 +91,13 @@ JDT LS reports service readiness before Maven, Gradle, or external Eclipse
 projects are necessarily imported. A shard therefore waits for the expected
 project catalog and classpaths before source crawling begins.
 
+One startup deadline covers every readiness phase rather than restarting a
+fresh timeout at each boundary. A size-derived budget ranges from three to
+fifteen minutes unless `GITNEXUS_JDT_STARTUP_TIMEOUT_MS` overrides it. Phase
+transitions and periodic heartbeats expose the process ID, heap, Node/JDT RSS,
+file/classpath counts, and pending roots. Bounded stderr and exit state are
+attached to startup failures.
+
 ```text
 initialize -> initialized -> wait for project import
   -> declaration inventory: documentSymbol once per document

@@ -1,7 +1,7 @@
 /**
  * Standardized Polyglot LSP Query Engine & CLI.
  *
- * Provides a unified query interface for LSP operations across all banking languages
+ * Provides a unified query interface for LSP operations across all supported languages
  * (Java, Python, C++, Rust, TypeScript, C#, COBOL):
  *   - calls    : Outgoing / incoming call hierarchy
  *   - impl     : Interface to concrete implementation lookup

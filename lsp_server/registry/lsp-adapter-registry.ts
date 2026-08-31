@@ -1,7 +1,7 @@
 /**
  * Polyglot LSP Adapter Registry & Factory.
  *
- * Registers all banking language adapters and automatically dispatches
+ * Registers all supported language adapters and automatically dispatches
  * requests based on file extensions.
  */
 
@@ -16,8 +16,18 @@ import {
   prepareBazelProjectModels,
   type BazelPreparationOptions,
 } from '../adapters/java/bazel-project-model.js';
-import { discoverJavaBuildRoots, JavaBuildRoot, JdtlsWorkspace, ownerBuildRoot } from '../adapters/java/jdtls-runtime.js';
+import {
+  discoverJavaBuildRoots,
+  JavaBuildRoot,
+  JdtlsWorkspace,
+  jdtlsHeapXmx,
+  ownerBuildRoot,
+} from '../adapters/java/jdtls-runtime.js';
 import type { PreparedJdtlsShard } from '../adapters/java/jdtls-sharding.js';
+import {
+  JdtlsStartupTelemetry,
+  jdtlsStartupTimeoutMs,
+} from '../adapters/java/jdtls-startup-telemetry.js';
 import { PyrightAdapter } from '../adapters/python/pyright-adapter.js';
 import { ClangdAdapter } from '../adapters/cpp/clangd-adapter.js';
 import { RustAnalyzerAdapter } from '../adapters/rust/rust-analyzer-adapter.js';
@@ -288,7 +298,20 @@ export class LspAdapterRegistry {
     const nativeBuildSystems = [...new Set(shard.roots
       .filter(usesNativeImport)
       .flatMap((root) => root.systems))];
-    const adapter = new JavaJdtlsAdapter({
+    const classpathEntryCount = new Set(
+      shard.projectModels.flatMap((model) => model.languageServerClasspath.map((entry) => path.resolve(entry))),
+    ).size;
+    const startupTimeout = jdtlsStartupTimeoutMs(shard.sourceFileCount, classpathEntryCount);
+    let adapter: JavaJdtlsAdapter;
+    const telemetry = new JdtlsStartupTelemetry({
+      shardId: shard.id,
+      sourceFileCount: shard.sourceFileCount,
+      classpathEntryCount,
+      heapXmx: jdtlsHeapXmx(shard.sourceFileCount),
+      timeoutMs: startupTimeout,
+      processMetadata: () => adapter?.getSessionMetadata() ?? {},
+    });
+    adapter = new JavaJdtlsAdapter({
       processShardId: shard.id,
       shardBuildRootIds: shard.roots.map((root) => root.id),
       eclipseProjectPaths: shard.projectModels.map((model) =>
@@ -302,11 +325,26 @@ export class LspAdapterRegistry {
       sourceFileCount: shard.sourceFileCount,
       buildSystems: nativeBuildSystems,
       bazelModelPrepared: true,
+      startupDeadlineAt: telemetry.deadlineAt,
+      startupProgress: (phase) => telemetry.setPhase(phase),
     });
+    telemetry.start();
     try {
-      if (!(await adapter.isAvailable())) return null;
+      if (!(await adapter.isAvailable())) {
+        telemetry.finish('failed', 'JDT LS runtime is unavailable');
+        return null;
+      }
       await adapter.start(shard.workspacePath);
-      await waitForImportedJavaProjects(adapter, shard.projectModels, shard.id);
+      telemetry.setPhase('classpath-readiness');
+      await waitForImportedJavaProjects(
+        adapter,
+        shard.projectModels,
+        shard.id,
+        telemetry.deadlineAt,
+        (pending) => telemetry.setPendingRoots(pending),
+      );
+      telemetry.setPendingRoots(0);
+      telemetry.finish('complete');
       this.activeAdapters.set(sessionKey, adapter);
       if (springToolsEnabled()) {
         const spring = new SpringBootLanguageServerAdapter(adapter, shard.id);
@@ -323,7 +361,9 @@ export class LspAdapterRegistry {
       }
       return adapter;
     } catch (error) {
-      console.warn(`[LSP Registry] Failed to start Java shard ${shard.id}:`, error instanceof Error ? error.message : error);
+      const reason = error instanceof Error ? error.message : String(error);
+      telemetry.finish('failed', reason.split('\nJDT/LSP stderr tail:')[0]);
+      console.warn(`[LSP Registry] Failed to start Java shard ${shard.id}: ${formatProcessFailure(reason, adapter)}`);
       try { await adapter.shutdown(); } catch { /* partial startup */ }
       return null;
     }
@@ -390,17 +430,17 @@ async function waitForImportedJavaProjects(
   adapter: ILspAdapter,
   projectModels: PreparedJdtlsShard['projectModels'],
   shardId: string,
+  deadlineAt?: number,
+  onPendingRoots?: (count: number) => void,
 ): Promise<void> {
-  const configuredTimeout = Number(process.env.GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS ?? 180_000);
-  if (!Number.isFinite(configuredTimeout) || configuredTimeout < 1) {
-    throw new Error('GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS must be a positive number');
-  }
-  const deadline = Date.now() + configuredTimeout;
+  const deadline = deadlineAt ?? Date.now() + 180_000;
   const pending = new Map(projectModels
     .filter((model) => model.representativeDocumentPath)
     .map((model) => [model.buildRootId, model]));
+  onPendingRoots?.(pending.size);
   do {
     for (const [rootId, model] of pending) {
+      if (Date.now() >= deadline) break;
       try {
         const response = await adapter.request<{ classpaths?: unknown }>('workspace/executeCommand', {
           command: 'java.project.getClasspaths',
@@ -409,7 +449,10 @@ async function waitForImportedJavaProjects(
         const actual = new Set(Array.isArray(response.classpaths)
           ? response.classpaths.filter((value): value is string => typeof value === 'string').map((value) => path.resolve(value))
           : []);
-        if (model.languageServerClasspath.every((entry) => actual.has(path.resolve(entry)))) pending.delete(rootId);
+        if (model.languageServerClasspath.every((entry) => actual.has(path.resolve(entry)))) {
+          pending.delete(rootId);
+          onPendingRoots?.(pending.size);
+        }
       } catch {
         // Project import/indexing is still in flight.
       }
@@ -419,7 +462,22 @@ async function waitForImportedJavaProjects(
   } while (Date.now() < deadline);
   if (pending.size > 0) {
     throw new Error(
-      `[${shardId}] JDT classpath readiness timed out for: ${[...pending.keys()].join(', ')}`,
+      `[${shardId}] JDT classpath readiness timed out with ${pending.size} pending roots: `
+      + [...pending.keys()].join(', '),
     );
   }
+}
+
+function formatProcessFailure(reason: string, adapter: ILspAdapter): string {
+  const metadata = adapter.getSessionMetadata();
+  const processDetail = [
+    metadata.processId !== undefined ? `pid=${metadata.processId}` : undefined,
+    metadata.processExitCode !== null && metadata.processExitCode !== undefined
+      ? `exitCode=${metadata.processExitCode}` : undefined,
+    metadata.processSignal ? `signal=${metadata.processSignal}` : undefined,
+  ].filter(Boolean).join(', ');
+  const stderr = metadata.processStderrTail?.trim();
+  return `${reason}${processDetail ? ` (${processDetail})` : ''}`
+    + (stderr && !reason.includes('stderr tail:')
+      ? `\nJDT stderr tail:\n${stderr.slice(-8 * 1024)}` : '');
 }

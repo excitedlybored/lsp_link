@@ -25,6 +25,8 @@ export interface JavaJdtlsAdapterOptions {
   workspaceFolderPaths?: string[];
   uriMappings?: Array<{ sourcePath: string; stagedPath: string }>;
   sourceFileCount?: number;
+  startupDeadlineAt?: number;
+  startupProgress?: (phase: string) => void;
 }
 
 /** Tracks `language/status` until ServiceReady and Maven/Gradle import go quiet. */
@@ -42,24 +44,32 @@ class JdtlsStatusTracker {
     }
   }
 
-  async waitUntilServiceReady(timeoutMs: number): Promise<void> {
-    if (this.serviceReady) return;
-    await Promise.race([
-      new Promise<void>((resolve) => {
-        this.serviceReadyResolve = resolve;
-        if (this.serviceReady) resolve();
-      }),
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
+  async waitUntilServiceReady(timeoutMs: number): Promise<boolean> {
+    if (this.serviceReady) return true;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        new Promise<void>((resolve) => {
+          this.serviceReadyResolve = resolve;
+          if (this.serviceReady) resolve();
+        }),
+        new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      this.serviceReadyResolve = null;
+    }
+    return this.serviceReady;
   }
 
-  async waitUntilStatusQuiet(quietMs: number, capMs: number): Promise<void> {
+  async waitUntilStatusQuiet(quietMs: number, capMs: number): Promise<boolean> {
     const settleStart = Date.now();
     while (Date.now() - settleStart < capMs) {
       const idleFor = Date.now() - (this.lastStatusAt || settleStart);
-      if (idleFor >= quietMs) break;
+      if (idleFor >= quietMs) return true;
       await new Promise((resolve) => setTimeout(resolve, 200));
     }
+    return false;
   }
 }
 
@@ -80,10 +90,7 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
     this.stagedToSource = uriMappingIndex(options.uriMappings ?? [], 'toSource');
   }
 
-  public override getSessionMetadata(): {
-    workspacePath?: string; buildRootId?: string; buildRootIds?: string[];
-    buildSystems?: string[]; processShardId?: string;
-  } {
+  public override getSessionMetadata() {
     return {
       ...super.getSessionMetadata(),
       buildRootId: this.options.buildRootId,
@@ -173,19 +180,34 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
   }
 
   protected initializeTimeoutMs(_workspacePath: string): number | undefined {
+    if (this.options.startupDeadlineAt !== undefined) return this.remainingStartupMs('initialize');
     return this.workspace?.initializeTimeoutMs() ?? 60_000;
   }
 
   protected async waitUntilWorkspaceReady(_workspacePath: string): Promise<void> {
     const workspace = this.workspace;
     if (!workspace) return;
-    await this.status.waitUntilServiceReady(workspace.serviceReadyTimeoutMs());
+    this.options.startupProgress?.('service-ready');
+    const serviceReady = await this.status.waitUntilServiceReady(
+      this.options.startupDeadlineAt === undefined
+        ? workspace.serviceReadyTimeoutMs()
+        : this.remainingStartupMs('service-ready'),
+    );
+    if (!serviceReady) throw new Error('JDT service readiness timed out');
     // Indexing still runs after ServiceReady. Querying during that window
     // just hits per-RPC timeouts. Wait until status is quiet, then enrich.
-    await this.status.waitUntilStatusQuiet(
+    this.options.startupProgress?.('project-import');
+    const quiet = await this.status.waitUntilStatusQuiet(
       workspace.importBuildTools() ? 4000 : 2000,
-      workspace.importQuietTimeoutMs()
+      this.options.startupDeadlineAt === undefined
+        ? workspace.importQuietTimeoutMs()
+        : this.remainingStartupMs('project-import'),
     );
+    if (!quiet) throw new Error('JDT project import did not become quiet before the startup deadline');
+  }
+
+  protected override onStartupPhase(phase: string): void {
+    this.options.startupProgress?.(phase);
   }
 
   protected async buildProcessLaunch(workspacePath: string): Promise<StdioProcessLaunch> {
@@ -226,6 +248,12 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
         workspaceFolders: jdtWorkspaceFolders,
       },
     };
+  }
+
+  private remainingStartupMs(phase: string): number {
+    const remaining = (this.options.startupDeadlineAt ?? Date.now()) - Date.now();
+    if (remaining <= 0) throw new Error(`JDT startup deadline exceeded during ${phase}`);
+    return remaining;
   }
 }
 

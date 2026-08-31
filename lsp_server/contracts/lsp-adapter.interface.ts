@@ -38,6 +38,10 @@ export interface ILspAdapter {
     buildRootIds?: string[];
     buildSystems?: string[];
     processShardId?: string;
+    processId?: number;
+    processExitCode?: number | null;
+    processSignal?: NodeJS.Signals | null;
+    processStderrTail?: string;
   };
 
   isAvailable(): Promise<boolean>;

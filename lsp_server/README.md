@@ -130,9 +130,20 @@ by unsafe lexical class names.
 JDT process count is constrained by both crawl concurrency and a total heap
 budget. `GITNEXUS_JDT_MAX_TOTAL_HEAP_GB` defaults to `8`; the planner reduces
 the shard count until the aggregate 2/4/6 GB JVM heaps fit. Override
-`GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS` (default `180000`) when an unusually
-large import needs more time. A classpath that is still incomplete at that
-deadline fails the shard instead of being mislabeled as a complete crawl.
+`GITNEXUS_JDT_STARTUP_TIMEOUT_MS` when an unusually large import needs a fixed
+deadline. Without an override, one overall startup budget scales with source
+files and classpath entries from a three-minute minimum to a fifteen-minute
+maximum. The legacy `GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS` remains an alias.
+
+Startup reports phase transitions and a heartbeat every 15 seconds across
+process launch, initialize, service readiness, project import, and classpath
+validation. Each record includes elapsed/remaining time, source and classpath
+counts, pending roots, configured JDT heap, process ID, Node RSS, and JDT RSS
+where the host exposes it. `GITNEXUS_JDT_STARTUP_HEARTBEAT_MS` changes the
+interval. Language-server stderr is retained in a bounded 64 KiB tail; startup
+failures print at most the final 8 KiB with process exit diagnostics. A
+classpath that is incomplete at the shared deadline fails the shard instead of
+being mislabeled as a complete crawl.
 
 JDT LS has one normalized protocol quirk: for `typeDefinition` on Java
 primitives and synthetic `array.length`, some versions emit a response with

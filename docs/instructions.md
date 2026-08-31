@@ -77,6 +77,17 @@ symbol-reference and document-fact passes. Repeated capability timeouts open a
 per-capability circuit breaker; the run continues and the timeout/partial
 coverage remains explicit in the graph.
 
+JDT startup uses one deadline across launch, initialize, service readiness,
+Eclipse project import, and classpath validation. It emits `[jdtls-startup]`
+phase records and 15-second heartbeats containing elapsed/remaining time,
+source files, classpath entries, pending roots, the 2/4/6 GiB heap selection,
+PID, Node RSS, and JDT RSS when available. The automatic deadline scales from
+three to fifteen minutes; set `GITNEXUS_JDT_STARTUP_TIMEOUT_MS` for a fixed
+positive millisecond value and `GITNEXUS_JDT_STARTUP_HEARTBEAT_MS` to change
+the reporting interval. The older
+`GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS` remains a compatibility alias.
+Failures include process exit state and only a bounded stderr tail.
+
 The aspect build writes a per-run Build Event Protocol (BEP) JSON stream. After
 the build, `bazel:aspect-output-discovery` follows the output group's shared
 `NamedSetOfFiles` references and reads only manifests reported by that build.

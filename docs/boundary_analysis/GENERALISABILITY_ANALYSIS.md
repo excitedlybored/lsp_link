@@ -8,7 +8,7 @@
 > structured LSP evidence.
 
 **Former target scope**: polyglot distributed architectures, monoliths,
-microservices, and banking systems.
+microservices, and enterprise systems.
 
 ---
 

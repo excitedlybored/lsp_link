@@ -47,6 +47,12 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   private readonly requestCache = new Map<string, Promise<unknown>>();
   private requestCacheHits = 0;
   private requestCacheMisses = 0;
+  private processStderrTail = '';
+  private lastProcessId?: number;
+  private processExitCode: number | null = null;
+  private processSignal: NodeJS.Signals | null = null;
+
+  private static readonly PROCESS_STDERR_LIMIT = 64 * 1024;
 
   public static findBinary(name: string): string | null {
     const searchPaths = [
@@ -69,9 +75,17 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
 
   public getSessionMetadata(): {
     workspacePath?: string; buildRootId?: string; buildRootIds?: string[];
-    buildSystems?: string[]; processShardId?: string;
+    buildSystems?: string[]; processShardId?: string; processId?: number;
+    processExitCode?: number | null; processSignal?: NodeJS.Signals | null;
+    processStderrTail?: string;
   } {
-    return { workspacePath: this.sessionWorkspacePath };
+    return {
+      workspacePath: this.sessionWorkspacePath,
+      processId: this.process?.pid ?? this.lastProcessId,
+      processExitCode: this.processExitCode,
+      processSignal: this.processSignal,
+      processStderrTail: this.processStderrTail || undefined,
+    };
   }
 
   protected abstract buildProcessLaunch(workspacePath: string): Promise<StdioProcessLaunch>;
@@ -93,17 +107,28 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     }
     this.sessionWorkspacePath = path.resolve(workspacePath);
     this.clearRequestCache();
+    this.processStderrTail = '';
+    this.lastProcessId = undefined;
+    this.processExitCode = null;
+    this.processSignal = null;
     try {
+      this.onStartupPhase('preparing-launch');
       const launch = await this.buildProcessLaunch(workspacePath);
       this.launchSettings = (launch.initializationOptions?.settings as Record<string, unknown>) ?? {};
       this.spawnLanguageServer(launch);
+      this.onStartupPhase('process-started');
       this.openJsonRpcConnection();
+      this.onStartupPhase('initialize-request');
       await this.performInitializeHandshake(workspacePath, launch);
+      this.onStartupPhase('initialize-complete');
       await this.notifyInitialized();
+      this.onStartupPhase('workspace-readiness');
       await this.waitUntilWorkspaceReady(workspacePath);
+      this.onStartupPhase('workspace-ready');
     } catch (error) {
+      const enriched = this.enrichStartupError(error);
       await this.shutdown();
-      throw error;
+      throw enriched;
     }
   }
 
@@ -114,6 +139,9 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
 
   /** Override for compilers that publish ready after `initialized` (JDT.LS ServiceReady). */
   protected async waitUntilWorkspaceReady(_workspacePath: string): Promise<void> {}
+
+  /** Lifecycle hook for adapter-specific startup telemetry. */
+  protected onStartupPhase(_phase: string): void {}
 
   /** Cap on in-flight query RPCs so a stuck compiler cannot hang analyze. */
   protected queryTimeoutMs(): number {
@@ -434,17 +462,43 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     if (!this.process.stdout || !this.process.stdin) {
       throw new Error(`Failed to create stdio streams for ${this.id}`);
     }
+    this.lastProcessId = this.process.pid;
 
     this.process.stdin.on('error', () => {});
     this.process.stdout.on('error', () => {});
-    this.process.stderr?.on('data', () => {});
+    this.process.stderr?.on('data', (chunk: Buffer | string) => {
+      this.recordProcessStderr(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+    });
     this.process.stderr?.on('error', () => {});
-    this.process.on('exit', () => {
+    this.process.on('exit', (code, signal) => {
+      this.processExitCode = code;
+      this.processSignal = signal;
       this.connection = null;
     });
-    this.process.on('error', () => {
+    this.process.on('error', (error) => {
+      this.recordProcessStderr(`[process-error] ${error.message}\n`);
       this.connection = null;
     });
+  }
+
+  protected recordProcessStderr(value: string): void {
+    this.processStderrTail += value;
+    const limit = BaseStdioLspAdapter.PROCESS_STDERR_LIMIT;
+    if (this.processStderrTail.length > limit) {
+      this.processStderrTail = this.processStderrTail.slice(-limit);
+    }
+  }
+
+  protected enrichStartupError(error: unknown): Error {
+    const message = error instanceof Error ? error.message : String(error);
+    const diagnostics = [
+      this.lastProcessId !== undefined ? `pid=${this.lastProcessId}` : undefined,
+      this.processExitCode !== null ? `exitCode=${this.processExitCode}` : undefined,
+      this.processSignal ? `signal=${this.processSignal}` : undefined,
+    ].filter(Boolean).join(', ');
+    const stderr = this.processStderrTail.trim();
+    const stderrSummary = stderr ? `\nJDT/LSP stderr tail:\n${stderr.slice(-8 * 1024)}` : '';
+    return new Error(`${message}${diagnostics ? ` (${diagnostics})` : ''}${stderrSummary}`);
   }
 
   private openJsonRpcConnection(): void {
