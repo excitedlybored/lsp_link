@@ -223,7 +223,8 @@ export function validatePrebuiltBazelHandoff(
       status: 'failed',
       buildMode: 'prebuilt',
       handoffPath,
-      reason: `Prebuilt Bazel handoff validation failed: ${error instanceof Error ? error.message : String(error)}`,
+      reason: `Prebuilt Bazel handoff validation failed: ${error instanceof Error ? error.message : String(error)}. `
+        + 'Run prepare-build-model again with the same --config used by build-index.',
     };
   }
 }

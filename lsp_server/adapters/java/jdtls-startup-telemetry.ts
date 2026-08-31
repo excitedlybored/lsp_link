@@ -22,6 +22,8 @@ export interface JdtlsClasspathReadinessProgress {
   matchedEntries: number;
   missingEntries: number;
   lastProgressAt: number;
+  requestState?: 'sent' | 'returned' | 'failed';
+  requestElapsedMs?: number;
   lastError?: string;
 }
 

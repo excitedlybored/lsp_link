@@ -119,18 +119,25 @@ function walkSourceFiles(directory: string, registry: LspAdapterRegistry): strin
 
 async function runJavaIndexer(sample: SampleInventory, temporary: string): Promise<void> {
   const output = path.join(temporary, `${sample.name}.lbug`);
-  const prebuilt = hasCompletePrebuiltBazelHandoff(sample);
-  const sampleConfigPath = path.join(sample.path, 'index-config.json');
-  const configPath = prebuilt && fs.existsSync(sampleConfigPath)
-    ? sampleConfigPath
-    : path.join(temporary, `${sample.name}.json`);
-  if (configPath !== sampleConfigPath) {
-    fs.writeFileSync(configPath, JSON.stringify(endToEndConfig(prebuilt, sample.name), null, 2));
+  const roots = new LspAdapterRegistry().getJavaBuildRoots(sample.path);
+  const requiresBazelPreparation = roots.some((root) => root.systems.includes('bazel'));
+  const configPath = path.join(temporary, `${sample.name}.json`);
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify(endToEndConfig(requiresBazelPreparation, sample.name), null, 2),
+  );
+  if (requiresBazelPreparation) {
+    await runProcess(process.execPath, [
+      path.join(REPOSITORY_PATH, 'node_modules/tsx/dist/cli.mjs'),
+      path.join(REPOSITORY_PATH, 'indexer/src/cli/build.ts'),
+      'prepare-build-model', sample.path,
+      '--config', configPath,
+    ], `${sample.name}:prepare-build-model`);
   }
   await runProcess(process.execPath, [
     path.join(REPOSITORY_PATH, 'node_modules/tsx/dist/cli.mjs'),
     path.join(REPOSITORY_PATH, 'indexer/src/cli/build.ts'),
-    'build', sample.path,
+    'build-index', sample.path,
     '--config', configPath,
     '--output', output,
     '--checkpoint-directory', `${output}.checkpoints`,
@@ -203,13 +210,6 @@ function terminateChild(pid: number | undefined, processGroup: boolean, signal: 
   if (pid === undefined) return;
   try { process.kill(processGroup ? -pid : pid, signal); }
   catch { /* the process already exited */ }
-}
-
-function hasCompletePrebuiltBazelHandoff(sample: SampleInventory): boolean {
-  const roots = new LspAdapterRegistry().getJavaBuildRoots(sample.path);
-  const bazelRoots = roots.filter((root) => root.systems.includes('bazel'));
-  return bazelRoots.length > 0 && bazelRoots.every((root) =>
-    fs.existsSync(path.join(root.workspacePath, '.gitnexus/jdtls/bazel-handoff.json')));
 }
 
 async function assertSpringSemantics(handle: ReturnType<typeof openLspLadybugDatabase>): Promise<void> {

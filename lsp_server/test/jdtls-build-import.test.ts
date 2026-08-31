@@ -239,6 +239,8 @@ test('detects and configures a Gradle workspace independently', () => {
   assert.equal(workspace.requiredJavaMajor, 25);
   assert.equal(java.import.gradle.enabled, true);
   assert.equal(java.import.maven.enabled, false);
+  assert.equal(java.autobuild.enabled, true);
+  assert.equal(java.configuration.updateBuildConfiguration, 'automatic');
   assert.match(java.import.gradle.arguments, /isolated-projects=false/);
 });
 
@@ -272,6 +274,10 @@ test('loads an exact Bazel project model instead of guessing bazel-bin jars', ()
   assert.equal(workspace.usesBazel, true);
   assert.equal(workspace.buildSystems[0].importMode, 'external-model');
   assert.equal(workspace.importBuildTools(), true);
+  assert.equal(workspace.nativeBuildToolImportEnabled(), false);
+  assert.equal(java.autobuild.enabled, false);
+  assert.equal(java.configuration.updateBuildConfiguration, 'disabled');
+  assert.equal(java.project.importOnFirstTimeStartup, 'automatic');
   assert.deepEqual(java.project.referencedLibraries.include, [path.join(root, 'bazel-out/lib/dependency.jar')]);
   assert.deepEqual(java.project.sourcePaths, ['src/main/java']);
   assert.equal(java.project.outputPath, 'bazel-out/classes');
@@ -381,6 +387,7 @@ test('generates and refreshes an exact Bazel JavaInfo classpath and source model
     });
     assert.equal(mismatchedScope.status, 'failed');
     assert.match(mismatchedScope.reason ?? '', /target query/);
+    assert.match(mismatchedScope.reason ?? '', /prepare-build-model again with the same --config/);
     assert.equal(fs.existsSync(forbiddenBazelCall), false);
 
     const compiledJar = path.join(root, 'execroot/bazel-out/app.jar');

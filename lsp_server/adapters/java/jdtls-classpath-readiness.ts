@@ -64,6 +64,23 @@ export async function waitForImportedJavaProjects(
     for (const [rootId, model] of pending) {
       if (now() >= deadline) break;
       attempts += 1;
+      const requestStartedAt = now();
+      const expectedForRequest = expectedByRoot.get(rootId) ?? new Map<string, string>();
+      onProgress?.({
+        attempts,
+        totalRoots,
+        completedRoots: totalRoots - pending.size,
+        currentRootId: rootId,
+        expectedEntries: expectedForRequest.size,
+        classpathEntries: bestActualByRoot.get(rootId) ?? 0,
+        modulepathEntries: 0,
+        actualEntries: bestActualByRoot.get(rootId) ?? 0,
+        matchedEntries: bestMatchedByRoot.get(rootId) ?? 0,
+        missingEntries: Math.max(0, expectedForRequest.size - (bestMatchedByRoot.get(rootId) ?? 0)),
+        lastProgressAt,
+        requestState: 'sent',
+        requestElapsedMs: 0,
+      });
       try {
         const response = await adapter.request<{ classpaths?: unknown; modulepaths?: unknown }>('workspace/executeCommand', {
           command: 'java.project.getClasspaths',
@@ -100,6 +117,8 @@ export async function waitForImportedJavaProjects(
           matchedEntries,
           missingEntries: missing.length,
           lastProgressAt,
+          requestState: 'returned',
+          requestElapsedMs: Math.max(0, now() - requestStartedAt),
         });
         const stalledForMs = now() - (lastProgressByRoot.get(rootId) ?? lastProgressAt);
         if (missing.length > 0 && stalledForMs >= stallTimeoutMs) {
@@ -129,6 +148,8 @@ export async function waitForImportedJavaProjects(
           matchedEntries: bestMatchedByRoot.get(rootId) ?? 0,
           missingEntries: Math.max(0, model.languageServerClasspath.length - (bestMatchedByRoot.get(rootId) ?? 0)),
           lastProgressAt,
+          requestState: 'failed',
+          requestElapsedMs: Math.max(0, now() - requestStartedAt),
           lastError: message,
         });
         const stalledForMs = now() - (lastProgressByRoot.get(rootId) ?? lastProgressAt);

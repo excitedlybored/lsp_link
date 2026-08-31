@@ -3,6 +3,12 @@
 `lsp_server/` owns protocol transport and language-server lifecycle. It does
 not own graph projection or LadybugDB writes.
 
+The version-specific investigation of JDT.LS indexing, command dispatch,
+progress reporting, shared indexes, and the proposed batch-analysis extension
+is recorded in [JDTLS_SCALING_RESEARCH.md](JDTLS_SCALING_RESEARCH.md). Treat
+that document as the durable source for Java scaling decisions rather than
+reconstructing them from conversation history.
+
 ## Boundaries
 
 ```text
@@ -104,6 +110,8 @@ classpath or module path before source crawling begins. The set comparison is
 cheap and normally runs once. Incomplete but improving responses retry with
 bounded backoff; stable mismatches and repeated command failures fail quickly
 with concrete diagnostics instead of consuming the full startup deadline.
+The client enforces the RPC deadline locally because LSP cancellation is
+advisory and JDT may be blocked behind an Eclipse workspace job.
 
 One startup deadline covers every readiness phase rather than restarting a
 fresh timeout at each boundary. A size-derived budget ranges from three to
@@ -111,6 +119,11 @@ fifteen minutes unless `GITNEXUS_JDT_STARTUP_TIMEOUT_MS` overrides it. Phase
 transitions and periodic heartbeats expose the process ID, heap, Node/JDT RSS,
 file/classpath counts, and pending roots. Bounded stderr and exit state are
 attached to startup failures.
+
+Generated Bazel projects import exact Eclipse metadata with autobuild disabled.
+Their JDT `-data` workspace remains run-scoped. Live benchmarks showed that
+restoring Eclipse state made startup slightly faster but deferred reconciliation
+to every opened document, making the complete crawl substantially slower.
 
 ```text
 initialize -> initialized -> wait for project import
@@ -256,8 +269,6 @@ coverage counters, or JDT LS stability before raising the default above one.
   reserve copied external projects and URI remapping for Bazel and genuine
   fallback roots. This avoids duplicate source indexing without changing the
   requested source set.
-- Reuse compatible imported JDT workspaces by a complete build-configuration
-  fingerprint instead of deleting every JDT data directory before startup.
 - Continue validating and reusing the inventory-hash source snapshots now
   exposed to generated projects through Eclipse linked resources; retain
   copied staging only as a compatibility fallback.

@@ -89,8 +89,14 @@ the reporting interval. The older
 Failures include process exit state and only a bounded stderr tail.
 The `classpathReadiness` heartbeat object shows attempts, completed roots,
 classpath/module-path entries returned by JDT, matched/missing expected entries,
-and `stalledForMs`. A stable missing count indicates a classpath-model mismatch;
+request state/time, and `stalledForMs`. A `sent` state that becomes `failed`
+means the local hard RPC deadline fired even if JDT ignored cancellation. A
+stable missing count indicates a classpath-model mismatch;
 a decreasing count indicates continuing import progress.
+
+Generated Bazel projects do not run Eclipse autobuild; Maven and Gradle native
+imports retain it. JDT's mutable data workspace is run-scoped, while the
+content-validated consolidated-source cache is reused by unchanged runs.
 
 Classpath readiness is a strict correctness gate, not a second dependency
 scan. It succeeds after one complete response, retries incomplete responses

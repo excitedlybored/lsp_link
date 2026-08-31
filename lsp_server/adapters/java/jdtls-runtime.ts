@@ -409,6 +409,12 @@ export class JdtlsWorkspace {
     return this.eclipseProjectImport || this.buildImportStatuses().some((provider) => provider.status === 'ready');
   }
 
+  /** Native Maven/Gradle imports need model refreshes and autobuild; generated Eclipse projects do not. */
+  nativeBuildToolImportEnabled(): boolean {
+    return this.buildImportStatuses().some((provider) =>
+      provider.status === 'ready' && provider.mode === 'native');
+  }
+
   /** Buildship's import init scripts are not compatible with Gradle isolated projects. */
   gradleImportArguments(): string | undefined {
     const argumentsList = process.env.GITNEXUS_JDT_GRADLE_ARGUMENTS?.trim()
@@ -465,13 +471,15 @@ export function createJdtlsProcessLaunch(
   workspacePath: string,
   workspace: JdtlsWorkspace,
   runtime: JdtlsRuntime,
-  dataDir?: string
+  dataDir?: string,
 ): JdtlsProcessLaunch {
   const resolvedDataDir = dataDir ?? defaultWorkspaceDataDir(workspacePath);
   fs.rmSync(resolvedDataDir, { recursive: true, force: true });
   fs.mkdirSync(resolvedDataDir, { recursive: true });
 
   const springTools = springToolsEnabled() ? locateSpringToolsRuntime() : null;
+  const projectImportEnabled = workspace.importBuildTools();
+  const nativeBuildToolImportEnabled = workspace.nativeBuildToolImportEnabled();
   return {
     command: runtime.jdkJavaBin,
     args: jdtlsVmArguments({
@@ -482,24 +490,27 @@ export function createJdtlsProcessLaunch(
     initializationOptions: {
       ...(springTools?.jdtBundles.length ? { bundles: springTools.jdtBundles } : {}),
       extendedClientCapabilities: {
-        skipProjectConfiguration: !workspace.importBuildTools(),
+        skipProjectConfiguration: !projectImportEnabled,
         classFileContentsSupport: true,
         shouldLanguageServerExitOnShutdown: true,
       },
       settings: {
         java: {
-          autobuild: { enabled: workspace.importBuildTools() },
+          // Bazel/Eclipse project metadata is already exact. Rebuilding every
+          // source through Eclipse adds substantial cold-start work without
+          // improving the classpath that Bazel supplied.
+          autobuild: { enabled: nativeBuildToolImportEnabled },
           maxConcurrentBuilds: 1,
           errors: { incompleteClasspath: { severity: 'ignore' } },
           configuration: {
-            updateBuildConfiguration: workspace.importBuildTools() ? 'automatic' : 'disabled',
+            updateBuildConfiguration: nativeBuildToolImportEnabled ? 'automatic' : 'disabled',
             maven: {
               ...(process.env.GITNEXUS_JDT_MAVEN_USER_SETTINGS ? { userSettings: path.resolve(workspacePath, process.env.GITNEXUS_JDT_MAVEN_USER_SETTINGS) } : {}),
               ...(process.env.GITNEXUS_JDT_MAVEN_GLOBAL_SETTINGS ? { globalSettings: path.resolve(workspacePath, process.env.GITNEXUS_JDT_MAVEN_GLOBAL_SETTINGS) } : {}),
             },
           },
           project: {
-            importOnFirstTimeStartup: workspace.importBuildTools() ? 'automatic' : 'disabled',
+            importOnFirstTimeStartup: projectImportEnabled ? 'automatic' : 'disabled',
             resourceFilters: ['node_modules', '.git', 'build', 'target', '.gradle', 'bazel-.*'],
             ...(workspace.bazelProjectModel ? {
               referencedLibraries: { include: jdtlsResolutionClasspath(workspace.bazelProjectModel) },

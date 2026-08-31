@@ -289,19 +289,27 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     const timeoutMs = this.queryTimeoutMs();
     const source = new rpc.CancellationTokenSource();
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      source.cancel();
-    }, timeoutMs);
+    let timer: NodeJS.Timeout | undefined;
+    const request = connection.sendRequest(method, params, source.token) as Promise<T>;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        source.cancel();
+        // Cancellation is advisory in LSP. Some servers do not answer the
+        // cancelled request while a workspace job owns their scheduling rule,
+        // so reject locally instead of waiting indefinitely for an envelope.
+        reject(new Error(`local request deadline exceeded after ${timeoutMs}ms`));
+      }, timeoutMs);
+    });
     try {
-      return (await connection.sendRequest(method, params, source.token)) as T;
+      return await Promise.race([request, deadline]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(timedOut
         ? `Request ${method} timed out after ${timeoutMs}ms: ${message}`
         : `Request ${method} failed: ${message}`);
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
   }
 

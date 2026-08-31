@@ -46,6 +46,10 @@ class DiagnosticStdioAdapter extends TestStdioAdapter {
   }
 }
 
+class HardTimeoutStdioAdapter extends TestStdioAdapter {
+  protected override queryTimeoutMs(): number { return 10; }
+}
+
 class ClientCommandJdtAdapter extends JavaJdtlsAdapter {
   dispatchClientCommand(params: unknown): unknown {
     return this.onServerRequest('workspace/executeClientCommand', params);
@@ -137,6 +141,19 @@ test('enforces adapter request concurrency at the JSON-RPC boundary', async () =
   });
   await Promise.all(Array.from({ length: 12 }, () => adapter.request('test/request', {})));
   assert.equal(maximum, 2);
+});
+
+test('rejects locally when a language server ignores request cancellation', async () => {
+  const adapter = new HardTimeoutStdioAdapter();
+  adapter.attach({
+    async sendRequest() { return await new Promise<never>(() => {}); },
+  });
+  const startedAt = Date.now();
+  await assert.rejects(
+    adapter.request('workspace/executeCommand', { command: 'blocked' }),
+    /timed out after 10ms.*local request deadline exceeded/,
+  );
+  assert.ok(Date.now() - startedAt < 1_000);
 });
 
 test('coalesces and memoizes identical read-only LSP requests within one session', async () => {
@@ -324,8 +341,11 @@ test('reports deterministic JDT phase, memory, process, and pending-root telemet
   assert.throws(() => telemetry.remainingMs('project-import'), /deadline exceeded during project-import/);
 });
 
-test('classpath readiness counts classpath and modulepath entries and reports progress', async () => {
-  const progress: Array<{ matchedEntries: number; missingEntries: number; completedRoots: number }> = [];
+test('classpath readiness counts classpath and modulepath entries and reports request progress', async () => {
+  const progress: Array<{
+    matchedEntries: number; missingEntries: number; completedRoots: number;
+    requestState?: string;
+  }> = [];
   const adapter = {
     documentUri: (filename: string) => `file://${filename}`,
     request: async () => ({ classpaths: ['/deps/runtime.jar'], modulepaths: ['/deps/module.jar'] }),
@@ -344,9 +364,12 @@ test('classpath readiness counts classpath and modulepath entries and reports pr
     undefined,
     (event) => progress.push(event),
   );
-  assert.deepEqual(progress.map(({ matchedEntries, missingEntries, completedRoots }) => ({
-    matchedEntries, missingEntries, completedRoots,
-  })), [{ matchedEntries: 2, missingEntries: 0, completedRoots: 1 }]);
+  assert.deepEqual(progress.map(({ matchedEntries, missingEntries, completedRoots, requestState }) => ({
+    matchedEntries, missingEntries, completedRoots, requestState,
+  })), [
+    { matchedEntries: 0, missingEntries: 2, completedRoots: 0, requestState: 'sent' },
+    { matchedEntries: 2, missingEntries: 0, completedRoots: 1, requestState: 'returned' },
+  ]);
 });
 
 test('classpath readiness retries only while coverage improves and backs off between stable responses', async () => {

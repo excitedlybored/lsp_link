@@ -2,6 +2,11 @@
 
 This directory contains the standalone server launcher for **Eclipse JDT Language Server (`eclipse.jdt.ls`)** and adapters for Kotlin, TypeScript, Python, C++, Rust, C#, and COBOL.
 
+See [JDT.LS scaling research](../docs/JDTLS_SCALING_RESEARCH.md) for the
+source-linked analysis of JDT.LS 1.57.0 index readiness, reference-search
+behavior, shared indexes, progress reporting, and the recommended batch JDT
+Core extension.
+
 ## Module boundaries
 
 `lsp_server/public-api.ts` is the only supported integration boundary for the
@@ -142,8 +147,10 @@ there is no second extension switch in the CLI.
 The base stdio adapter enforces `maxConcurrentRequests`, bounds retained
 diagnostic notifications, limits opened document size, propagates protocol
 failures, and caps initialize, query, and shutdown waits. JDT workspaces are
-run-scoped and removed after the owning shard stops, so simultaneous indexing
-runs cannot delete each other's compiler state.
+run-scoped and removed after the owning shard stops. The persistent consolidated
+source snapshot is reused across runs; JDT's mutable `-data` state is rebuilt
+because live measurements showed restored state deferred expensive work into
+per-document reconciliation and made the complete crawl slower.
 
 Each active server session also maintains a bounded 2,048-entry LRU for
 read-only semantic RPCs. Its key is the LSP method plus canonicalized parameters,
@@ -172,7 +179,8 @@ failures print at most the final 8 KiB with process exit diagnostics. A
 classpath that is incomplete at the shared deadline fails the shard instead of
 being mislabeled as a complete crawl.
 
-During `classpath-readiness`, the heartbeat also reports request attempts,
+During `classpath-readiness`, the heartbeat also reports request attempts and
+the current request state (`sent`, `returned`, or `failed`) and elapsed time,
 completed roots, classpath/module-path response counts, matched and missing
 expected entries, the current root, the last error, and `stalledForMs`. Both
 JDT response arrays participate in readiness, and canonical filesystem paths
@@ -185,6 +193,10 @@ surface the underlying JDT error. Override those bounds with
 `GITNEXUS_JDT_CLASSPATH_STALL_TIMEOUT_MS` and
 `GITNEXUS_JDT_CLASSPATH_MAX_ERRORS`; the full startup deadline remains the
 outer safety limit.
+
+JSON-RPC request deadlines are enforced locally as well as sent through the LSP
+cancellation token. A server blocked behind an Eclipse workspace job therefore
+cannot leave the indexer awaiting a cancellation response forever.
 
 Before the JDT process launches, `[jdtls-workspace]` records report source
 mapping, cache validation/building, consolidation, and Eclipse-project linking
@@ -204,6 +216,11 @@ so the Java adapter converts that exact envelope to the valid nullable result
 `null`. It does not suppress any other JDT LS errors.
 
 ## Java build import
+
+Native Maven and Gradle projects retain automatic build-model refresh and
+Eclipse autobuild. Generated Bazel/Eclipse projects import the exact `.project`
+and `.classpath` metadata but disable autobuild and automatic build-configuration
+updates; Bazel remains the build authority.
 
 ### Spring Tools
 
