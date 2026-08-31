@@ -95,8 +95,8 @@ export async function crawlJdtBatchRoot(input: {
     if (fact.kind !== 'declaration') continue;
     const document = fact.uri ? documentByPath.get(uriPath(fact.uri)) : undefined;
     if (!document || !fact.name || !fact.targetPortableKey) continue;
-    const range = factRange(fact);
     const selectionRange = selectionFactRange(fact);
+    const range = factRange(fact, selectionRange);
     const observed = ingestDocumentSymbols(
       { runId: run.id, server, document, capability: CAPABILITIES.declarations },
       [{ name: fact.name, kind: symbolKind(fact.declarationKind), range, selectionRange }],
@@ -224,14 +224,23 @@ function addCoverage(batch: LspObservationBatch, run: LspAnalysisRun, server: Ls
   }
 }
 
-function factRange(fact: BatchFact): LspRange {
-  return { start: { line: fact.startLine ?? 0, character: fact.startCharacter ?? 0 }, end: { line: fact.endLine ?? fact.startLine ?? 0, character: fact.endCharacter ?? fact.startCharacter ?? 0 } };
+function factRange(fact: BatchFact, mustContain?: LspRange): LspRange {
+  const start = { line: fact.startLine ?? 0, character: fact.startCharacter ?? 0 };
+  const candidateEnd = { line: fact.endLine ?? start.line, character: fact.endCharacter ?? start.character };
+  let end = positionBefore(candidateEnd, start) ? start : candidateEnd;
+  if (mustContain && positionBefore(mustContain.start, start)) {
+    start.line = mustContain.start.line; start.character = mustContain.start.character;
+  }
+  if (mustContain && positionBefore(end, mustContain.end)) end = mustContain.end;
+  return { start, end };
 }
 function selectionFactRange(fact: BatchFact): LspRange {
-  return {
-    start: { line: fact.selectionStartLine ?? fact.startLine ?? 0, character: fact.selectionStartCharacter ?? fact.startCharacter ?? 0 },
-    end: { line: fact.selectionEndLine ?? fact.endLine ?? 0, character: fact.selectionEndCharacter ?? fact.endCharacter ?? 0 },
-  };
+  const start = { line: fact.selectionStartLine ?? fact.startLine ?? 0, character: fact.selectionStartCharacter ?? fact.startCharacter ?? 0 };
+  const candidateEnd = { line: fact.selectionEndLine ?? fact.endLine ?? start.line, character: fact.selectionEndCharacter ?? fact.endCharacter ?? start.character };
+  return { start, end: positionBefore(candidateEnd, start) ? start : candidateEnd };
+}
+function positionBefore(left: LspRange['start'], right: LspRange['start']): boolean {
+  return left.line < right.line || (left.line === right.line && left.character < right.character);
 }
 function symbolKind(kind?: string): number {
   return kind === 'method' ? 6 : kind === 'constructor' ? 9 : kind === 'interface' ? 11 : kind === 'enum' ? 10

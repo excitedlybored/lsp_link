@@ -39,15 +39,16 @@ loads `config/default.json`, installs missing local tools, runs the
 `prepare-build-model` stage when configured, and then runs `build-index`.
 Advanced CLI options can be appended to the same command.
 
-For semantic performance validation without ASM enrichment or graph
-publication, use the same launcher in crawl-only mode:
+`index` is the production command. For semantic performance validation without
+ASM enrichment or graph publication, use the diagnostic crawl-only command:
 
 ```bash
 ./lsp-link crawl /path/to/repository
 ```
 
 It writes an `lsp-crawl.checkpoint` suitable for strict batch-versus-LSP
-comparison and exits nonzero if a JDT batch server is incomplete.
+comparison and exits nonzero if a JDT batch server is incomplete. It does not
+create or update `.gitnexus/lsp-lbug`.
 
 ## Automated indexing flow
 

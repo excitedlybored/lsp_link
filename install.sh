@@ -212,5 +212,6 @@ fi
 echo ""
 echo "=================================================="
 echo "Install complete."
-echo "Start the LSP server with:  npm run server"
+echo "Index a repository with:  ./lsp-link index /absolute/path/to/repository"
+echo "Use './lsp-link crawl ...' only for semantic performance diagnostics."
 echo "=================================================="

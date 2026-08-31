@@ -67,6 +67,21 @@ workflow, while this package participates only in the semantic-crawl step:
        bulk-load and atomically publish the graph
 ```
 
+The indexer application layer mirrors that flow with three cohesive stage
+functions:
+
+- `preparePipeline` inventories the repository, prepares build roots, assigns
+  sources, and produces the immutable crawl identity.
+- `executeSemanticCrawl` owns checkpoint reuse and Java/polyglot semantic
+  collection.
+- `publishKnowledgeGraph` owns derived calls, JVM enrichment, and atomic graph
+  publication.
+
+`index-runner.ts` only composes those stages and owns process-lifetime cleanup.
+Stage inputs and outputs are explicit readonly values; database and language
+server side effects stay at stage boundaries instead of being mixed into pure
+fingerprinting, grouping, and result construction.
+
 An ordinary earlier `bazel build` is optional cache warm-up. It neither needs
 to be repeated manually nor replaces `prepare-build-model`, because the normal
 build does not produce the indexer-specific handoff and source inventory.

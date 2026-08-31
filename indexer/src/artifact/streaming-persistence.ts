@@ -94,7 +94,7 @@ export async function persistStreamingKnowledgeGraph(
   manifest.completedArtifactIds = [...completed].sort();
   checkpointStore.save(stage, artifactFingerprint, manifest);
   const sink = new ArtifactBulkSpoolSink(manifest.spoolDirectory, async (
-    initialization, finalBatch, spoolFiles, run,
+    initialization, finalBatch, spoolFiles, run, resolutions,
   ) => {
     fs.rmSync(stagingPath, { force: true });
     fs.rmSync(`${stagingPath}.wal`, { force: true });
@@ -108,6 +108,7 @@ export async function persistStreamingKnowledgeGraph(
           handle = openLspLadybugDatabase(stagingPath, ladybug);
           return handle.artifactRepository.connectionForBulkCopy();
         },
+        resolutions,
       );
     } finally {
       await handle.close();

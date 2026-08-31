@@ -20,7 +20,9 @@ import {
 } from './bulk-copy-support.js';
 import { withMemoryTelemetry } from '../telemetry/memory.js';
 
-const COPY_ROWS_PER_FILE = 500;
+const COPY_ROWS_PER_FILE = positiveInteger(
+  process.env.GITNEXUS_LBUG_COPY_ROWS, 10_000, 'GITNEXUS_LBUG_COPY_ROWS',
+);
 const COPY_FRAGMENTS_PER_ROTATION = positiveInteger(
   process.env.GITNEXUS_LBUG_ROTATE_BATCHES, 20, 'GITNEXUS_LBUG_ROTATE_BATCHES',
 );
@@ -38,6 +40,7 @@ export class ArtifactBulkSpoolSink implements JvmArtifactStreamingSink {
       finalBatch: JvmArtifactBatch,
       spoolFiles: string[],
       run: JvmArtifactEnrichmentRun,
+      resolutions: ReadonlyMap<string, JvmClassResolution>,
     ) => Promise<void>,
     private readonly onCompletedArtifact: (artifact: JvmArtifact) => Promise<void> = async () => undefined,
   ) {
@@ -108,7 +111,9 @@ export class ArtifactBulkSpoolSink implements JvmArtifactStreamingSink {
   }
 
   async finalize(run: JvmArtifactEnrichmentRun): Promise<void> {
-    await this.publish(this.initialization, this.finalBatch, this.completedFiles(), run);
+    await this.publish(
+      this.initialization, this.finalBatch, this.completedFiles(), run, this.resolutions,
+    );
   }
 
   async close(): Promise<void> {}
@@ -173,6 +178,7 @@ export async function bulkCopyArtifactGraph(
   run: JvmArtifactEnrichmentRun,
   workDirectory: string,
   rotateConnection?: () => Promise<LbugConnectionLike>,
+  selectedResolutions?: ReadonlyMap<string, JvmClassResolution>,
 ): Promise<void> {
   let activeConnection = connection;
   const trace = (message: string) => { if (process.env.GITNEXUS_BULK_COPY_TRACE === '1') console.error(`[bulk-copy] ${message}`); };
@@ -187,16 +193,21 @@ export async function bulkCopyArtifactGraph(
   fs.rmSync(workDirectory, { recursive: true, force: true });
   fs.mkdirSync(workDirectory, { recursive: true });
   const csv = new BulkCsvFiles(workDirectory, COPY_ROWS_PER_FILE);
-  const resolutions = new Map<string, JvmClassResolution>();
+  const computedResolutions = selectedResolutions
+    ? undefined
+    : new Map<string, JvmClassResolution>();
+  const resolutions = selectedResolutions ?? computedResolutions!;
   const references = new Map<string, string>();
   try {
     await withMemoryTelemetry('csv-generation', async () => {
       for (const file of spoolFiles) {
         for await (const batch of readBatches(file)) {
           writeFacts(csv, batch);
-          for (const value of batch.resolutions) {
+          if (!selectedResolutions) for (const value of batch.resolutions) {
             const current = resolutions.get(value.binaryName);
-            if (!current || value.classpathOrdinal < current.classpathOrdinal) resolutions.set(value.binaryName, value);
+            if (!current || value.classpathOrdinal < current.classpathOrdinal) {
+              computedResolutions!.set(value.binaryName, value);
+            }
           }
           for (const value of batch.binaryReferences) references.set(value.binaryName, value.stageId);
         }
@@ -205,6 +216,15 @@ export async function bulkCopyArtifactGraph(
         value.binaryName, value.stageId, value.classId, value.artifactId, value.classpathOrdinal,
       ]);
       for (const [binaryName, stageId] of references) csv.row('JvmBinaryReference', [binaryName, stageId]);
+      for (const value of resolutions.values()) {
+        if (!references.has(value.binaryName)) continue;
+        csv.row(RESOLUTION_LINK.key, [
+          value.classId,
+          value.binaryName,
+          `resolved-reference:${value.binaryName}`,
+          value.stageId,
+        ]);
+      }
       csv.close();
     }, { graph: 'jvm', spoolFiles: spoolFiles.length });
   } finally {
@@ -212,10 +232,17 @@ export async function bulkCopyArtifactGraph(
   }
 
   await withMemoryTelemetry('node-copying', async () => {
+    const progress = copyProgress(
+      'node-copying',
+      NODE_TABLES.reduce((sum, table) => sum + csv.fragments(table.key, table.columns).length, 0),
+    );
     for (const table of NODE_TABLES) {
       trace(`node ${table.name}`);
       await copyNodeCsvFragments(
-        () => activeConnection, csv, table.key, table.name, table.columns, checkpointCopiedFragments,
+        () => activeConnection, csv, table.key, table.name, table.columns, async () => {
+          await checkpointCopiedFragments();
+          progress();
+        },
       );
     }
   }, { graph: 'jvm' });
@@ -231,13 +258,35 @@ export async function bulkCopyArtifactGraph(
   // artifact metadata nodes must exist before containment edges are loaded.
   await repository.mergeBatch(metadata);
   await withMemoryTelemetry('relationship-copying', async () => {
+    const progress = copyProgress(
+      'relationship-copying',
+      RELATION_TABLES.reduce((sum, relation) =>
+        sum + csv.fragments(relation.key, relation.columns).length, 0)
+        + csv.fragments(RESOLUTION_LINK.key, RESOLUTION_LINK.columns).length,
+    );
     for (const relation of RELATION_TABLES) {
       trace(`relationship ${relation.table} ${relation.from}->${relation.to}`);
       await copyRelationCsvFragments(
         () => activeConnection, csv, relation.key, relation.table, relation.columns, relation.from, relation.to,
-        checkpointCopiedFragments,
+        async () => {
+          await checkpointCopiedFragments();
+          progress();
+        },
       );
     }
+    await copyRelationCsvFragments(
+      () => activeConnection,
+      csv,
+      RESOLUTION_LINK.key,
+      RESOLUTION_LINK.table,
+      RESOLUTION_LINK.columns,
+      RESOLUTION_LINK.from,
+      RESOLUTION_LINK.to,
+      async () => {
+        await checkpointCopiedFragments();
+        progress();
+      },
+    );
   }, { graph: 'jvm' });
 
   // Array properties cannot safely encode arbitrary comma-containing values in
@@ -262,12 +311,12 @@ export async function bulkCopyArtifactGraph(
   links.bindings.push(...finalBatch.bindings);
   repository = new JvmArtifactRepository(activeConnection);
   await repository.mergeBatch(links);
-  trace('resolution links');
-  await createResolutionLinks(activeConnection, resolutions.values());
-  trace('final relations');
-  await repository.finalizeAsmRelations(run.id);
-  trace('final counts');
-  await repository.finalizeAsmRun(run);
+  await withMemoryTelemetry('resolution-finalization', async () => {
+    trace('final relations');
+    await repository.finalizeAsmRelations(run.id);
+    trace('final counts');
+    await repository.finalizeAsmRun(run);
+  }, { graph: 'jvm' });
 }
 
 const NODE_TABLES = [
@@ -285,6 +334,14 @@ const RELATION_TABLES = [
   ...([['JvmBinaryReference','JvmClass'],['JvmBinaryReference','JvmCallSite']] as const)
     .map(([from, to]) => ({ key: `JvmBinaryReferenceRelation-${to}`, table: 'JvmBinaryReferenceRelation', from, to, columns: ['from','to','id','kind','stageId','ordinal'] })),
 ] as const;
+
+const RESOLUTION_LINK = {
+  key: 'JvmResolvedReference-JvmClass-JvmBinaryReference',
+  table: 'JvmResolvedReference',
+  from: 'JvmClass',
+  to: 'JvmBinaryReference',
+  columns: ['from', 'to', 'id', 'stageId'],
+} as const;
 
 function writeFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
   for (const v of batch.classes) csv.object('JvmClass', v as unknown as Record<string, unknown>, NODE_TABLES[0].columns);
@@ -309,14 +366,6 @@ function writeFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
   }
 }
 
-async function createResolutionLinks(connection: LbugConnectionLike, values: Iterable<JvmClassResolution>): Promise<void> {
-  const rows = [...values].map((value) => ({ ...value, id: `resolved-reference:${value.binaryName}` }));
-  for (let index = 0; index < rows.length; index += 1000) {
-    const statement = await connection.prepare('UNWIND $rows AS row MATCH (c:JvmClass {id:row.classId}),(r:JvmBinaryReference {binaryName:row.binaryName}) CREATE (c)-[:JvmResolvedReference {id:row.id,stageId:row.stageId}]->(r)');
-    await close(await connection.execute(statement, { rows: rows.slice(index, index + 1000) }));
-  }
-}
-
 async function* readBatches(file: string): AsyncIterable<JvmArtifactBatch> {
   const lines = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
   for await (const line of lines) if (line) yield JSON.parse(line) as JvmArtifactBatch;
@@ -331,4 +380,17 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer, got ${value}`);
   return parsed;
+}
+
+function copyProgress(stage: string, total: number): () => void {
+  let completed = 0;
+  let lastLogAt = Date.now();
+  return () => {
+    completed++;
+    const now = Date.now();
+    if (completed !== total && now - lastLogAt < 15_000) return;
+    const percent = total === 0 ? 100 : Math.floor(completed / total * 100);
+    console.log(`[stage:${stage}] ${completed}/${total} COPY fragments (${percent}%)`);
+    lastLogAt = now;
+  };
 }

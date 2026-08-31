@@ -7,10 +7,18 @@ import type { LbugConnectionLike, LbugQueryResultLike } from '../lbug/repository
 const NULL = '__GITNEXUS_NULL_7d35b31b__';
 const DEFAULT_ROWS_PER_FILE = 10_000;
 const ARRAY_UPDATE_BATCH_SIZE = 1_000;
+const WRITE_BUFFER_BYTES = 256 * 1024;
+
+interface CsvWriter {
+  descriptor: number;
+  fragmentIndex: number;
+  pending: string[];
+  pendingBytes: number;
+}
 
 /** Bounded CSV fragments shared by base-graph and JVM artifact imports. */
 export class BulkCsvFiles {
-  private readonly descriptors = new Map<string, number>();
+  private readonly writers = new Map<string, CsvWriter>();
   private readonly counts = new Map<string, number>();
   private readonly variants = new Map<string, Map<string, { key: string; columns: string[] }>>();
 
@@ -38,13 +46,21 @@ export class BulkCsvFiles {
   row(key: string, values: readonly unknown[]): void {
     const count = this.counts.get(key) ?? 0;
     const index = Math.floor(count / this.rowsPerFile);
-    const descriptorKey = `${key}\0${index}`;
-    let descriptor = this.descriptors.get(descriptorKey);
-    if (descriptor === undefined) {
-      descriptor = fs.openSync(this.path(key, index), 'a');
-      this.descriptors.set(descriptorKey, descriptor);
+    let writer = this.writers.get(key);
+    if (!writer || writer.fragmentIndex !== index) {
+      if (writer) this.closeWriter(writer);
+      writer = {
+        descriptor: fs.openSync(this.path(key, index), 'a'),
+        fragmentIndex: index,
+        pending: [],
+        pendingBytes: 0,
+      };
+      this.writers.set(key, writer);
     }
-    fs.writeSync(descriptor, `${values.map(csvValue).join(',')}\n`);
+    const line = `${values.map(csvValue).join(',')}\n`;
+    writer.pending.push(line);
+    writer.pendingBytes += Buffer.byteLength(line);
+    if (writer.pendingBytes >= WRITE_BUFFER_BYTES) this.flushWriter(writer);
     this.counts.set(key, count + 1);
   }
 
@@ -68,8 +84,20 @@ export class BulkCsvFiles {
   }
 
   close(): void {
-    for (const descriptor of this.descriptors.values()) fs.closeSync(descriptor);
-    this.descriptors.clear();
+    for (const writer of this.writers.values()) this.closeWriter(writer);
+    this.writers.clear();
+  }
+
+  private flushWriter(writer: CsvWriter): void {
+    if (writer.pending.length === 0) return;
+    fs.writeSync(writer.descriptor, writer.pending.join(''));
+    writer.pending = [];
+    writer.pendingBytes = 0;
+  }
+
+  private closeWriter(writer: CsvWriter): void {
+    this.flushWriter(writer);
+    fs.closeSync(writer.descriptor);
   }
 
   private path(key: string, index: number): string {
@@ -163,7 +191,17 @@ async function copyIfPresent(
   file: string,
 ): Promise<void> {
   if (!fs.existsSync(file) || fs.statSync(file).size === 0) return;
-  await closeQueryResults(await connection.query(query));
+  const startedAt = Date.now();
+  const heartbeat = setInterval(() => {
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1_000);
+    console.log(`[bulk-copy] ${path.basename(file)} loading; elapsed=${elapsedSeconds}s`);
+  }, 15_000);
+  heartbeat.unref();
+  try {
+    await closeQueryResults(await connection.query(query));
+  } finally {
+    clearInterval(heartbeat);
+  }
 }
 
 function currentConnection(

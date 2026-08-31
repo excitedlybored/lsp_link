@@ -164,7 +164,7 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
           String uri = sourceUri(source);
           counter.documents++;
           write(writer, map("kind", "document", "uri", uri, "project", project.getElementName()));
-          ast.accept(new FactVisitor(ast, uri, writer, counter));
+          ast.accept(new FactVisitor(ast, uri, sourceContents(source), writer, counter));
         } catch (BatchWriteException error) {
           throw error;
         } catch (RuntimeException error) {
@@ -186,10 +186,11 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
   private static final class FactVisitor extends ASTVisitor {
     private final CompilationUnit unit;
     private final String uri;
+    private final String source;
     private final BufferedWriter writer;
     private final Counter counter;
-    FactVisitor(CompilationUnit unit, String uri, BufferedWriter writer, Counter counter) {
-      this.unit = unit; this.uri = uri; this.writer = writer; this.counter = counter;
+    FactVisitor(CompilationUnit unit, String uri, String source, BufferedWriter writer, Counter counter) {
+      this.unit = unit; this.uri = uri; this.source = source; this.writer = writer; this.counter = counter;
     }
     @Override public void preVisit(ASTNode node) {
       try {
@@ -239,10 +240,8 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
       Map<String,Object> value = fact("declaration", declaration, binding,
           map("declarationKind", declarationKind, "name", name.getIdentifier()));
       int selectionStart = name.getStartPosition(), selectionEnd = selectionStart + name.getLength();
-      value.put("selectionStartLine", Math.max(0, unit.getLineNumber(selectionStart) - 1));
-      value.put("selectionStartCharacter", Math.max(0, unit.getColumnNumber(selectionStart)));
-      value.put("selectionEndLine", Math.max(0, unit.getLineNumber(selectionEnd) - 1));
-      value.put("selectionEndCharacter", Math.max(0, unit.getColumnNumber(selectionEnd)));
+      putPosition(value, "selectionStart", selectionStart);
+      putPosition(value, "selectionEnd", selectionEnd);
       write(writer, value);
       counter.declarations++;
       if (binding instanceof ITypeBinding type) {
@@ -260,10 +259,8 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
       Map<String,Object> value = fact("declaration", declaration, binding,
           map("declarationKind", "package", "name", name.getFullyQualifiedName()));
       int selectionStart = name.getStartPosition(), selectionEnd = selectionStart + name.getLength();
-      value.put("selectionStartLine", Math.max(0, unit.getLineNumber(selectionStart) - 1));
-      value.put("selectionStartCharacter", Math.max(0, unit.getColumnNumber(selectionStart)));
-      value.put("selectionEndLine", Math.max(0, unit.getLineNumber(selectionEnd) - 1));
-      value.put("selectionEndCharacter", Math.max(0, unit.getColumnNumber(selectionEnd)));
+      putPosition(value, "selectionStart", selectionStart);
+      putPosition(value, "selectionEnd", selectionEnd);
       write(writer, value);
       counter.declarations++;
     }
@@ -278,10 +275,8 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
         Map<String,Object> value = fact("declaration", declaration, method,
             map("declarationKind", "constructor", "name", name.getIdentifier(), "implicit", true));
         int selectionStart = name.getStartPosition(), selectionEnd = selectionStart + name.getLength();
-        value.put("selectionStartLine", Math.max(0, unit.getLineNumber(selectionStart) - 1));
-        value.put("selectionStartCharacter", Math.max(0, unit.getColumnNumber(selectionStart)));
-        value.put("selectionEndLine", Math.max(0, unit.getLineNumber(selectionEnd) - 1));
-        value.put("selectionEndCharacter", Math.max(0, unit.getColumnNumber(selectionEnd)));
+        putPosition(value, "selectionStart", selectionStart);
+        putPosition(value, "selectionEnd", selectionEnd);
         write(writer, value); counter.declarations++;
         return;
       }
@@ -341,11 +336,38 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
     }
     private Map<String,Object> location(String kind, ASTNode node) {
       int start = node.getStartPosition(), end = start + node.getLength();
-      return map("kind", kind, "uri", uri, "start", start, "length", node.getLength(),
-          "startLine", Math.max(0, unit.getLineNumber(start) - 1),
-          "startCharacter", Math.max(0, unit.getColumnNumber(start)),
-          "endLine", Math.max(0, unit.getLineNumber(end) - 1),
-          "endCharacter", Math.max(0, unit.getColumnNumber(end)));
+      Map<String,Object> value = map("kind", kind, "uri", uri, "start", start, "length", node.getLength());
+      putPosition(value, "start", start);
+      putPosition(value, "end", end);
+      return value;
+    }
+    private void putPosition(Map<String,Object> value, String prefix, int rawOffset) {
+      int offset = Math.max(0, Math.min(rawOffset, source.length()));
+      int line = unit.getLineNumber(offset), column = unit.getColumnNumber(offset);
+      if (line <= 0 || column < 0) {
+        // JDT returns -1 for an exclusive range end exactly at EOF. Translate
+        // it from the preceding character so the emitted LSP range stays
+        // ordered and continues to contain its declaration selection.
+        if (offset == 0) { line = 1; column = 0; }
+        else {
+          int previous = offset - 1;
+          int previousLine = Math.max(1, unit.getLineNumber(previous));
+          int previousColumn = Math.max(0, unit.getColumnNumber(previous));
+          if (source.charAt(previous) == '\n') { line = previousLine + 1; column = 0; }
+          else { line = previousLine; column = previousColumn + 1; }
+        }
+      }
+      value.put(prefix + "Line", line - 1);
+      value.put(prefix + "Character", column);
+    }
+  }
+
+  private static String sourceContents(ICompilationUnit source) {
+    try {
+      String value = source.getSource();
+      return value == null ? "" : value;
+    } catch (JavaModelException ignored) {
+      return "";
     }
   }
 

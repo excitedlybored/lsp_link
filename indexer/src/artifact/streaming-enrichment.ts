@@ -261,8 +261,15 @@ export async function streamJvmArtifacts(
         // Roll the current attempt back before the one-time replay so COPY
         // never sees duplicate deterministic IDs. Other sinks remain safe via
         // their existing idempotent MERGE behavior.
-        await writeChain.catch(() => undefined);
-        await sink.rollbackArtifactAttempt?.(artifact.id);
+        // Rollback must share the same serialization chain as writes and
+        // completion renames. Calling it directly lets one failed JAR scan
+        // partial spool filenames while another JAR is atomically renaming
+        // one of those files, producing a spurious ENOENT during resolution
+        // rebuilding.
+        writeChain = writeChain
+          .catch(() => undefined)
+          .then(() => sink.rollbackArtifactAttempt?.(artifact.id));
+        await writeChain;
         run.classCount -= artifact.classCount - countSnapshot.classCount;
         run.methodCount -= artifact.methodCount - countSnapshot.methodCount;
         run.fieldCount -= artifact.fieldCount - countSnapshot.fieldCount;

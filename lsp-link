@@ -7,11 +7,18 @@ default_config="${repository_root}/config/default.json"
 usage() {
   cat <<'EOF'
 Usage:
+  Production (publishes the knowledge graph):
   ./lsp-link index REPOSITORY [--background] [advanced index options]
+
+  Diagnostic (semantic crawl only; does not publish a graph):
   ./lsp-link crawl REPOSITORY [advanced crawl options]
 
-The index command automatically installs missing bundled tools, loads
-config/default.json, prepares the build model, and builds the graph index.
+Use `index` for normal operation. It automatically installs missing bundled
+tools, loads config/default.json, prepares the build model, crawls language
+servers, enriches JVM artifacts, and publishes the graph index.
+
+Use `crawl` only for LSP/JDT performance measurements and semantic parity
+checks. It stops after writing an lsp-crawl checkpoint.
 
 Background files are written inside the target repository:
   .gitnexus/index.log
@@ -31,12 +38,40 @@ run_pipeline() {
 
   cd "$repository_root"
   local kotlin_launcher="${repository_root}/.gitnexus/tools/kotlin-lsp/262.9593.0/bin/intellij-server"
+  local spring_tools_root="${repository_root}/.gitnexus/tools/spring-tools/5.3.0.RELEASE/extension/language-server"
+  local spring_tools_server
+  local spring_tools_missing=false
+  spring_tools_server=$(find "$spring_tools_root" -maxdepth 1 -name '*spring-boot-language-server*.jar' -print -quit 2>/dev/null || true)
+  case "${GITNEXUS_SPRING_TOOLS:-true}" in
+    0|false|FALSE|off|OFF|no|NO) ;;
+    *)
+      if [ -z "${GITNEXUS_SPRING_TOOLS_HOME:-}" ] && [ -z "$spring_tools_server" ]; then
+        spring_tools_missing=true
+      fi
+      ;;
+  esac
   if [ ! -x "${repository_root}/node_modules/.bin/tsx" ] \
-    || [ ! -f "${repository_root}/dist/jvm-artifact-worker/gitnexus-artifact-worker.jar" ] \
+    || [ "$spring_tools_missing" = true ] \
     || { [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ] \
       && [ -z "${GITNEXUS_KOTLIN_LSP_BIN:-}" ] && [ ! -x "$kotlin_launcher" ]; }; then
     echo "[pipeline:install] required tools are missing; running the offline installer"
     ./install.sh
+  fi
+
+  local artifact_worker="${repository_root}/dist/jvm-artifact-worker/gitnexus-artifact-worker.jar"
+  if [ ! -f "$artifact_worker" ] \
+    || find "${repository_root}/jvm_artifact_worker" "${repository_root}/scripts/build-artifact-worker.mjs" \
+      -type f -newer "$artifact_worker" -print -quit | grep -q .; then
+    echo "[pipeline:build-tools] building the JVM artifact worker"
+    npm run artifact-worker:build
+  fi
+
+  local jdt_batch_extension="${repository_root}/dist/jdt-batch-extension/gitnexus-jdt-batch-extension.jar"
+  if [ ! -f "$jdt_batch_extension" ] \
+    || find "${repository_root}/jdt_batch_extension" "${repository_root}/scripts/build-jdt-batch-extension.mjs" \
+      -type f -newer "$jdt_batch_extension" -print -quit | grep -q .; then
+    echo "[pipeline:build-tools] building the JDT batch extension"
+    npm run jdt-batch-extension:build
   fi
 
   local build_model_mode

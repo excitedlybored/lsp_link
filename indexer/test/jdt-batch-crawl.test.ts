@@ -25,7 +25,12 @@ test('batch JDT facts derive mapped references and calls without per-symbol quer
       const output = String((params as { arguments: unknown[] }).arguments[0]);
       fs.mkdirSync(path.dirname(output), { recursive: true });
       const lines = [
-        fact('declaration', uri, 0, 0, 3, 1, { name: 'Sample', declarationKind: 'class', targetPortableKey: 'T:Sample' }),
+        {
+          ...fact('declaration', uri, 0, 0, 3, 1,
+            { name: 'Sample', declarationKind: 'class', targetPortableKey: 'T:Sample' }),
+          startLine: 1, startCharacter: 0, endLine: 0, endCharacter: 0,
+          selectionStartLine: 1, selectionStartCharacter: 6, selectionEndLine: 1, selectionEndCharacter: 12,
+        },
         fact('declaration', uri, 1, 2, 1, 18, { name: 'target', declarationKind: 'method', targetPortableKey: 'T:Sample#target()T:void' }),
         fact('declaration', uri, 2, 2, 2, 29, { name: 'caller', declarationKind: 'method', targetPortableKey: 'T:Sample#caller()T:void' }),
         fact('occurrence', uri, 2, 18, 2, 24, { targetPortableKey: 'T:Sample#target()T:void' }),
@@ -55,6 +60,9 @@ test('batch JDT facts derive mapped references and calls without per-symbol quer
   });
   assert.equal(commandCount, 1);
   assert.equal(batch.symbols.length, 3);
+  assert.deepEqual(batch.symbols[0]?.range, {
+    start: { line: 1, character: 0 }, end: { line: 1, character: 12 },
+  });
   assert.equal(batch.occurrences.length, 1);
   assert.equal(batch.occurrences[0]?.status, 'mapped');
   assert.equal(batch.callSites.length, 1);

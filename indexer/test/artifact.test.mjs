@@ -18,7 +18,24 @@ import { streamJvmArtifacts } from '../dist/artifact/streaming-enrichment.js';
 import { ArtifactBulkSpoolSink, bulkCopyArtifactGraph } from '../dist/artifact/bulk-copy.js';
 import { persistStreamingKnowledgeGraph } from '../dist/artifact/streaming-persistence.js';
 import { bulkCopyBaseGraph } from '../dist/artifact/base-graph-bulk-copy.js';
+import { BulkCsvFiles } from '../dist/artifact/bulk-copy-support.js';
 import { PipelineCheckpointStore } from '../dist/pipeline/checkpoints.js';
+
+test('buffers bounded CSV fragments without losing interleaved rows', (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-bulk-csv-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const csv = new BulkCsvFiles(fixture, 2);
+  csv.row('Node', ['one', 1]);
+  csv.row('Other', ['separate']);
+  csv.row('Node', ['two', 2]);
+  csv.row('Node', ['three', 3]);
+  csv.close();
+
+  assert.equal(csv.paths('Node').length, 2);
+  assert.equal(fs.readFileSync(csv.paths('Node')[0], 'utf8'), '"one","1"\n"two","2"\n');
+  assert.equal(fs.readFileSync(csv.paths('Node')[1], 'utf8'), '"three","3"\n');
+  assert.equal(fs.readFileSync(csv.paths('Other')[0], 'utf8'), '"separate"\n');
+});
 
 test('negotiates one persistent ASM worker without javap', async () => {
   const worker = new AsmArtifactWorker(2);

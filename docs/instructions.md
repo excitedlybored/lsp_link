@@ -19,8 +19,8 @@ The default graph is `<repository>/.gitnexus/lsp-lbug`.
 
 ## Overall automated flow
 
-`./lsp-link index` is the only public workflow. It orchestrates these stages in
-order and stops before publication if a required stage fails:
+`./lsp-link index` is the only production workflow. It orchestrates these
+stages in order and stops before publication if a required stage fails:
 
 ```text
 index REPOSITORY
@@ -126,13 +126,14 @@ to compare normal tiered compilation with `-XX:TieredStopAtLevel=1` using
 isolated cold and warm runs.
 
 For performance or parity work without ASM enrichment or Ladybug publication,
-run the same semantic orchestration in crawl-only mode:
+run the diagnostic semantic orchestration in crawl-only mode:
 
 ```bash
 ./lsp-link crawl /absolute/path/to/repository
 ```
 
-The command writes `lsp-crawl.checkpoint` under the checkpoint directory. Use
+The command writes `lsp-crawl.checkpoint` under the checkpoint directory and
+does not create or update the graph. Use
 `--profile exhaustive --java-semantics lsp` for a baseline and
 `--profile exhaustive --java-semantics batch` for the candidate, then run
 `npm run compare:crawls -- BASELINE CANDIDATE --required-java-batch`. The gate
@@ -400,7 +401,8 @@ fails preparation.
 | Field | Required | Values and behavior |
 | --- | --- | --- |
 | `profile` | No | `"core"` or `"exhaustive"`; default `"exhaustive"`. For Java batch semantics, both profiles collect the complete binding-aware declaration, occurrence, call, and type fact set; the profile still controls auxiliary standard-LSP observations and other language adapters. With the `lsp` Java fallback, `core` collects document symbols while relying on Bazel and bytecode enrichment, whereas `exhaustive` requests the complete LSP capability matrix. The tracked large-repository policy uses `core`. |
-| `concurrency` | No | Positive integer; default `4`. Number of persistent JDT.LS crawl shards. |
+| `concurrency` | No | Positive integer; default `4`. Concurrency for ordinary bounded preparation, document, and crawl worker queues. It does not select the number of JDT processes. |
+| `jdtProcesses` | No | Positive integer; default `1`. Maximum persistent JDT processes used to distribute independent Java build roots, subject to the total heap budget. One build root is not split across processes. |
 | `resume` | No | Boolean; default `true`. Reuse an exact content-addressed crawl ID when available. `false` forces execution without deleting cached identities. |
 
 ### `artifacts`
@@ -511,6 +513,10 @@ the tools' normal credential stores. Relevant environment variables include:
   default is `1024` (1 GiB), and the minimum override is `64`.
 - `GITNEXUS_LBUG_ROTATE_BATCHES`: positive number of committed COPY fragments
   between staging-connection rotations.
+- `GITNEXUS_LBUG_COPY_ROWS`: positive number of rows per JVM graph COPY
+  fragment. The default is `10000`; lower it only if database import memory is
+  constrained. CSV output is buffered and keeps at most one descriptor open
+  per table/column variant.
 
 Repository credentials remain in Bazel, `.netrc`, credential helpers, or the
 environment expected by the repository. They are neither read from nor stored
