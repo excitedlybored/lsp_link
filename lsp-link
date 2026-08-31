@@ -102,6 +102,7 @@ shift
 background=false
 config=$default_config
 forwarded=()
+has_forwarded=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --background)
@@ -115,6 +116,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     *)
       forwarded+=("$1")
+      has_forwarded=true
       shift
       ;;
   esac
@@ -126,7 +128,11 @@ if [ ! -f "$config" ]; then
 fi
 
 if [ "$background" = false ]; then
-  run_index "$workspace" "$config" "${forwarded[@]}"
+  if [ "$has_forwarded" = true ]; then
+    run_index "$workspace" "$config" "${forwarded[@]}"
+  else
+    run_index "$workspace" "$config"
+  fi
   exit 0
 fi
 
@@ -143,8 +149,13 @@ if [ -f "$pid_file" ]; then
   rm -f "$pid_file"
 fi
 
-nohup "$0" __run-background "$workspace" "$config" "$pid_file" "${forwarded[@]}" \
-  > "$log_file" 2>&1 < /dev/null &
+if [ "$has_forwarded" = true ]; then
+  nohup "$0" __run-background "$workspace" "$config" "$pid_file" "${forwarded[@]}" \
+    > "$log_file" 2>&1 < /dev/null &
+else
+  nohup "$0" __run-background "$workspace" "$config" "$pid_file" \
+    > "$log_file" 2>&1 < /dev/null &
+fi
 background_pid=$!
 printf '%s\n' "$background_pid" > "$pid_file"
 echo "Indexing started in the background."
