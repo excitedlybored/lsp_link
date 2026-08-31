@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { planJdtlsBuildRootShards, prepareJdtlsShardWorkspace } from '../adapters/java/jdtls-sharding.js';
-import type { JavaBuildRoot } from '../adapters/java/jdtls-runtime.js';
+import { JdtlsRuntimeLocator, type JavaBuildRoot } from '../adapters/java/jdtls-runtime.js';
 import { LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
 
 test('one persistent JDT LS process preserves project isolation and root-local resolution', {
@@ -14,6 +14,7 @@ test('one persistent JDT LS process preserves project isolation and root-local r
 }, async (t) => {
   const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'jdtls-shard-live-'));
   t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  const dependencyJar = JdtlsRuntimeLocator.locate().equinoxLauncherJar;
   const roots: JavaBuildRoot[] = [1, 2].map((number) => {
     const workspacePath = path.join(repository, `root-${number}`);
     const source = path.join(workspacePath, 'src/main/java');
@@ -28,6 +29,15 @@ test('one persistent JDT LS process preserves project isolation and root-local r
       'import shared.Helper;',
       `public class App { public String run() { return new Helper().root(); } }`,
     ].join('\n'));
+    const modelDirectory = path.join(workspacePath, '.gitnexus/jdtls');
+    fs.mkdirSync(modelDirectory, { recursive: true });
+    fs.writeFileSync(path.join(modelDirectory, 'bazel-project.json'), JSON.stringify({
+      classpath: [dependencyJar],
+      runtimeClasspath: [dependencyJar],
+      sourcePaths: ['src/main/java'],
+      generatedSourcePaths: [],
+      configurationHash: `live-root-${number}`,
+    }));
     return {
       // A bazel-prefixed id catches accidental collisions with JDT's default
       // `bazel-.*` resource filter in generated Eclipse project names.
@@ -58,6 +68,10 @@ test('one persistent JDT LS process preserves project isolation and root-local r
       path.join(shard.workspacePath, 'projects', expectedProject.projectName),
       `root-${number} document must belong to its generated Eclipse project`,
     );
+    assert.ok(
+      classpath.classpaths?.some((entry) => path.resolve(entry) === path.resolve(dependencyJar)),
+      `root-${number} effective classpath must retain the generated Bazel dependency`,
+    );
     const symbols = await adapter.documentSymbols(app);
     assert.ok(symbols.some((symbol) => symbol.name === 'App'));
     const definitions = await adapter.findDefinition(app, 2, 55);
@@ -67,4 +81,33 @@ test('one persistent JDT LS process preserves project isolation and root-local r
   }
   assert.equal(adapter.getSessionMetadata().processShardId, shard.id);
   assert.deepEqual(adapter.getSessionMetadata().buildRootIds, roots.map((root) => root.id));
+});
+
+test('Spring Tools receives JDT classpaths and reports framework structure', {
+  skip: process.env.GITNEXUS_RUN_JDTLS_INTEGRATION !== '1',
+  timeout: 180_000,
+}, async (t) => {
+  const repository = path.resolve(import.meta.dirname, '../../sample_projects/gs-rest-service');
+  const registry = new LspAdapterRegistry();
+  const root = registry.getJavaBuildRoots(repository)
+    .find((candidate) => candidate.relativePath === 'complete');
+  assert.ok(root, 'Spring sample complete root must be discovered');
+  const shard = prepareJdtlsShardWorkspace(repository, planJdtlsBuildRootShards([root], 1)[0]);
+  t.after(async () => {
+    await registry.shutdownAll();
+    fs.rmSync(shard.workspacePath, { recursive: true, force: true });
+  });
+  const java = await registry.getOrStartJavaShard(shard);
+  assert.ok(java, 'JDT LS must start for the Spring sample');
+  const spring = registry.getJavaCompanion(java, root.id);
+  assert.ok(spring, 'Spring Tools companion must start for the Spring build root');
+  const projects = await spring.request<unknown[]>('workspace/executeCommand', {
+    command: 'sts/spring-boot/executableBootProjects', arguments: [],
+  });
+  const structure = await spring.request<unknown[]>('workspace/executeCommand', {
+    command: 'sts/spring-boot/structure', arguments: [{ updateMetadata: true }],
+  });
+  assert.ok(projects.length > 0, 'Spring Tools must receive at least one executable project');
+  assert.match(JSON.stringify(structure), /Controllers \(Spring Web\)/);
+  assert.match(JSON.stringify(structure), /\/greeting -- GET/);
 });

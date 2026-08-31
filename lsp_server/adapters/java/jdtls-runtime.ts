@@ -101,6 +101,60 @@ export interface JdtlsWorkspaceOptions {
   sourceFileCount?: number;
 }
 
+/** Native build-tool roots must not also be owned by a generated Eclipse project. */
+export function usesNativeJdtImport(root: JavaBuildRoot): boolean {
+  return enabledNativeJdtBuildSystems(root).length > 0;
+}
+
+export function enabledNativeJdtBuildSystems(root: JavaBuildRoot): JavaBuildSystemKind[] {
+  // Copied layout is the explicit compatibility/recovery path: the generated
+  // Eclipse project, rather than a native importer, must own its copied files.
+  if (process.env.GITNEXUS_JDT_SOURCE_LAYOUT?.trim().toLowerCase() === 'copied') return [];
+  if (root.systems.includes('bazel') || root.systems.length === 0) return [];
+  const workspace = JdtlsWorkspace.inspect(root.workspacePath, {
+    buildSystems: root.systems,
+    excludedRoots: root.excludedRoots,
+  });
+  const enabled = root.systems.filter((kind): kind is 'gradle' | 'maven' =>
+    kind !== 'bazel' && workspace.buildImportEnabled(kind));
+  if (enabled.length <= 1) return enabled;
+
+  // JDT must have exactly one native owner for a source tree. Running M2E and
+  // Buildship over the same files creates competing Eclipse projects, unstable
+  // launch configurations, and classpaths whose provenance cannot be trusted.
+  const configuredValue = process.env.GITNEXUS_JDT_NATIVE_IMPORTER?.trim().toLowerCase();
+  if (configuredValue && configuredValue !== 'gradle' && configuredValue !== 'maven') {
+    throw new Error('GITNEXUS_JDT_NATIVE_IMPORTER must be either gradle or maven');
+  }
+  const configured: 'gradle' | 'maven' | undefined = configuredValue === 'gradle' || configuredValue === 'maven'
+    ? configuredValue
+    : undefined;
+  const selected = configured && enabled.includes(configured)
+    ? configured
+    : preferredNativeImporter(root.workspacePath, enabled);
+  return [enabled.includes(selected) ? selected : enabled[0]!];
+}
+
+// JDT.LS 1.57.0 bundles org.gradle.toolingapi 8.9. A newer wrapper may start
+// but never publish an Eclipse project, so a dual-build root must use M2E
+// instead of waiting on a Buildship model that cannot become ready.
+const BUNDLED_GRADLE_TOOLING_API_MAJOR = 8;
+
+function preferredNativeImporter(
+  workspacePath: string,
+  enabled: Array<'gradle' | 'maven'>,
+): 'gradle' | 'maven' {
+  if (enabled.includes('maven')) {
+    const wrapper = path.join(workspacePath, 'gradle', 'wrapper', 'gradle-wrapper.properties');
+    try {
+      const match = fs.readFileSync(wrapper, 'utf8').match(/distributionUrl=.*gradle-(\d+)(?:\.\d+)*-(?:bin|all)\.zip/i);
+      const wrapperMajor = match ? Number(match[1]) : undefined;
+      if (wrapperMajor !== undefined && wrapperMajor > BUNDLED_GRADLE_TOOLING_API_MAJOR) return 'maven';
+    } catch { /* no readable Gradle wrapper; preserve the default below */ }
+  }
+  return 'gradle';
+}
+
 const JAVA_IGNORE = ['**/node_modules/**', '**/build/**', '**/target/**', '**/.git/**'];
 
 export class JdtlsRuntimeLocator {

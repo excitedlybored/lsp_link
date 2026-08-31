@@ -888,7 +888,7 @@ class SymbolRegistry {
     const insideRepository = filePath ? isInside(this.repositoryPath, filePath) : false;
     const origin = insideRepository ? 'generated' : classifyExternalOrigin(uri);
     const document: LspDocument = {
-      id: stableId('document', uri), uri, filePath, languageId: 'java',
+      id: stableId('document', uri), uri, filePath, languageId: this.server.languageId,
       origin, codeOrigin: codeOriginForDocumentOrigin(origin),
       wasOpened: false,
       buildRootId: insideRepository ? this.buildRoot.id : undefined,

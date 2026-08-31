@@ -1,15 +1,19 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ArtifactClasspathResolver } from '../artifact/classpath/index.js';
-import { mergeObservationBatches, type LspObservationBatch } from '../ingest/batch.js';
+import { appendObservationBatch, mergeObservationBatches, type LspObservationBatch } from '../ingest/batch.js';
 import { ingestRun } from '../ingest/builders.js';
 import { collectCapabilities, withCompleteCapabilityCoverage } from '../ingest/collector.js';
 import { crawlLspBuildRoot, workspaceDocument } from '../ingest/crawler.js';
 import type { LspAnalysisRun, LspBuildRoot, LspServer } from '../model.js';
-import { JdtlsWorkspace, type JavaBuildRoot } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
-import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
+import {
+  enabledNativeJdtBuildSystems,
+  JdtlsWorkspace,
+  type JavaBuildRoot,
+} from '../../../lsp_server/public-api.js';
+import { LspAdapterRegistry } from '../../../lsp_server/public-api.js';
 import type { JavaBuildRootCrawlResult, JavaBuildRootPreparation } from './types.js';
-import type { ILspAdapter } from '../../../lsp_server/contracts/lsp-adapter.interface.js';
+import type { ILspAdapter } from '../../../lsp_server/public-api.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
 
 export interface CrawlJavaBuildRootRequest {
@@ -95,8 +99,10 @@ export async function crawlJavaBuildRoot(
       repositoryPath,
       profile: crawlProfile,
     });
+    await appendSpringObservations(adapterRegistry, adapter, root, run, batch);
     const artifactResolution = await artifactClasspathResolver.resolveArtifacts({
       root,
+      nativeImporter: nativeImporter(root),
       lspClient: adapter,
       documentUris: documents.map((document) => document.uri),
       bazelModelPath: preparation?.modelPath,
@@ -123,6 +129,7 @@ export async function crawlJavaBuildRoot(
     console.warn(`[${root.id}] crawl failed: ${error instanceof Error ? error.message : String(error)}`);
     const artifactResolution = await artifactClasspathResolver.resolveArtifacts({
       root,
+      nativeImporter: nativeImporter(root),
       lspClient: adapter,
       documentUris: documents.map((document) => document.uri),
       bazelModelPath: preparation?.modelPath,
@@ -139,6 +146,53 @@ export async function crawlJavaBuildRoot(
   } finally {
     if (!sharedAdapter) await adapterRegistry.shutdownAdapter(adapter);
   }
+}
+
+async function appendSpringObservations(
+  registry: LspAdapterRegistry,
+  javaAdapter: ILspAdapter,
+  root: JavaBuildRoot,
+  run: LspAnalysisRun,
+  batch: LspObservationBatch,
+): Promise<void> {
+  const spring = registry.getJavaCompanion(javaAdapter, root.id);
+  if (!spring) return;
+  const [projects, structure] = await Promise.all([
+    spring.request<unknown[]>('workspace/executeCommand', {
+      command: 'sts/spring-boot/executableBootProjects', arguments: [],
+    }),
+    spring.request<unknown[]>('workspace/executeCommand', {
+      command: 'sts/spring-boot/structure', arguments: [{ updateMetadata: true }],
+    }),
+  ]);
+  const springServer: LspServer = {
+    id: `server:${run.id}:spring-tools:${encodeURIComponent(root.id)}`,
+    runId: run.id,
+    name: 'spring-boot-language-server',
+    languageId: 'java',
+    status: 'complete',
+    capabilitiesJson: JSON.stringify(spring.getServerCapabilities()),
+    observationsJson: JSON.stringify({
+      'sts/spring-boot/executableBootProjects': projects,
+      'sts/spring-boot/structure': structure,
+    }),
+    buildRootId: root.id,
+  };
+  appendObservationBatch(batch, ingestRun(run, [springServer], [], []));
+  console.log(`[${root.id}] Spring Tools: ${projects.length} projects, ${countSpringStructure(structure)} structure nodes`);
+}
+
+function countSpringStructure(values: unknown[]): number {
+  let count = 0;
+  const pending = [...values];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object') continue;
+    count += 1;
+    const children = (value as { children?: unknown }).children;
+    if (Array.isArray(children)) pending.push(...children);
+  }
+  return count;
 }
 
 function documentOrigin(
@@ -222,6 +276,7 @@ async function failedBuildRootResult(
   );
   const artifactResolution = await artifactClasspathResolver.resolveArtifacts({
     root,
+    nativeImporter: nativeImporter(root),
     documentUris: documents.map((document) => document.uri),
     bazelModelPath: preparation?.modelPath,
     manifestPaths: artifactManifestPaths,
@@ -234,4 +289,9 @@ async function failedBuildRootResult(
     errorCount: 1,
     timeoutCount: 0,
   };
+}
+
+function nativeImporter(root: JavaBuildRoot): 'maven' | 'gradle' | undefined {
+  const [selected] = enabledNativeJdtBuildSystems(root);
+  return selected === 'maven' || selected === 'gradle' ? selected : undefined;
 }

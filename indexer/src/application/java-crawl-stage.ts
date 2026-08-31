@@ -17,13 +17,13 @@ import type {
   JavaBuildRootPreparation,
   LspKnowledgeGraphBuildOptions,
 } from '../pipeline/types.js';
-import type { JavaBuildRoot } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
+import type { JavaBuildRoot } from '../../../lsp_server/public-api.js';
 import {
   cleanupJdtlsShardWorkspace,
   planJdtlsBuildRootShardsWithinBudget,
   prepareJdtlsShardWorkspace,
-} from '../../../lsp_server/adapters/java/jdtls-sharding.js';
-import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
+} from '../../../lsp_server/public-api.js';
+import { LspAdapterRegistry } from '../../../lsp_server/public-api.js';
 
 export interface JavaCrawlCheckpoint {
   lspBatch: LspObservationBatch;
@@ -86,10 +86,17 @@ export async function crawlJavaWorkspace(
   );
   const shardResults = await mapConcurrently(shardPlans, Math.max(1, shardPlans.length), async (shardPlan) => {
     const pendingRoots = shardPlan.roots.filter((root) => !cachedByRoot.has(root.id));
+    const preparationStartedAt = Date.now();
+    console.log(`[jdtls-workspace] ${shardPlan.id} preparation started`);
     const shard = prepareJdtlsShardWorkspace(
       workspacePath,
       { ...shardPlan, roots: pendingRoots },
       workspaceSessionId,
+      ({ phase, completed, total }) => {
+        const progress = completed !== undefined && total !== undefined ? ` ${completed}/${total}` : '';
+        const elapsedSeconds = ((Date.now() - preparationStartedAt) / 1_000).toFixed(1);
+        console.log(`[jdtls-workspace] ${shardPlan.id} ${phase}${progress}; elapsed=${elapsedSeconds}s`);
+      },
     );
     const adapter = await adapterRegistry.getOrStartJavaShard(shard);
     const results: JavaBuildRootCrawlResult[] = [];

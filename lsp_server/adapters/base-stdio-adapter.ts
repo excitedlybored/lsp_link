@@ -440,10 +440,14 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     this.connection = null;
 
     if (childProcess) {
-      try {
-        childProcess.kill('SIGTERM');
-      } catch {
-        // Already gone
+      if (!childHasExited(childProcess)) {
+        const terminated = waitForChildExit(childProcess, 5_000);
+        try { childProcess.kill('SIGTERM'); } catch { /* already gone */ }
+        if (!(await terminated) && !childHasExited(childProcess)) {
+          const killed = waitForChildExit(childProcess, 2_000);
+          try { childProcess.kill('SIGKILL'); } catch { /* already gone */ }
+          await killed;
+        }
       }
       this.process = null;
     }
@@ -660,6 +664,28 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       if (registration.id) this.dynamicRegistrations.delete(registration.id);
     }
   }
+}
+
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode !== null || child.signalCode !== null;
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    timer.unref();
+    child.once('exit', onExit);
+  });
 }
 
 function normalizeLocations(result: unknown): LspLocation[] {

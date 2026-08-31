@@ -5,9 +5,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { globSync } from 'glob';
 import {
   createJdtlsProcessLaunch,
   discoverJavaBuildRoots,
+  enabledNativeJdtBuildSystems,
   JdtlsRuntime,
   JdtlsWorkspace,
   jdtlsJavaCandidates,
@@ -20,9 +23,14 @@ import {
   prepareBazelProjectModels,
   resolveBazelTargetScope,
 } from '../adapters/java/bazel-project-model.js';
-import { planJdtlsBuildRootShards, prepareJdtlsShardWorkspace } from '../adapters/java/jdtls-sharding.js';
+import {
+  cleanupJdtlsShardWorkspace,
+  planJdtlsBuildRootShards,
+  prepareJdtlsShardWorkspace,
+} from '../adapters/java/jdtls-sharding.js';
 import { isJdtlsEmptyTypeDefinitionResponse, JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
-import { buildJdtlsShardUriMappings, LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
+import { LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
+import { buildJdtlsShardUriMappings } from '../adapters/java/jdtls-uri-mapping.js';
 import {
   createBazelSourceInventory,
   readBazelSourceInventory,
@@ -813,12 +821,31 @@ test('builds and applies enterprise-scale JDT URI mappings without repeated sort
       sourceRoot,
     };
   });
+  const sourceRootIndexes = new Map(sourcePaths.map((sourcePath, index) => [sourcePath, index]));
   const shard = {
     id: 'jdtls-shard-1', roots: [], sourceFileCount: mappingCount,
     workspacePath: path.resolve('/staged-workspace'),
+    cacheLeasePaths: [],
     projectModels: [{
       buildRootId: 'bazel:.', projectName: 'gitnexus-project', buildRootPath: '/workspace',
       sourcePaths, generatedSourcePaths: [], sourceMappings,
+      sourceLayout: 'linked' as const, consolidatedSourceRoots: [],
+      uriAliases: [
+        ...sourcePaths.map((sourcePath, index) => ({
+          sourcePath, physicalPath: sourcePath,
+          logicalPath: path.join('/staged-workspace/projects/gitnexus-project', `source-${index}`),
+        })),
+        ...sourceMappings.map((mapping) => {
+          const rootIndex = sourceRootIndexes.get(mapping.sourceRoot);
+          return {
+            sourcePath: mapping.sourcePath, physicalPath: mapping.analysisPath,
+            logicalPath: path.join(
+              '/staged-workspace/projects/gitnexus-project', `source-${rootIndex}`,
+              path.relative(mapping.sourceRoot, mapping.analysisPath),
+            ),
+          };
+        }),
+      ],
       compileClasspath: [], runtimeClasspath: [], languageServerClasspath: [],
       buildSystems: ['bazel'], modelSource: 'bazel-java-info' as const,
     }],
@@ -832,8 +859,20 @@ test('builds and applies enterprise-scale JDT URI mappings without repeated sort
   }
   const elapsedMs = performance.now() - started;
 
-  assert.equal(mappings.length, rootCount + mappingCount);
-  assert.match(adapter.documentUri(sourceMappings[17]!.sourcePath), /Type17\.java$/);
+  assert.equal(mappings.length, 2 * (rootCount + mappingCount));
+  const mappedSource = sourceMappings[17]!;
+  assert.equal(fileURLToPath(adapter.documentUri(mappedSource.sourcePath)), mappedSource.analysisPath);
+  const sourceAliases = mappings.filter((mapping) => mapping.sourcePath === mappedSource.sourcePath);
+  assert.equal(sourceAliases.length, 2);
+  const mapProtocolUris = (adapter as unknown as {
+    mapProtocolUris(value: unknown, direction: 'toStaged' | 'toSource'): unknown;
+  }).mapProtocolUris.bind(adapter);
+  for (const alias of sourceAliases) {
+    assert.equal(
+      fileURLToPath(mapProtocolUris(pathToFileURL(alias.stagedPath).href, 'toSource') as string),
+      mappedSource.sourcePath,
+    );
+  }
   assert.ok(elapsedMs < 1_000, `URI mapping setup and 100 misses took ${elapsedMs.toFixed(1)} ms`);
 });
 
@@ -1104,10 +1143,12 @@ test('consolidates large Bazel inventories into a bounded set of JDT source root
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const sources = Array.from({ length: 129 }, (_, index) => {
     const sourcePath = path.join(root, `target-${index}`, 'src/main/java', `p${index}`, `Type${index}.java`);
+    const content = `package p${index}; class Type${index} {}\n`;
     fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
-    fs.writeFileSync(sourcePath, `package p${index}; class Type${index} {}\n`);
+    fs.writeFileSync(sourcePath, content);
     return {
-      path: sourcePath, analysisPath: sourcePath, origin: 'repository', contentHash: `hash-${index}`,
+      path: sourcePath, analysisPath: sourcePath, origin: 'repository',
+      contentHash: createHash('sha256').update(content).digest('hex'),
       targetLabels: [`//target-${index}:lib`], originalRepositoryPaths: [sourcePath],
       configuredSourceAssociations: [], sourceJarAssociations: [],
     };
@@ -1123,12 +1164,94 @@ test('consolidates large Bazel inventories into a bounded set of JDT source root
   }));
 
   const discovered = discoverJavaBuildRoots(root)[0];
-  const prepared = prepareJdtlsShardWorkspace(root, planJdtlsBuildRootShards([discovered], 1)[0]);
+  const progress: Array<{ phase: string; completed?: number; total?: number }> = [];
+  const prepared = prepareJdtlsShardWorkspace(
+    root,
+    planJdtlsBuildRootShards([discovered], 1)[0],
+    undefined,
+    (event) => progress.push(event),
+  );
   const model = prepared.projectModels[0];
   assert.equal(model.sourceMappings.length, 129);
   assert.ok(model.sourcePaths.length <= 64, `expected at most 64 roots, got ${model.sourcePaths.length}`);
   assert.ok(model.sourceMappings.every((mapping) =>
     mapping.analysisPath.includes(`${path.sep}consolidated-sources${path.sep}`) && fs.existsSync(mapping.analysisPath)));
+  assert.ok(progress.some((event) =>
+    event.phase === 'mapping-sources' && event.completed === 129 && event.total === 129));
+  assert.ok(progress.some((event) =>
+    event.phase === 'consolidating-sources' && event.completed === 129 && event.total === 129));
+  assert.ok(progress.some((event) =>
+    event.phase === 'cache-build' && event.completed === 129 && event.total === 129));
+  assert.ok(progress.some((event) => event.phase === 'link-project'));
+  assert.ok(!progress.some((event) => event.phase === 'staging-sources'));
+  const projectPath = path.join(prepared.workspacePath, 'projects', model.projectName);
+  assert.equal(fs.existsSync(path.join(projectPath, 'source-0')), false);
+  assert.match(fs.readFileSync(path.join(projectPath, '.project'), 'utf8'), /<locationURI>file:/);
+  assert.equal(progress.at(-1)?.phase, 'complete');
+
+  const cacheRoot = path.dirname(model.sourcePaths[0]);
+  const cachedJava = globSync('**/*.java', { cwd: cacheRoot, nodir: true }).sort();
+  const cachedMtimes = new Map(cachedJava.map((file) => [file, fs.statSync(path.join(cacheRoot, file)).mtimeMs]));
+  const warmProgress: typeof progress = [];
+  const warm = prepareJdtlsShardWorkspace(
+    root, planJdtlsBuildRootShards([discovered], 1)[0], undefined,
+    (event) => warmProgress.push(event),
+  );
+  assert.ok(warmProgress.some((event) => event.phase === 'cache-hit'));
+  assert.ok(!warmProgress.some((event) => event.phase === 'cache-build'));
+  assert.deepEqual(
+    new Map(cachedJava.map((file) => [file, fs.statSync(path.join(cacheRoot, file)).mtimeMs])),
+    cachedMtimes,
+  );
+  cleanupJdtlsShardWorkspace(prepared);
+  cleanupJdtlsShardWorkspace(warm);
+
+  const corruptPath = path.join(cacheRoot, cachedJava[0]);
+  fs.writeFileSync(corruptPath, 'corrupt\n');
+  const repairProgress: typeof progress = [];
+  const repaired = prepareJdtlsShardWorkspace(
+    root, planJdtlsBuildRootShards([discovered], 1)[0], undefined,
+    (event) => repairProgress.push(event),
+  );
+  assert.ok(repairProgress.some((event) => event.phase === 'cache-build'));
+  assert.notEqual(fs.readFileSync(corruptPath, 'utf8'), 'corrupt\n');
+  cleanupJdtlsShardWorkspace(repaired);
+
+  fs.rmSync(path.join(cacheRoot, '.complete.json'));
+  const incompleteProgress: typeof progress = [];
+  const rebuilt = prepareJdtlsShardWorkspace(
+    root, planJdtlsBuildRootShards([discovered], 1)[0], undefined,
+    (event) => incompleteProgress.push(event),
+  );
+  assert.ok(incompleteProgress.some((event) => event.phase === 'cache-build'));
+  assert.ok(fs.existsSync(path.join(cacheRoot, '.complete.json')));
+  cleanupJdtlsShardWorkspace(rebuilt);
+
+  const inventoryPath = path.join(root, '.gitnexus/jdtls/bazel-source-inventory.json');
+  const initialInventoryHash = model.sourceInventoryHash;
+  let latestInventoryHash = initialInventoryHash;
+  const activeChangedShards: ReturnType<typeof prepareJdtlsShardWorkspace>[] = [];
+  for (let revision = 1; revision <= 3; revision += 1) {
+    const inventory = JSON.parse(fs.readFileSync(inventoryPath, 'utf8'));
+    const changedContent = `package p0; class Type0 { int revision = ${revision}; }\n`;
+    fs.writeFileSync(sources[0].path, changedContent);
+    inventory.sources[0].contentHash = createHash('sha256').update(changedContent).digest('hex');
+    fs.writeFileSync(inventoryPath, JSON.stringify(inventory));
+    const changed = prepareJdtlsShardWorkspace(root, planJdtlsBuildRootShards([discovered], 1)[0]);
+    activeChangedShards.push(changed);
+    latestInventoryHash = changed.projectModels[0].sourceInventoryHash;
+  }
+  assert.notEqual(latestInventoryHash, initialInventoryHash);
+  const cacheParent = path.dirname(cacheRoot);
+  const activeCaches = fs.readdirSync(cacheParent, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(cacheParent, entry.name, '.complete.json')));
+  assert.ok(activeCaches.length >= 3, 'active cache leases must prevent retention cleanup');
+  for (const changed of activeChangedShards) cleanupJdtlsShardWorkspace(changed);
+  const pruneRun = prepareJdtlsShardWorkspace(root, planJdtlsBuildRootShards([discovered], 1)[0]);
+  cleanupJdtlsShardWorkspace(pruneRun);
+  const completedCaches = fs.readdirSync(cacheParent, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(cacheParent, entry.name, '.complete.json')));
+  assert.equal(completedCaches.length, 2);
 });
 
 test('prepares many Bazel roots with bounded concurrency and per-root results', async () => {
@@ -1156,6 +1279,66 @@ test('prepares many Bazel roots with bounded concurrency and per-root results', 
   assert.equal(report.roots.filter((result) => result.status === 'generated').length, 6);
   assert.equal(report.roots.find((result) => result.rootId === 'bazel:app-3')?.status, 'failed');
   assert.equal(report.timedOut, false);
+});
+
+test('materializes 8741 consolidated sources once and performs zero warm-run source copies', (t) => {
+  const root = fixture({
+    'MODULE.bazel': 'module(name = "scale_sources")',
+    '.gitnexus/jdtls/bazel-project.json': JSON.stringify({
+      classpath: [], runtimeClasspath: [], sourcePaths: [], generatedSourcePaths: [],
+      sourceInventoryPath: '.gitnexus/jdtls/bazel-source-inventory.json',
+    }),
+  });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const documentCount = 8_741;
+  const sources = Array.from({ length: documentCount }, (_, index) => {
+    const packageName = `scale.p${index % 100}`;
+    const sourcePath = path.join(
+      root, 'src/main/java', ...packageName.split('.'), `Type${index}.java`,
+    );
+    const content = `package ${packageName}; class Type${index} {}\n`;
+    fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+    fs.writeFileSync(sourcePath, content);
+    return {
+      path: sourcePath, analysisPath: sourcePath, origin: 'repository',
+      contentHash: createHash('sha256').update(content).digest('hex'),
+      targetLabels: ['//:scale'], originalRepositoryPaths: [sourcePath],
+      configuredSourceAssociations: [], sourceJarAssociations: [],
+    };
+  });
+  fs.writeFileSync(path.join(root, '.gitnexus/jdtls/bazel-source-inventory.json'), JSON.stringify({
+    schemaVersion: 3, workspacePath: root, configurationHash: 'unchanged-build-configuration',
+    targetQuery: '//...', generatedAt: new Date().toISOString(), targets: [], sources,
+    comparison: {
+      repositorySources: documentCount, configuredRepositorySources: documentCount, generatedSources: 0,
+      sourceJarOnlySources: 0, externalTargetsRetained: 0, externalSourceJarAssociationsExcluded: 0,
+      unownedRepositorySources: [], duplicateSources: 0, crawlSources: documentCount,
+    },
+  }));
+  const discovered = discoverJavaBuildRoots(root)[0];
+  const coldProgress: Array<{ phase: string; completed?: number; total?: number }> = [];
+  const cold = prepareJdtlsShardWorkspace(
+    root, planJdtlsBuildRootShards([discovered], 1)[0], undefined,
+    (event) => coldProgress.push(event),
+  );
+  const coldModel = cold.projectModels[0];
+  const cacheRoot = path.dirname(coldModel.sourcePaths[0]);
+  assert.equal(globSync('**/*.java', { cwd: cacheRoot, nodir: true }).length, documentCount);
+  const projectPath = path.join(cold.workspacePath, 'projects', coldModel.projectName);
+  assert.equal(globSync('**/*.java', { cwd: projectPath, nodir: true }).length, 0);
+  assert.ok(coldProgress.some((event) =>
+    event.phase === 'cache-build' && event.completed === documentCount && event.total === documentCount));
+
+  const warmProgress: typeof coldProgress = [];
+  const warm = prepareJdtlsShardWorkspace(
+    root, planJdtlsBuildRootShards([discovered], 1)[0], undefined,
+    (event) => warmProgress.push(event),
+  );
+  assert.ok(warmProgress.some((event) => event.phase === 'cache-hit'));
+  assert.ok(!warmProgress.some((event) => event.phase === 'cache-build'));
+  assert.ok(!warmProgress.some((event) => event.phase === 'staging-sources'));
+  cleanupJdtlsShardWorkspace(cold);
+  cleanupJdtlsShardWorkspace(warm);
 });
 
 test('stops scheduling Bazel roots when the repository-wide budget expires', async () => {
@@ -1199,6 +1382,61 @@ test('keeps mixed build systems and provider overrides distinct', () => {
   } finally {
     delete process.env.GITNEXUS_JDT_GRADLE_IMPORT;
   }
+});
+
+test('assigns exactly one native importer to a dual Gradle and Maven root', (t) => {
+  const rootPath = fixture({
+    'settings.gradle': 'rootProject.name = "sample"',
+    'build.gradle': 'plugins { id "java" }',
+    'pom.xml': '<project/>',
+    'src/main/java/Sample.java': 'class Sample {}',
+  });
+  t.after(() => fs.rmSync(rootPath, { recursive: true, force: true }));
+  const root = discoverJavaBuildRoots(rootPath)[0]!;
+  assert.deepEqual(enabledNativeJdtBuildSystems(root), ['gradle']);
+
+  process.env.GITNEXUS_JDT_NATIVE_IMPORTER = 'maven';
+  try {
+    assert.deepEqual(enabledNativeJdtBuildSystems(root), ['maven']);
+  } finally {
+    delete process.env.GITNEXUS_JDT_NATIVE_IMPORTER;
+  }
+});
+
+test('selects Maven when a dual-build root exceeds the bundled Gradle Tooling API', (t) => {
+  const rootPath = fixture({
+    'settings.gradle': 'rootProject.name = "sample"',
+    'build.gradle': 'plugins { id "java" }',
+    'gradle/wrapper/gradle-wrapper.properties':
+      'distributionUrl=https\\://services.gradle.org/distributions/gradle-9.5.1-bin.zip\n',
+    'pom.xml': '<project/>',
+    'src/main/java/Sample.java': 'class Sample {}',
+  });
+  t.after(() => fs.rmSync(rootPath, { recursive: true, force: true }));
+  const root = discoverJavaBuildRoots(rootPath)[0]!;
+  assert.deepEqual(enabledNativeJdtBuildSystems(root), ['maven']);
+
+  process.env.GITNEXUS_JDT_NATIVE_IMPORTER = 'gradle';
+  try {
+    assert.deepEqual(enabledNativeJdtBuildSystems(root), ['gradle']);
+  } finally {
+    delete process.env.GITNEXUS_JDT_NATIVE_IMPORTER;
+  }
+});
+
+test('does not generate a competing Eclipse project for a native build root', (t) => {
+  const repository = fixture({
+    'app/pom.xml': '<project/>',
+    'app/src/main/java/example/App.java': 'package example; class App {}',
+  });
+  t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  const root = discoverJavaBuildRoots(repository)[0]!;
+  const prepared = prepareJdtlsShardWorkspace(repository, planJdtlsBuildRootShards([root], 1)[0]!);
+  t.after(() => cleanupJdtlsShardWorkspace(prepared));
+  const model = prepared.projectModels[0]!;
+  assert.equal(model.projectImportMode, 'native-build-tool');
+  assert.equal(fs.existsSync(path.join(prepared.workspacePath, 'projects', model.projectName)), false);
+  assert.deepEqual(model.uriAliases, []);
 });
 
 test('discovers and routes a poly-build monorepo by independent build root', () => {
@@ -1301,8 +1539,11 @@ test('shards forty build roots across four persistent multi-project workspaces',
     const projectPath = path.join(prepared.workspacePath, 'projects', model.projectName);
     const project = fs.readFileSync(path.join(projectPath, '.project'), 'utf8');
     const classpath = fs.readFileSync(path.join(projectPath, '.classpath'), 'utf8');
-    assert.match(project, /<linkedResources><\/linkedResources>/);
-    assert.ok(fs.statSync(path.join(projectPath, 'source-0')).isDirectory());
+    assert.match(project, /<linkedResources>/);
+    assert.match(project, /<locationURI>file:/);
+    assert.equal(fs.existsSync(path.join(projectPath, 'source-0')), false);
+    assert.equal(model.sourceLayout, 'linked');
+    assert.equal(model.uriAliases.length, 1);
     assert.match(classpath, /kind="src"/);
     assert.match(classpath, /kind="lib"/);
     assert.match(fs.readFileSync(path.join(projectPath, '.gitnexus-project.json'), 'utf8'), new RegExp(model.buildRootId));
@@ -1322,10 +1563,37 @@ test('generates an Eclipse fallback project when native Gradle import is unavail
     ].join('\n'),
   });
   t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  process.env.GITNEXUS_JDT_GRADLE_IMPORT = '0';
+  t.after(() => delete process.env.GITNEXUS_JDT_GRADLE_IMPORT);
   const root = discoverJavaBuildRoots(repository)[0];
   const prepared = prepareJdtlsShardWorkspace(repository, planJdtlsBuildRootShards([root], 1)[0]);
+  t.after(() => cleanupJdtlsShardWorkspace(prepared));
   const model = prepared.projectModels[0];
+  assert.equal(model.projectImportMode, 'external-eclipse');
   assert.equal(model.modelSource, 'eclipse-classpath');
   assert.deepEqual(model.sourcePaths, [path.join(root.workspacePath, 'src/main/java')]);
   assert.deepEqual(model.compileClasspath, [path.join(root.workspacePath, 'lib/dependency.jar')]);
+});
+
+test('retains copied Eclipse source staging as an operational fallback', (t) => {
+  const repository = fixture({
+    'app/pom.xml': '<project/>',
+    'app/src/main/java/example/App.java': 'package example; class App {}',
+  });
+  t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  const previous = process.env.GITNEXUS_JDT_SOURCE_LAYOUT;
+  process.env.GITNEXUS_JDT_SOURCE_LAYOUT = 'copied';
+  t.after(() => {
+    if (previous === undefined) delete process.env.GITNEXUS_JDT_SOURCE_LAYOUT;
+    else process.env.GITNEXUS_JDT_SOURCE_LAYOUT = previous;
+  });
+  const root = discoverJavaBuildRoots(repository)[0];
+  const prepared = prepareJdtlsShardWorkspace(repository, planJdtlsBuildRootShards([root], 1)[0]);
+  t.after(() => cleanupJdtlsShardWorkspace(prepared));
+  const model = prepared.projectModels[0];
+  const projectPath = path.join(prepared.workspacePath, 'projects', model.projectName);
+  assert.equal(model.sourceLayout, 'copied');
+  assert.match(fs.readFileSync(path.join(projectPath, '.project'), 'utf8'), /<linkedResources><\/linkedResources>/);
+  assert.ok(fs.existsSync(path.join(projectPath, 'source-0/example/App.java')));
+  assert.equal(model.uriAliases[0].physicalPath, model.uriAliases[0].logicalPath);
 });

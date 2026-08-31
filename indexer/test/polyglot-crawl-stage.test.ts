@@ -11,8 +11,7 @@ import {
 } from '../src/application/polyglot-crawl-stage.js';
 import type { LspAnalysisRun } from '../src/model.js';
 import { emptyRepositoryInventoryBatch, repositoryStableId } from '../src/repository/model.js';
-import type { ILspAdapter } from '../../lsp_server/contracts/lsp-adapter.interface.js';
-import { LspAdapterRegistry } from '../../lsp_server/registry/lsp-adapter-registry.js';
+import { LspAdapterRegistry, type ILspAdapter } from '../../lsp_server/public-api.js';
 
 test('routes inventory source documents through a registered semantic adapter exactly once', async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'polyglot-crawl-'));

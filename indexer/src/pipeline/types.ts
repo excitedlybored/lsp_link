@@ -3,12 +3,12 @@ import type { JvmArtifactEnrichmentSummary } from '../artifact/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
-import type { BazelBuildMode, BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
-import type { BazelScopeResolution } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+import type { BazelBuildMode, BazelTargetScope } from '../../../lsp_server/public-api.js';
+import type { BazelScopeResolution } from '../../../lsp_server/public-api.js';
 import type {
   BazelCrawlSource,
   BazelSourceInventoryComparison,
-} from '../../../lsp_server/adapters/java/bazel-source-inventory.js';
+} from '../../../lsp_server/public-api.js';
 import type { BazelConfiguredTargetEvidence } from '../bazel/model.js';
 import type { BazelBuildGraphBatch } from '../bazel/model.js';
 import type { RepositoryInventoryBatch } from '../repository/model.js';

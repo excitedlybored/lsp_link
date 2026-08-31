@@ -339,6 +339,54 @@ test('crawls every JDT document symbol directly and preserves every call-site ra
   assert.ok(crawled.relations.some((relation) => relation.kind === 'RESOLVES_TO'));
 });
 
+test('attributes materialized dependency documents to the owning LSP language', async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-language-attribution-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const source = path.join(workspace, 'service.py');
+  fs.writeFileSync(source, 'def service():\n    return dependency()\n');
+  const root = {
+    id: 'python:workspace', runId: run.id, workspaceUri: `file://${workspace}`,
+    repositoryPath: workspace, relativePath: '.', buildSystems: [],
+    importStatus: 'ready', excludedRootIds: [],
+  };
+  const pythonServer = {
+    ...server, id: 'server:python', name: 'pyright', languageId: 'python', buildRootId: root.id,
+  };
+  const owned = workspaceDocument(source, root.id, 'workspace', 'python');
+  const selectionRange = {
+    start: { line: 0, character: 4 }, end: { line: 0, character: 11 },
+  };
+  const adapter = {
+    id: 'pyright',
+    getServerCapabilities: () => ({ documentSymbolProvider: true, definitionProvider: true }),
+    documentUri: (filePath) => filePath === source ? owned.uri : filePath,
+    async openDocument() {},
+    async closeDocument() {},
+    async documentSymbols() {
+      return [{
+        name: 'service', kind: 12,
+        range: { start: { line: 0, character: 0 }, end: { line: 1, character: 23 } },
+        selectionRange,
+      }];
+    },
+    async request(method) {
+      if (method === 'textDocument/definition') {
+        return [{ uri: 'file:///dependencies/library.pyi', range: selectionRange }];
+      }
+      return [];
+    },
+    takeNotifications: () => [],
+  };
+
+  const crawled = await crawlLspBuildRoot({
+    run, server: pythonServer, buildRoot: root, documents: [owned],
+    adapter, repositoryPath: workspace,
+  });
+  const dependency = crawled.documents.find((item) => item.origin === 'dependency');
+  assert.ok(dependency);
+  assert.equal(dependency.languageId, 'python');
+});
+
 function task(capability, supported, eligibleCount, execute) {
   return { capability, supported, eligibleCount, execute, languageId: 'java', documentId: document.id };
 }

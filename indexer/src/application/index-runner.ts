@@ -32,8 +32,7 @@ import type {
   LspKnowledgeGraphBuildOptions,
   LspKnowledgeGraphBuildResult,
 } from '../pipeline/types.js';
-import { ownerBuildRoot, type JavaBuildRoot } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
-import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
+import { LspAdapterRegistry, ownerBuildRoot, type JavaBuildRoot } from '../../../lsp_server/public-api.js';
 import { buildBazelBuildGraphBatch } from '../bazel/model.js';
 import { buildRepositoryInventory } from '../repository/inventory.js';
 import type { RepositoryInventoryBatch } from '../repository/model.js';

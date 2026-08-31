@@ -65,15 +65,25 @@ Build-system integration differs by root type:
 
 - Maven uses the M2E model imported by JDT LS.
 - Gradle uses Buildship import.
+- A source root has one project owner. If Maven and Gradle descriptors coexist
+  at that exact root, Gradle owns it by default; `GITNEXUS_JDT_NATIVE_IMPORTER`
+  can select Maven. M2E and Buildship are never allowed to import the same tree.
 - Bazel generates an external Eclipse model from exact `JavaInfo` compile-time
   and runtime JARs.
 - Maven and Gradle use an external Eclipse model when native multi-module
   import is unavailable.
 - Unmanaged roots use source discovery and an external Eclipse model.
 - Spring Tools may start as a companion to a JDT shard and can ask JDT for Java
-  type and classpath information. The current production crawler collects its
-  persisted protocol observations from JDT LS; starting the Spring companion
-  does not by itself add Spring observations to the graph.
+  type and classpath information. The production crawler persists the companion
+  as its own `LspServer` and stores its exact executable-project and structure
+  responses in `observationsJson`; normalized framework projections can be
+  derived later without recrawling or losing provider-specific fields.
+
+Spring companions are root-scoped, even when JDT processes are shard-scoped.
+Only roots with Spring build/classpath markers receive a companion, avoiding a
+1 GB Spring process for unrelated Java roots. The adapter forwards JDT's
+`workspace/executeClientCommand` classpath callbacks to Spring Tools and does
+not publish the companion as ready until it reports a project or structure.
 
 Bazel model preparation and root crawls use bounded concurrency. JDT LS
 full-runtime JARs replace Bazel header JARs for navigation, while
@@ -88,8 +98,12 @@ source change.
 ## Startup and protocol sequence
 
 JDT LS reports service readiness before Maven, Gradle, or external Eclipse
-projects are necessarily imported. A shard therefore waits for the expected
-project catalog and classpaths before source crawling begins.
+projects are necessarily imported. A shard therefore waits for project import,
+then verifies that every Bazel-provided dependency is present in JDT's effective
+classpath or module path before source crawling begins. The set comparison is
+cheap and normally runs once. Incomplete but improving responses retry with
+bounded backoff; stable mismatches and repeated command failures fail quickly
+with concrete diagnostics instead of consuming the full startup deadline.
 
 One startup deadline covers every readiness phase rather than restarting a
 fresh timeout at each boundary. A size-derived budget ranges from three to
@@ -244,8 +258,9 @@ coverage counters, or JDT LS stability before raising the default above one.
   requested source set.
 - Reuse compatible imported JDT workspaces by a complete build-configuration
   fingerprint instead of deleting every JDT data directory before startup.
-- Replace staged source copies with safe linked resources or content-addressed
-  snapshots where JDT project isolation still requires staging.
+- Continue validating and reusing the inventory-hash source snapshots now
+  exposed to generated projects through Eclipse linked resources; retain
+  copied staging only as a compatibility fallback.
 - Weight shards with measured symbol/request cost instead of source-file count
   alone.
 - Use a work queue so a shard that finishes a cheap root can accept remaining

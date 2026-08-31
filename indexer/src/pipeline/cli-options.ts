@@ -1,6 +1,6 @@
 import path from 'node:path';
 import type { LspKnowledgeGraphBuildOptions } from './types.js';
-import type { BazelBuildMode } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+import type { BazelBuildMode } from '../../../lsp_server/public-api.js';
 import { extractRunConfig } from './run-config.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
 

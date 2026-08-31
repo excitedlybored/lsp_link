@@ -2,6 +2,11 @@ import { BaseStdioLspAdapter, type StdioProcessLaunch } from '../base-stdio-adap
 import type { ILspAdapter } from '../../contracts/lsp-adapter.interface.js';
 import { JdtlsRuntimeLocator } from './jdtls-runtime.js';
 import { locateSpringToolsRuntime } from './spring-tools-runtime.js';
+import type { JdtlsClientCommand } from './jdtls-adapter.js';
+
+interface JdtlsClientCommandSource extends ILspAdapter {
+  addClientCommandHandler(handler: (command: JdtlsClientCommand) => unknown): () => void;
+}
 
 const JAVA_REQUESTS: Record<string, string> = {
   'sts/javaType': 'sts.java.type',
@@ -21,7 +26,18 @@ export class SpringBootLanguageServerAdapter extends BaseStdioLspAdapter {
   readonly language = 'java';
   readonly maxConcurrentRequests = 1;
 
-  constructor(private readonly javaAdapter: ILspAdapter, private readonly buildRootId?: string) { super(); }
+  private removeClientCommandHandler?: () => void;
+
+  constructor(private readonly javaAdapter: ILspAdapter, private readonly buildRootId?: string) {
+    super();
+    const source = javaAdapter as Partial<JdtlsClientCommandSource>;
+    if (typeof source.addClientCommandHandler === 'function') {
+      this.removeClientCommandHandler = source.addClientCommandHandler((command) =>
+        command.command.startsWith('sts4.classpath.')
+          ? this.request('workspace/executeCommand', command)
+          : null);
+    }
+  }
 
   override getSessionMetadata() {
     return { ...super.getSessionMetadata(), buildRootId: this.buildRootId, buildSystems: ['spring-boot'] };
@@ -76,5 +92,12 @@ export class SpringBootLanguageServerAdapter extends BaseStdioLspAdapter {
     return this.request('workspace/executeCommand', {
       command: 'sts/spring-boot/executableBootProjects', arguments: [],
     });
+  }
+
+
+  public override async shutdown(): Promise<void> {
+    this.removeClientCommandHandler?.();
+    this.removeClientCommandHandler = undefined;
+    await super.shutdown();
   }
 }

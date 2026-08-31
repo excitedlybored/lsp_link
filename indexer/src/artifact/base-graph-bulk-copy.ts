@@ -253,7 +253,7 @@ async function applyArrayProperties(
 
 const LSP_ANALYSIS_RUN_COLUMNS = ['id','workspaceUri','repositoryPath','protocolVersion','positionEncoding','status','startedAt','completedAt','configurationHash','errorCount','timeoutCount'];
 const LSP_BUILD_ROOT_COLUMNS = ['id','runId','workspaceUri','repositoryPath','relativePath','javaMajor','importStatus','configurationHash'];
-const LSP_SERVER_COLUMNS = ['id','runId','name','version','languageId','command','status','capabilitiesJson','buildRootId','processShardId'];
+const LSP_SERVER_COLUMNS = ['id','runId','name','version','languageId','command','status','capabilitiesJson','observationsJson','buildRootId','processShardId'];
 const LSP_DOCUMENT_COLUMNS = ['id','uri','filePath','languageId','version','contentHash','origin','codeOrigin','wasOpened','buildRootId'];
 const LSP_SYMBOL_COLUMNS = ['id','documentId','uri','name','detail','kind','kindName','containerName','startLine','startCharacter','endLine','endCharacter','selectionStartLine','selectionStartCharacter','selectionEndLine','selectionEndCharacter','signature','stableKey','isExternal','codeOrigin'];
 const LSP_CALL_SITE_COLUMNS = ['id','runId','serverId','documentId','callerSymbolId','capability','direction','startLine','startCharacter','endLine','endCharacter','calleeName','expressionHash','status'];

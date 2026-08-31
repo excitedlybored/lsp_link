@@ -8,9 +8,6 @@
 import * as path from 'path';
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
-import { KotlinLspAdapter } from '../adapters/kotlin/kotlin-lsp-adapter.js';
-import { SpringBootLanguageServerAdapter } from '../adapters/java/spring-boot-adapter.js';
-import { springToolsEnabled } from '../adapters/java/spring-tools-runtime.js';
 import {
   BazelPreparationReport,
   prepareBazelProjectModels,
@@ -18,123 +15,63 @@ import {
 } from '../adapters/java/bazel-project-model.js';
 import {
   discoverJavaBuildRoots,
+  enabledNativeJdtBuildSystems,
   JavaBuildRoot,
-  JdtlsWorkspace,
   jdtlsHeapXmx,
   ownerBuildRoot,
+  usesNativeJdtImport,
 } from '../adapters/java/jdtls-runtime.js';
 import type { PreparedJdtlsShard } from '../adapters/java/jdtls-sharding.js';
 import {
   JdtlsStartupTelemetry,
   jdtlsStartupTimeoutMs,
 } from '../adapters/java/jdtls-startup-telemetry.js';
-import { PyrightAdapter } from '../adapters/python/pyright-adapter.js';
-import { ClangdAdapter } from '../adapters/cpp/clangd-adapter.js';
-import { RustAnalyzerAdapter } from '../adapters/rust/rust-analyzer-adapter.js';
-import { TypeScriptAdapter } from '../adapters/typescript/typescript-adapter.js';
-import { CSharpAdapter } from '../adapters/csharp/csharp-adapter.js';
-import { CobolAdapter } from '../adapters/cobol/cobol-adapter.js';
-
-export interface JdtlsUriMapping {
-  sourcePath: string;
-  stagedPath: string;
-}
-
-export type LspAdapterFactory = () => ILspAdapter;
-
-/** Build source-root and exact-document mappings once per prepared shard. */
-export function buildJdtlsShardUriMappings(shard: PreparedJdtlsShard): JdtlsUriMapping[] {
-  return shard.projectModels.flatMap((model) => {
-    const allRoots = [...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort();
-    const rootIndexes = new Map(allRoots.map((sourcePath, index) => [sourcePath, index]));
-    return [
-      ...allRoots.map((sourcePath, index) => ({
-        sourcePath,
-        stagedPath: path.join(shard.workspacePath, 'projects', model.projectName, `source-${index}`),
-      })),
-      ...model.sourceMappings.map((mapping) => {
-        const rootIndex = rootIndexes.get(mapping.sourceRoot);
-        return {
-          sourcePath: mapping.sourcePath,
-          stagedPath: rootIndex === undefined
-            ? mapping.analysisPath
-            : path.join(
-              shard.workspacePath, 'projects', model.projectName, `source-${rootIndex}`,
-              path.relative(mapping.sourceRoot, mapping.analysisPath),
-            ),
-        };
-      }),
-    ];
-  });
-}
+import { waitForImportedJavaProjects } from '../adapters/java/jdtls-classpath-readiness.js';
+import { formatJdtlsProcessFailure } from '../adapters/java/jdtls-process-diagnostics.js';
+import { buildJdtlsShardUriMappings } from '../adapters/java/jdtls-uri-mapping.js';
+import { SpringCompanionManager } from '../adapters/java/spring-companion-manager.js';
+import {
+  LspAdapterCatalog,
+  type LspAdapterFactory,
+} from './adapter-catalog.js';
 
 export class LspAdapterRegistry {
-  private adapters = new Map<string, ILspAdapter>();
-  private adapterFactories = new Map<string, LspAdapterFactory>();
+  private readonly catalog: LspAdapterCatalog;
   private activeAdapters = new Map<string, ILspAdapter>();
   private startingAdapters = new Map<string, Promise<ILspAdapter | null>>();
-  private javaCompanions = new Map<ILspAdapter, ILspAdapter>();
+  private readonly springCompanions = new SpringCompanionManager();
   private javaLayouts = new Map<string, JavaBuildRoot[]>();
   private preparedBazelRoots = new Set<string>();
   private bazelPreparations = new Map<string, Promise<BazelPreparationReport>>();
 
-  private extensionMap: Record<string, string> = {};
-
-  constructor(factories: LspAdapterFactory[] = defaultAdapterFactories()) {
-    for (const factory of factories) this.registerAdapterFactory(factory);
+  constructor(factories?: LspAdapterFactory[]) {
+    this.catalog = new LspAdapterCatalog(factories);
   }
 
   /** Register one routing prototype. Use registerAdapterFactory for multi-workspace sessions. */
   public registerAdapter(adapter: ILspAdapter): void {
-    this.registerAdapterMetadata(adapter);
+    this.catalog.registerAdapter(adapter);
   }
 
   /** Register the sole construction boundary for independently owned LSP sessions. */
   public registerAdapterFactory(factory: LspAdapterFactory): void {
-    const prototype = factory();
-    const language = prototype.language.toLowerCase();
-    this.registerAdapterMetadata(prototype);
-    this.adapterFactories.set(language, factory);
-  }
-
-  private registerAdapterMetadata(adapter: ILspAdapter): void {
-    const language = adapter.language.toLowerCase();
-    if (this.adapters.has(language)) {
-      throw new Error(`LSP adapter is already registered for ${language}`);
-    }
-    this.adapters.set(language, adapter);
-    for (const rawExtension of adapter.fileExtensions ?? []) {
-      const extension = rawExtension.toLowerCase();
-      if (!/^\.[a-z0-9][a-z0-9.+-]*$/.test(extension)) {
-        throw new Error(`Invalid file extension for ${adapter.id}: ${rawExtension}`);
-      }
-      const current = this.extensionMap[extension];
-      if (current && current !== language) {
-        throw new Error(`File extension ${extension} is already routed to ${current}`);
-      }
-      this.extensionMap[extension] = language;
-    }
+    this.catalog.registerFactory(factory);
   }
 
   public getAdapter(language: string): ILspAdapter | undefined {
-    return this.adapters.get(language.toLowerCase());
+    return this.catalog.getAdapter(language);
   }
 
   public getLanguageForFile(filePath: string): string | null {
-    const ext = path.extname(filePath).toLowerCase();
-    return this.extensionMap[ext] || null;
+    return this.catalog.getLanguageForFile(filePath);
   }
 
   public getSupportedFileExtensions(): string[] {
-    return Object.keys(this.extensionMap).sort();
+    return this.catalog.getSupportedFileExtensions();
   }
 
   public getAdapterCatalog(): Array<{ id: string; language: string; fileExtensions: string[] }> {
-    return [...this.adapters.values()].map((adapter) => ({
-      id: adapter.id,
-      language: adapter.language.toLowerCase(),
-      fileExtensions: [...(adapter.fileExtensions ?? [])].map((value) => value.toLowerCase()).sort(),
-    })).sort((left, right) => left.language.localeCompare(right.language));
+    return this.catalog.entries();
   }
 
   public async getOrStartAdapter(language: string, workspacePath: string): Promise<ILspAdapter | null> {
@@ -249,19 +186,8 @@ export class LspAdapterRegistry {
       if (!(await adapter.isAvailable())) return null;
       await adapter.start(root.workspacePath);
       this.activeAdapters.set(sessionKey, adapter);
-      if (springToolsEnabled()) {
-        const spring = new SpringBootLanguageServerAdapter(adapter, root.id);
-        if (await spring.isAvailable()) {
-          try {
-            await spring.start(root.workspacePath);
-            this.activeAdapters.set(`spring:${root.id}:${root.workspacePath}`, spring);
-            this.javaCompanions.set(adapter, spring);
-          } catch (error) {
-            console.warn(`[LSP Registry] Spring Tools unavailable for ${root.id}:`, error instanceof Error ? error.message : error);
-            try { await spring.shutdown(); } catch { /* partial startup */ }
-          }
-        }
-      }
+      const companion = await this.springCompanions.start(adapter, root);
+      if (companion) this.activeAdapters.set(`spring:${root.id}:${root.workspacePath}`, companion);
       return adapter;
     } catch (err: any) {
       console.warn(`[LSP Registry] Failed to start Java build root ${root.id}:`, err.message || err);
@@ -287,17 +213,12 @@ export class LspAdapterRegistry {
     shard: PreparedJdtlsShard,
     sessionKey: string,
   ): Promise<ILspAdapter | null> {
-    const usesNativeImport = (root: JavaBuildRoot): boolean => {
-      if (root.systems.includes('bazel') || root.systems.length === 0) return false;
-      const workspace = JdtlsWorkspace.inspect(root.workspacePath, {
-        buildSystems: root.systems,
-        excludedRoots: root.excludedRoots,
-      });
-      return root.systems.some((kind) => kind !== 'bazel' && workspace.buildImportEnabled(kind));
-    };
-    const nativeBuildSystems = [...new Set(shard.roots
-      .filter(usesNativeImport)
-      .flatMap((root) => root.systems))];
+    const nativeRoots = shard.roots.filter(usesNativeJdtImport);
+    const nativeRootIds = new Set(nativeRoots.map((root) => root.id));
+    const externalProjectModels = shard.projectModels
+      .filter((model) => !nativeRootIds.has(model.buildRootId));
+    const nativeBuildSystems = [...new Set(nativeRoots
+      .flatMap(enabledNativeJdtBuildSystems))];
     const classpathEntryCount = new Set(
       shard.projectModels.flatMap((model) => model.languageServerClasspath.map((entry) => path.resolve(entry))),
     ).size;
@@ -314,14 +235,14 @@ export class LspAdapterRegistry {
     adapter = new JavaJdtlsAdapter({
       processShardId: shard.id,
       shardBuildRootIds: shard.roots.map((root) => root.id),
-      eclipseProjectPaths: shard.projectModels.map((model) =>
+      eclipseProjectPaths: externalProjectModels.map((model) =>
         path.join(shard.workspacePath, 'projects', model.projectName)),
       workspaceFolderPaths: [
-        ...shard.projectModels.map((model) =>
+        ...externalProjectModels.map((model) =>
           path.join(shard.workspacePath, 'projects', model.projectName)),
-        ...shard.roots.filter(usesNativeImport).map((root) => root.workspacePath),
+        ...nativeRoots.map((root) => root.workspacePath),
       ],
-      uriMappings: buildJdtlsShardUriMappings(shard),
+      uriMappings: buildJdtlsShardUriMappings(shard, externalProjectModels),
       sourceFileCount: shard.sourceFileCount,
       buildSystems: nativeBuildSystems,
       bazelModelPrepared: true,
@@ -342,42 +263,33 @@ export class LspAdapterRegistry {
         shard.id,
         telemetry.deadlineAt,
         (pending) => telemetry.setPendingRoots(pending),
+        (progress) => telemetry.setClasspathReadiness(progress),
       );
       telemetry.setPendingRoots(0);
       telemetry.finish('complete');
       this.activeAdapters.set(sessionKey, adapter);
-      if (springToolsEnabled()) {
-        const spring = new SpringBootLanguageServerAdapter(adapter, shard.id);
-        if (await spring.isAvailable()) {
-          try {
-            await spring.start(shard.workspacePath);
-            this.activeAdapters.set(`spring-shard:${shard.id}:${shard.workspacePath}`, spring);
-            this.javaCompanions.set(adapter, spring);
-          } catch (error) {
-            console.warn(`[LSP Registry] Spring Tools unavailable for ${shard.id}:`, error instanceof Error ? error.message : error);
-            try { await spring.shutdown(); } catch { /* partial startup */ }
-          }
-        }
+      for (const root of shard.roots) {
+        const model = shard.projectModels.find((candidate) => candidate.buildRootId === root.id);
+        const companion = await this.springCompanions.start(adapter, root, model);
+        if (companion) this.activeAdapters.set(`spring:${root.id}:${root.workspacePath}`, companion);
       }
       return adapter;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       telemetry.finish('failed', reason.split('\nJDT/LSP stderr tail:')[0]);
-      console.warn(`[LSP Registry] Failed to start Java shard ${shard.id}: ${formatProcessFailure(reason, adapter)}`);
+      console.warn(`[LSP Registry] Failed to start Java shard ${shard.id}: ${formatJdtlsProcessFailure(reason, adapter)}`);
       try { await adapter.shutdown(); } catch { /* partial startup */ }
       return null;
     }
   }
 
   private createAdapter(language: string): ILspAdapter | undefined {
-    return this.adapterFactories.get(language)?.() ?? this.getAdapter(language);
+    return this.catalog.createAdapter(language);
   }
 
   public async shutdownAdapter(adapter: ILspAdapter): Promise<void> {
-    const companion = this.javaCompanions.get(adapter);
-    if (companion) {
-      try { await companion.shutdown(); } catch { /* best-effort companion cleanup */ }
-      this.javaCompanions.delete(adapter);
+    const companions = await this.springCompanions.shutdown(adapter);
+    for (const companion of companions) {
       for (const [key, active] of this.activeAdapters) if (active === companion) this.activeAdapters.delete(key);
     }
     try { await adapter.shutdown(); } catch { /* best-effort session cleanup */ }
@@ -386,8 +298,8 @@ export class LspAdapterRegistry {
     }
   }
 
-  public getJavaCompanion(adapter: ILspAdapter): ILspAdapter | undefined {
-    return this.javaCompanions.get(adapter);
+  public getJavaCompanion(adapter: ILspAdapter, buildRootId?: string): ILspAdapter | undefined {
+    return this.springCompanions.get(adapter, buildRootId);
   }
 
   public async shutdownAll(): Promise<void> {
@@ -401,83 +313,9 @@ export class LspAdapterRegistry {
     }
     this.activeAdapters.clear();
     this.startingAdapters.clear();
-    this.javaCompanions.clear();
+    this.springCompanions.clear();
     this.javaLayouts.clear();
     this.preparedBazelRoots.clear();
     this.bazelPreparations.clear();
   }
-}
-
-function defaultAdapterFactories(): LspAdapterFactory[] {
-  return [
-    () => new JavaJdtlsAdapter(),
-    () => new KotlinLspAdapter(),
-    () => new PyrightAdapter(),
-    () => new ClangdAdapter(),
-    () => new RustAnalyzerAdapter(),
-    () => new TypeScriptAdapter(),
-    () => new CSharpAdapter(),
-    () => new CobolAdapter(),
-  ];
-}
-
-/**
- * ServiceReady precedes completion of Eclipse project import. Requiring the
- * project catalog and classpath commands prevents crawl results from depending
- * on which shard happens to win an indexing race.
- */
-async function waitForImportedJavaProjects(
-  adapter: ILspAdapter,
-  projectModels: PreparedJdtlsShard['projectModels'],
-  shardId: string,
-  deadlineAt?: number,
-  onPendingRoots?: (count: number) => void,
-): Promise<void> {
-  const deadline = deadlineAt ?? Date.now() + 180_000;
-  const pending = new Map(projectModels
-    .filter((model) => model.representativeDocumentPath)
-    .map((model) => [model.buildRootId, model]));
-  onPendingRoots?.(pending.size);
-  do {
-    for (const [rootId, model] of pending) {
-      if (Date.now() >= deadline) break;
-      try {
-        const response = await adapter.request<{ classpaths?: unknown }>('workspace/executeCommand', {
-          command: 'java.project.getClasspaths',
-          arguments: [adapter.documentUri(model.representativeDocumentPath!), JSON.stringify({ scope: 'runtime' })],
-        });
-        const actual = new Set(Array.isArray(response.classpaths)
-          ? response.classpaths.filter((value): value is string => typeof value === 'string').map((value) => path.resolve(value))
-          : []);
-        if (model.languageServerClasspath.every((entry) => actual.has(path.resolve(entry)))) {
-          pending.delete(rootId);
-          onPendingRoots?.(pending.size);
-        }
-      } catch {
-        // Project import/indexing is still in flight.
-      }
-    }
-    if (pending.size === 0) break;
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  } while (Date.now() < deadline);
-  if (pending.size > 0) {
-    throw new Error(
-      `[${shardId}] JDT classpath readiness timed out with ${pending.size} pending roots: `
-      + [...pending.keys()].join(', '),
-    );
-  }
-}
-
-function formatProcessFailure(reason: string, adapter: ILspAdapter): string {
-  const metadata = adapter.getSessionMetadata();
-  const processDetail = [
-    metadata.processId !== undefined ? `pid=${metadata.processId}` : undefined,
-    metadata.processExitCode !== null && metadata.processExitCode !== undefined
-      ? `exitCode=${metadata.processExitCode}` : undefined,
-    metadata.processSignal ? `signal=${metadata.processSignal}` : undefined,
-  ].filter(Boolean).join(', ');
-  const stderr = metadata.processStderrTail?.trim();
-  return `${reason}${processDetail ? ` (${processDetail})` : ''}`
-    + (stderr && !reason.includes('stderr tail:')
-      ? `\nJDT stderr tail:\n${stderr.slice(-8 * 1024)}` : '');
 }

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+import type { BazelTargetScope } from '../../../lsp_server/public-api.js';
 import { CRAWL_PROFILES, type CrawlProfile } from '../ingest/crawl-profile.js';
 
 export interface LspLinkRunConfig {

@@ -87,6 +87,32 @@ positive millisecond value and `GITNEXUS_JDT_STARTUP_HEARTBEAT_MS` to change
 the reporting interval. The older
 `GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS` remains a compatibility alias.
 Failures include process exit state and only a bounded stderr tail.
+The `classpathReadiness` heartbeat object shows attempts, completed roots,
+classpath/module-path entries returned by JDT, matched/missing expected entries,
+and `stalledForMs`. A stable missing count indicates a classpath-model mismatch;
+a decreasing count indicates continuing import progress.
+
+Classpath readiness is a strict correctness gate, not a second dependency
+scan. It succeeds after one complete response, retries incomplete responses
+with backoff only for a short bounded window, and reports missing path samples
+or repeated command errors on failure. The defaults are a 30-second stable
+coverage limit and three consecutive request errors; override them with
+`GITNEXUS_JDT_CLASSPATH_STALL_TIMEOUT_MS` and
+`GITNEXUS_JDT_CLASSPATH_MAX_ERRORS` when necessary.
+
+Source mapping and temporary Eclipse-project construction occur before the JDT
+process exists. `[jdtls-workspace]` records report mapping, cache validation or
+building, consolidation, and project-linking progress every 250 files during
+this synchronous preparation window. Consolidated sources are cached by the
+semantic source-inventory hash, validated from an atomic completion manifest,
+and exposed through Eclipse linked folders. An unchanged warm run performs no
+Java source copies. `GITNEXUS_JDT_SOURCE_LAYOUT=copied` selects the physical-copy
+fallback; those copies use filesystem copy-on-write cloning when supported.
+
+`bash install.sh` also verifies and installs the vendored Spring Tools runtime
+offline under `.gitnexus/tools/spring-tools`. Spring-capable roots therefore do
+not depend on editor extensions or network access. Set
+`GITNEXUS_SPRING_TOOLS=false` only when intentionally disabling that protocol.
 
 The aspect build writes a per-run Build Event Protocol (BEP) JSON stream. After
 the build, `bazel:aspect-output-discovery` follows the output group's shared

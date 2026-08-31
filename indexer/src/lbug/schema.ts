@@ -24,7 +24,7 @@ CREATE NODE TABLE LspAnalysisRun (
 export const LSP_SERVER_SCHEMA = `
 CREATE NODE TABLE LspServer (
   id STRING, runId STRING, name STRING, version STRING, languageId STRING,
-  command STRING, status STRING, capabilitiesJson STRING, buildRootId STRING,
+  command STRING, status STRING, capabilitiesJson STRING, observationsJson STRING, buildRootId STRING,
   processShardId STRING,
   PRIMARY KEY (id)
 )`;

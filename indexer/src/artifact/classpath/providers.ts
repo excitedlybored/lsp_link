@@ -73,7 +73,7 @@ export class MavenM2eClasspathProvider extends JdtImportedClasspathProvider {
   readonly id = 'maven-m2e' as const;
 
   supports(context: ArtifactClasspathResolutionContext): boolean {
-    return context.root.systems.includes('maven') && Boolean(context.lspClient);
+    return context.nativeImporter === 'maven' && Boolean(context.lspClient);
   }
 }
 
@@ -81,7 +81,7 @@ export class GradleBuildshipClasspathProvider extends JdtImportedClasspathProvid
   readonly id = 'gradle-buildship' as const;
 
   supports(context: ArtifactClasspathResolutionContext): boolean {
-    return context.root.systems.includes('gradle') && Boolean(context.lspClient);
+    return context.nativeImporter === 'gradle' && Boolean(context.lspClient);
   }
 }
 

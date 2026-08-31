@@ -53,7 +53,7 @@ test('Bazel JavaInfo maps compile header JARs to authoritative runtime JARs', as
   assert.deepEqual(descriptors[0].providerIds, ['bazel-java-info']);
 });
 
-test('M2E and Buildship use the classpaths imported by JDT LS and merge provider evidence', async (t) => {
+test('only the selected native importer claims the JDT effective classpath', async (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-provider-jdt-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   const mavenJar = path.join(fixture, '.m2/repository/com/acme/demo/1.2/demo-1.2.jar');
@@ -72,6 +72,7 @@ test('M2E and Buildship use the classpaths imported by JDT LS and merge provider
   };
   const context = {
     root: { id: 'root:mixed', workspacePath: fixture, systems: ['maven', 'gradle'] },
+    nativeImporter: 'maven',
     lspClient: adapter, documentUris: ['file:///workspace/project/src/Main.java'],
   };
   const resolver = new ArtifactClasspathResolver([
@@ -83,9 +84,9 @@ test('M2E and Buildship use the classpaths imported by JDT LS and merge provider
   assert.equal(calls.filter((value) => value.params.command === 'java.project.getAll').length, 1);
   assert.equal(calls.filter((value) => value.params.command === 'java.project.getClasspaths').length, 1);
   assert.equal(descriptors.length, 2);
-  assert.deepEqual(resolution.attempts.map((value) => value.status), ['resolved', 'resolved']);
-  assert.deepEqual(descriptors[0].providerIds.sort(), ['gradle-buildship', 'maven-m2e']);
-  assert.deepEqual(descriptors[1].providerIds.sort(), ['gradle-buildship', 'maven-m2e']);
+  assert.deepEqual(resolution.attempts.map((value) => [value.providerId, value.status]), [['maven-m2e', 'resolved']]);
+  assert.deepEqual(descriptors[0].providerIds, ['maven-m2e']);
+  assert.deepEqual(descriptors[1].providerIds, ['maven-m2e']);
   assert.equal(descriptors.find((value) => value.classpathEntryPath === moduleJar).modulePath, true);
   assert.equal(inferMavenCoordinate(mavenJar), 'com.acme:demo:1.2');
   assert.equal(inferMavenCoordinate(moduleJar), 'org.example:mod:2.0');

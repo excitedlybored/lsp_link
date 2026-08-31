@@ -36,6 +36,8 @@ export interface ArtifactClasspathLspClient {
 
 export interface ArtifactClasspathResolutionContext {
   root: ArtifactClasspathBuildRoot;
+  /** The sole native JDT importer that owns this root, when applicable. */
+  nativeImporter?: 'maven' | 'gradle';
   lspClient?: ArtifactClasspathLspClient;
   documentUris: string[];
   bazelModelPath?: string;

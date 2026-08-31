@@ -27,3 +27,9 @@ stream-extracts those chunks into the ignored `.gitnexus/tools/kotlin-lsp/`
 cache, avoiding both network access and Git blobs at or above 100 MB. The
 adapters select these clone-local runtimes, so indexing does not depend on
 editor extensions or user-profile launchers.
+
+`spring-tools/` contains the pinned, platform-independent official Spring Tools
+VSIX. Its single 83,000,863-byte blob remains below Git hosting's 100 MB limit.
+`install.sh` verifies its SHA-256 and atomically extracts it into the ignored
+`.gitnexus/tools/spring-tools/` cache, so Spring analysis also works offline and
+does not depend on a VS Code or Cursor extension.

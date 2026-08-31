@@ -8,8 +8,7 @@ import { fileURLToPath } from 'node:url';
 import lbug from '@ladybugdb/core';
 import { findJavaSourceFiles } from '../src/pipeline/java-source-files.js';
 import { openLspLadybugDatabase, type LadybugModuleLike } from '../src/lbug/repository.js';
-import { ownerBuildRoot } from '../../lsp_server/adapters/java/jdtls-runtime.js';
-import { LspAdapterRegistry } from '../../lsp_server/registry/lsp-adapter-registry.js';
+import { LspAdapterRegistry, ownerBuildRoot } from '../../lsp_server/public-api.js';
 
 const REPOSITORY_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const SAMPLES_PATH = path.join(REPOSITORY_PATH, 'sample_projects');
@@ -22,6 +21,7 @@ const IGNORED_DIRECTORIES = new Set([
   '.git', '.gitnexus', 'node_modules', 'target', 'build', 'dist', 'bazel-bin',
   'bazel-out', 'bazel-testlogs',
 ]);
+const SPRING_ACCEPTANCE_SAMPLE = 'gs-rest-service';
 
 interface SampleInventory {
   name: string;
@@ -125,7 +125,7 @@ async function runJavaIndexer(sample: SampleInventory, temporary: string): Promi
     ? sampleConfigPath
     : path.join(temporary, `${sample.name}.json`);
   if (configPath !== sampleConfigPath) {
-    fs.writeFileSync(configPath, JSON.stringify(endToEndConfig(prebuilt), null, 2));
+    fs.writeFileSync(configPath, JSON.stringify(endToEndConfig(prebuilt, sample.name), null, 2));
   }
   await runProcess(process.execPath, [
     path.join(REPOSITORY_PATH, 'node_modules/tsx/dist/cli.mjs'),
@@ -146,6 +146,7 @@ async function runJavaIndexer(sample: SampleInventory, temporary: string): Promi
     const [row] = await result.getAll();
     await result.close?.();
     assert.ok(Number(row.documentCount) > 0, `${sample.name} published no indexed documents`);
+    if (sample.name === SPRING_ACCEPTANCE_SAMPLE) await assertSpringSemantics(handle);
   } finally {
     await handle.close();
   }
@@ -211,7 +212,49 @@ function hasCompletePrebuiltBazelHandoff(sample: SampleInventory): boolean {
     fs.existsSync(path.join(root.workspacePath, '.gitnexus/jdtls/bazel-handoff.json')));
 }
 
-function endToEndConfig(prebuilt: boolean): object {
+async function assertSpringSemantics(handle: ReturnType<typeof openLspLadybugDatabase>): Promise<void> {
+  const connection = handle.artifactRepository.connectionForBulkCopy();
+  const servers = await connection.query(
+    "MATCH (server:LspServer) WHERE server.languageId = 'java' RETURN count(server) AS total, "
+    + "sum(CASE WHEN server.status = 'complete' THEN 1 ELSE 0 END) AS complete",
+  );
+  assert.ok(!Array.isArray(servers) && servers.getAll, 'Spring server query returned no row set');
+  const [serverRow] = await servers.getAll();
+  await servers.close?.();
+  assert.ok(Number(serverRow.total) > 0, 'Spring acceptance sample published no Java server');
+  assert.equal(Number(serverRow.complete), Number(serverRow.total), 'Spring Java roots were not complete');
+
+  const dependencies = await connection.query(
+    "MATCH (document:LspDocument) WHERE document.origin = 'dependency' "
+    + "AND document.uri CONTAINS 'org.springframework' RETURN count(document) AS total",
+  );
+  assert.ok(!Array.isArray(dependencies) && dependencies.getAll, 'Spring dependency query returned no row set');
+  const [dependencyRow] = await dependencies.getAll();
+  await dependencies.close?.();
+  assert.ok(Number(dependencyRow.total) > 0, 'Spring dependency definitions were not resolved');
+
+  const diagnostics = await connection.query(
+    'MATCH (diagnostic:LspDiagnostic) RETURN count(diagnostic) AS total',
+  );
+  assert.ok(!Array.isArray(diagnostics) && diagnostics.getAll, 'Spring diagnostics query returned no row set');
+  const [diagnosticRow] = await diagnostics.getAll();
+  await diagnostics.close?.();
+  assert.equal(Number(diagnosticRow.total), 0, 'Spring acceptance sample contains Java diagnostics');
+
+  const spring = await connection.query(
+    "MATCH (server:LspServer) WHERE server.name = 'spring-boot-language-server' "
+    + 'RETURN count(server) AS total, collect(server.observationsJson) AS observations',
+  );
+  assert.ok(!Array.isArray(spring) && spring.getAll, 'Spring observation query returned no row set');
+  const [springRow] = await spring.getAll();
+  await spring.close?.();
+  assert.ok(Number(springRow.total) > 0, 'Spring Tools observations were not persisted');
+  const observations = JSON.stringify(springRow.observations);
+  assert.match(observations, /Controllers \(Spring Web\)/);
+  assert.match(observations, /\/greeting -- GET/);
+}
+
+function endToEndConfig(prebuilt: boolean, sampleName: string): object {
   return {
     schemaVersion: 1,
     name: 'all-samples-e2e',
@@ -227,7 +270,11 @@ function endToEndConfig(prebuilt: boolean): object {
       },
       preparation: { concurrency: 4, timeoutMs: SAMPLE_TIMEOUT_MS },
     },
-    crawl: { profile: 'core', concurrency: 4, resume: false },
+    crawl: {
+      profile: sampleName === SPRING_ACCEPTANCE_SAMPLE ? 'exhaustive' : 'core',
+      concurrency: 4,
+      resume: false,
+    },
     artifacts: { concurrency: 4, maxClasses: 1, fetchSources: false, classpathManifests: [] },
     quality: { failOnFailedBuildRoot: true },
     checkpoints: { directory: null },

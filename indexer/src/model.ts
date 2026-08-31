@@ -161,6 +161,8 @@ export interface LspServer {
   command?: string;
   status: LspRunStatus;
   capabilitiesJson: string;
+  /** Lossless provider-specific responses not represented by standard LSP types. */
+  observationsJson?: string;
   buildRootId?: string;
   /** Physical persistent language-server process shared by logical root servers. */
   processShardId?: string;

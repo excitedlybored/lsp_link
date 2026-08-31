@@ -2,10 +2,10 @@ import path from 'node:path';
 import {
   prepareBazelProjectModels,
   type BazelPreparationReport,
-} from '../../../lsp_server/adapters/java/bazel-project-model.js';
-import { discoverJavaBuildRoots } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
+} from '../../../lsp_server/public-api.js';
+import { discoverJavaBuildRoots } from '../../../lsp_server/public-api.js';
 import { extractRunConfig } from '../pipeline/run-config.js';
-import type { BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+import type { BazelTargetScope } from '../../../lsp_server/public-api.js';
 
 interface BazelPreparationCommandOptions {
   workspace: string;

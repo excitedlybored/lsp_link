@@ -29,6 +29,13 @@ export interface JavaJdtlsAdapterOptions {
   startupProgress?: (phase: string) => void;
 }
 
+export interface JdtlsClientCommand {
+  command: string;
+  arguments: unknown[];
+}
+
+export type JdtlsClientCommandHandler = (command: JdtlsClientCommand) => unknown;
+
 /** Tracks `language/status` until ServiceReady and Maven/Gradle import go quiet. */
 class JdtlsStatusTracker {
   private serviceReady = false;
@@ -83,6 +90,7 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
   private readonly status = new JdtlsStatusTracker();
   private readonly sourceToStaged: Map<string, string>;
   private readonly stagedToSource: Map<string, string>;
+  private readonly clientCommandHandlers = new Set<JdtlsClientCommandHandler>();
 
   constructor(private readonly options: JavaJdtlsAdapterOptions = {}) {
     super();
@@ -135,6 +143,25 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
       if (isJdtlsEmptyTypeDefinitionResponse(method, error)) return null as T;
       throw error;
     }
+  }
+
+  /** Spring Tools registers a JDT classpath callback through this client command channel. */
+  public addClientCommandHandler(handler: JdtlsClientCommandHandler): () => void {
+    this.clientCommandHandlers.add(handler);
+    return () => this.clientCommandHandlers.delete(handler);
+  }
+
+  protected override onServerRequest(method: string, params: unknown): unknown {
+    if (method === 'workspace/executeClientCommand') {
+      const command = params as { command?: unknown; arguments?: unknown } | null;
+      if (typeof command?.command !== 'string') return null;
+      const normalized: JdtlsClientCommand = {
+        command: command.command,
+        arguments: Array.isArray(command.arguments) ? command.arguments : [],
+      };
+      return Promise.all([...this.clientCommandHandlers].map((handler) => handler(normalized)));
+    }
+    return super.onServerRequest(method, params);
   }
 
   public override takeNotifications<T>(method: string): T[] {

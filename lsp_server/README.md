@@ -2,6 +2,33 @@
 
 This directory contains the standalone server launcher for **Eclipse JDT Language Server (`eclipse.jdt.ls`)** and adapters for Kotlin, TypeScript, Python, C++, Rust, C#, and COBOL.
 
+## Module boundaries
+
+`lsp_server/public-api.ts` is the only supported integration boundary for the
+indexer package. Internal modules are organized by responsibility:
+
+```text
+lsp_server/
+├── public-api.ts                 stable indexer-facing exports
+├── contracts/                    protocol-neutral adapter and result types
+├── adapters/
+│   ├── base-stdio-adapter.ts     shared process and JSON-RPC lifecycle
+│   ├── <language>/               one adapter per non-Java language
+│   └── java/
+│       ├── bazel-*               configured Bazel model and source inventory
+│       ├── jdtls-*               JDT runtime, sharding, readiness, and telemetry
+│       └── spring-*              Spring Tools runtime and companion lifecycle
+├── registry/
+│   ├── adapter-catalog.ts        language factories and extension routing
+│   └── lsp-adapter-registry.ts   session and build-root orchestration facade
+├── query.ts                      diagnostic protocol client
+└── server_launcher.ts            standalone JDT launcher
+```
+
+The registry does not implement protocol normalization or build modeling. It
+coordinates those services, owns active sessions, and remains the stable API
+used by existing callers.
+
 ## Install after cloning
 
 All Node-based LSP dependencies, including the `tsx`/esbuild binaries for
@@ -145,6 +172,31 @@ failures print at most the final 8 KiB with process exit diagnostics. A
 classpath that is incomplete at the shared deadline fails the shard instead of
 being mislabeled as a complete crawl.
 
+During `classpath-readiness`, the heartbeat also reports request attempts,
+completed roots, classpath/module-path response counts, matched and missing
+expected entries, the current root, the last error, and `stalledForMs`. Both
+JDT response arrays participate in readiness, and canonical filesystem paths
+prevent symlink or path-case differences from creating a permanent mismatch.
+The gate normally performs one validation after project import. If coverage is
+still changing or the request is transiently unavailable, retries back off from
+500 ms to 5 seconds. A valid response with no coverage progress for 30 seconds
+fails with the missing Bazel entries, while three consecutive request failures
+surface the underlying JDT error. Override those bounds with
+`GITNEXUS_JDT_CLASSPATH_STALL_TIMEOUT_MS` and
+`GITNEXUS_JDT_CLASSPATH_MAX_ERRORS`; the full startup deadline remains the
+outer safety limit.
+
+Before the JDT process launches, `[jdtls-workspace]` records report source
+mapping, cache validation/building, consolidation, and Eclipse-project linking
+progress every 250 files. Large inventories are materialized once in a
+content-validated cache keyed by the semantic source-inventory hash. Generated
+Eclipse projects link those bounded source roots instead of copying the Java
+files again, and unchanged warm runs reuse the cache without source writes.
+The two newest completed snapshots are retained; process leases protect an
+older snapshot while a live shard uses it. Set `GITNEXUS_JDT_SOURCE_LAYOUT=copied`
+to restore physical per-project staging for compatibility troubleshooting.
+Copied staging requests filesystem copy-on-write clones where supported.
+
 JDT LS has one normalized protocol quirk: for `typeDefinition` on Java
 primitives and synthetic `array.length`, some versions emit a response with
 neither `result` nor `error`. These constructs have no navigable declaration,
@@ -155,24 +207,43 @@ so the Java adapter converts that exact envelope to the valid nullable result
 
 ### Spring Tools
 
-Java sessions optionally start the official Spring Boot Language Server beside
-JDT.LS and load its JDT extension bundles. Install it once with:
+Java sessions start the official Spring Boot Language Server beside JDT.LS for
+roots whose build model declares Spring, and load its JDT extension bundles.
+The normal clone-level installer verifies the vendored VSIX and installs it
+offline into `.gitnexus/tools/spring-tools/5.3.0.RELEASE/extension`. The
+standalone updater remains available for intentionally testing a newer release:
 
 ```bash
 bash lsp_server/scripts/install-spring-tools.sh
 ```
 
-The runtime is discovered from the GitNexus cache, installed VS Code/Cursor
-extensions, or `GITNEXUS_SPRING_TOOLS_HOME`. Set `GITNEXUS_SPRING_TOOLS=false`
+The runtime is discovered from the clone-local tool cache, the user GitNexus
+cache, installed VS Code/Cursor extensions, or `GITNEXUS_SPRING_TOOLS_HOME`.
+Set `GITNEXUS_SPRING_TOOLS=false`
 to disable it. Spring Tools receives its Java type and classpath answers through
-the matching build-root-scoped JDT.LS session.
+the matching build-root-scoped JDT.LS session. JDT client-command callbacks are
+bridged back into Spring Tools; without that bridge the process starts but its
+project cache remains empty. Startup now waits for a non-empty Spring project
+or structure response and is bounded by
+`GITNEXUS_SPRING_TOOLS_READY_TIMEOUT_MS` (30 seconds by default).
+
+Each ready companion is persisted as a root-scoped `LspServer`. Its exact
+`executableBootProjects` and `structure` responses are retained in
+`observationsJson`, including project coordinates, main classes, controllers,
+configuration classes, request mappings, locations, and classpaths.
 
 For Bazel, the Java adapter generates `.gitnexus/jdtls/bazel-project.json`
 before JDT.LS starts. Spring's bean index then receives the same exact configured
 classpath as Java compilation.
 
 Build systems are detected independently, including mixed repositories and nested Maven or Gradle modules.
-Gradle is imported through Buildship and Maven through M2E. Bazel does not have a native JDT.LS importer,
+Each source root has exactly one JDT project owner. Gradle is imported through
+Buildship and Maven through M2E; when both descriptors exist at the same root,
+Buildship is selected by default. If the declared Gradle wrapper is newer than
+the Tooling API bundled with JDT.LS, M2E is selected automatically when the
+same root also has a Maven build. Set `GITNEXUS_JDT_NATIVE_IMPORTER` to
+`gradle` or `maven` to override compatibility selection. JDT never imports both
+over the same sources. Bazel does not have a native JDT.LS importer,
 so GitNexus runs a configured `bazel cquery`, selects every target exposing
 `JavaInfo.transitive_compile_time_jars`, and atomically writes this external model:
 
@@ -216,6 +287,8 @@ for a non-default same-workspace handoff path.
 Imports are enabled by default. Use `GITNEXUS_JDT_IMPORT=0` globally, or
 `GITNEXUS_JDT_GRADLE_IMPORT`, `GITNEXUS_JDT_MAVEN_IMPORT`, and `GITNEXUS_JDT_BAZEL_IMPORT`
 for provider-specific control. `GITNEXUS_JDT_JAVA_HOME` explicitly selects the JDT runtime.
+`GITNEXUS_JDT_NATIVE_IMPORTER=gradle|maven` resolves a same-root dual-build
+descriptor; it does not change single-build roots.
 
 Provider configuration is passed through without repository edits:
 
@@ -227,8 +300,8 @@ Provider configuration is passed through without repository edits:
 
 The separate JVM artifact-enrichment stage consumes normalized descriptors
 from an `ArtifactClasspathProvider` registry. Bazel uses the generated
-compile/runtime `JavaInfo` model; Maven and Gradle use the classpaths actually
-imported by M2E and Buildship through JDT LS; generic JDT and explicit JSON
+compile/runtime `JavaInfo` model; Maven or Gradle uses the classpath actually
+imported by the root's sole M2E or Buildship owner through JDT LS; generic JDT and explicit JSON
 manifest providers cover unmanaged and externally modeled projects. Use
 `--artifact-classpath-manifest` for an additional manifest and
 `--artifact-max-classes` only when a bounded dependency crawl is desired.
@@ -247,8 +320,15 @@ The registry discovers independent build roots before starting Java language ser
 Each Java file is assigned to its nearest build root. The registry distributes roots over a bounded pool of
 persistent multi-project JDT.LS processes (four by default). Every Bazel root becomes a linked Eclipse project
 whose `.classpath` is generated from its exact `JavaInfo` model. Maven and Gradle roots remain native workspace
-folders while M2E or Buildship import is available; an existing Eclipse `.classpath` is the external-model
+folders while their one selected M2E or Buildship importer is available; an existing Eclipse `.classpath` is the external-model
 fallback when native import is disabled. Unmanaged roots receive source-only Eclipse projects.
+
+When a Bazel source inventory exceeds 128 documents, its sources are consolidated
+into at most 64 package-correct roots under
+`.gitnexus/jdtls/consolidated-sources/<source-inventory-hash>`. The cache is
+published only after every content hash validates and an atomic completion
+manifest is written. Eclipse linked folders expose those roots to JDT without
+duplicating them in the run-scoped workspace.
 
 Each logical `LspServer` remains root-scoped and records `processShardId`, while documents retain their original
 `buildRootId`. Before crawling, a shard waits for `java.project.getAll` to expose every expected project and

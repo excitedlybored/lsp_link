@@ -18,8 +18,11 @@ import {
 } from '../adapters/java/jdtls-startup-telemetry.js';
 import type { JavaBuildRoot } from '../adapters/java/jdtls-runtime.js';
 import { findBundledKotlinLsp } from '../adapters/kotlin/kotlin-lsp-adapter.js';
+import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
+import { SpringBootLanguageServerAdapter } from '../adapters/java/spring-boot-adapter.js';
 import type { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
+import { waitForImportedJavaProjects } from '../adapters/java/jdtls-classpath-readiness.js';
 
 class TestStdioAdapter extends BaseStdioLspAdapter {
   readonly id = 'test-lsp';
@@ -42,6 +45,34 @@ class DiagnosticStdioAdapter extends TestStdioAdapter {
     return this.enrichStartupError(new Error(message));
   }
 }
+
+class ClientCommandJdtAdapter extends JavaJdtlsAdapter {
+  dispatchClientCommand(params: unknown): unknown {
+    return this.onServerRequest('workspace/executeClientCommand', params);
+  }
+}
+
+test('forwards JDT Spring classpath callbacks to the Spring Tools server', async () => {
+  const java = new ClientCommandJdtAdapter();
+  const spring = new SpringBootLanguageServerAdapter(java, 'maven:app');
+  const forwarded: Array<{ method: string; params: unknown }> = [];
+  spring.request = async (method: string, params: unknown) => {
+    forwarded.push({ method, params });
+    return null as never;
+  };
+  await java.dispatchClientCommand({
+    command: 'sts4.classpath.callback',
+    arguments: ['file:///workspace/app', { entries: ['/dependency.jar'] }],
+  });
+  assert.deepEqual(forwarded, [{
+    method: 'workspace/executeCommand',
+    params: {
+      command: 'sts4.classpath.callback',
+      arguments: ['file:///workspace/app', { entries: ['/dependency.jar'] }],
+    },
+  }]);
+  await spring.shutdown();
+});
 
 test('default registry routes Kotlin source and script files to the Kotlin adapter', () => {
   const registry = new LspAdapterRegistry();
@@ -76,6 +107,19 @@ test('keeps every vendored Kotlin archive chunk below the Git host file limit', 
     assert.ok(fs.statSync(path.join(archiveDirectory, part)).size < 100_000_000, part);
     assert.match(checksums, new RegExp(`  ${part.replaceAll('.', '\\.')}(?:\\n|$)`));
   }
+});
+
+test('keeps the vendored Spring Tools runtime below the Git host file limit', () => {
+  const repositoryRoot = path.resolve(import.meta.dirname, '../..');
+  const archive = path.join(
+    repositoryRoot, 'vendor', 'spring-tools', 'vscode-spring-boot-5.3.0.RELEASE.vsix',
+  );
+  assert.equal(fs.statSync(archive).size, 83_000_863);
+  assert.ok(fs.statSync(archive).size < 100_000_000);
+  assert.match(
+    fs.readFileSync(path.join(repositoryRoot, 'vendor', 'spring-tools', 'README.md'), 'utf8'),
+    /8e555da123e5b4edb7449d3ef1f922a922503e64a86cd66cbe713638f94a9e50/,
+  );
 });
 
 test('enforces adapter request concurrency at the JSON-RPC boundary', async () => {
@@ -201,6 +245,20 @@ test('uses run-scoped JDT workspaces and removes only the owned shard', (t) => {
   cleanupJdtlsShardWorkspace(second);
 });
 
+test('rejects an unsupported JDT source layout before preparing a workspace', () => {
+  const previous = process.env.GITNEXUS_JDT_SOURCE_LAYOUT;
+  process.env.GITNEXUS_JDT_SOURCE_LAYOUT = 'unknown';
+  try {
+    assert.throws(
+      () => prepareJdtlsShardWorkspace('/workspace', { id: 'jdtls-shard-1', roots: [], sourceFileCount: 0 }),
+      /must be linked or copied/,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.GITNEXUS_JDT_SOURCE_LAYOUT;
+    else process.env.GITNEXUS_JDT_SOURCE_LAYOUT = previous;
+  }
+});
+
 test('reduces JDT process count to remain inside the total heap budget', () => {
   const roots: JavaBuildRoot[] = Array.from({ length: 4 }, (_, index) => ({
     id: `root-${index}`, workspacePath: `/repo/root-${index}`, relativePath: `root-${index}`,
@@ -238,6 +296,12 @@ test('reports deterministic JDT phase, memory, process, and pending-root telemet
   telemetry.start();
   telemetry.setPendingRoots(1);
   telemetry.setPhase('classpath-readiness');
+  telemetry.setClasspathReadiness({
+    attempts: 7, totalRoots: 1, completedRoots: 0, currentRootId: 'bazel:.',
+    expectedEntries: 1_686, classpathEntries: 1_600, modulepathEntries: 20,
+    actualEntries: 1_620, matchedEntries: 1_610, missingEntries: 76,
+    lastProgressAt: now,
+  });
   now += 15_000;
   telemetry.reportHeartbeat();
   telemetry.finish('complete');
@@ -248,11 +312,178 @@ test('reports deterministic JDT phase, memory, process, and pending-root telemet
     event: 'heartbeat', shardId: 'jdtls-shard-1', phase: 'classpath-readiness',
     elapsedMs: 15_000, remainingMs: 585_000, sourceFiles: 8_741,
     classpathEntries: 1_686, pendingRoots: 1, heapXmx: '6G', processId: 4321,
+    classpathReadiness: {
+      attempts: 7, totalRoots: 1, completedRoots: 0, currentRootId: 'bazel:.',
+      expectedEntries: 1_686, classpathEntries: 1_600, modulepathEntries: 20,
+      actualEntries: 1_620, matchedEntries: 1_610, missingEntries: 76,
+      rootProgressPercent: 0, entryProgressPercent: 95.49, stalledForMs: 15_000,
+    },
     nodeRssMiB: events[2].nodeRssMiB, jdtRssMiB: 512.25,
   });
   now = telemetry.deadlineAt + 1;
   assert.throws(() => telemetry.remainingMs('project-import'), /deadline exceeded during project-import/);
 });
+
+test('classpath readiness counts classpath and modulepath entries and reports progress', async () => {
+  const progress: Array<{ matchedEntries: number; missingEntries: number; completedRoots: number }> = [];
+  const adapter = {
+    documentUri: (filename: string) => `file://${filename}`,
+    request: async () => ({ classpaths: ['/deps/runtime.jar'], modulepaths: ['/deps/module.jar'] }),
+  } as unknown as ILspAdapter;
+  await waitForImportedJavaProjects(
+    adapter,
+    [{
+      buildRootId: 'bazel:.', projectName: 'project', buildRootPath: '/workspace',
+      sourcePaths: [], generatedSourcePaths: [], sourceMappings: [], sourceLayout: 'linked',
+      consolidatedSourceRoots: [], uriAliases: [], compileClasspath: [], runtimeClasspath: [],
+      languageServerClasspath: ['/deps/runtime.jar', '/deps/module.jar'], buildSystems: ['bazel'],
+      modelSource: 'bazel-java-info', representativeDocumentPath: '/workspace/App.java',
+    }],
+    'jdtls-shard-1',
+    Date.now() + 1_000,
+    undefined,
+    (event) => progress.push(event),
+  );
+  assert.deepEqual(progress.map(({ matchedEntries, missingEntries, completedRoots }) => ({
+    matchedEntries, missingEntries, completedRoots,
+  })), [{ matchedEntries: 2, missingEntries: 0, completedRoots: 1 }]);
+});
+
+test('classpath readiness retries only while coverage improves and backs off between stable responses', async () => {
+  let now = 0;
+  const sleeps: number[] = [];
+  const responses = [
+    { classpaths: ['/deps/one.jar'], modulepaths: [] },
+    { classpaths: ['/deps/one.jar', '/deps/two.jar'], modulepaths: [] },
+  ];
+  const adapter = {
+    documentUri: (filename: string) => `file://${filename}`,
+    request: async () => responses.shift(),
+  } as unknown as ILspAdapter;
+  await waitForImportedJavaProjects(
+    adapter,
+    [readinessProject(['/deps/one.jar', '/deps/two.jar'])],
+    'jdtls-shard-1',
+    10_000,
+    undefined,
+    undefined,
+    {
+      now: () => now,
+      sleep: async (milliseconds) => { sleeps.push(milliseconds); now += milliseconds; },
+      stallTimeoutMs: 2_000,
+      initialPollMs: 250,
+      maxPollMs: 1_000,
+    },
+  );
+  assert.deepEqual(sleeps, [250]);
+});
+
+test('classpath readiness fails a stable mismatch with bounded missing-entry diagnostics', async () => {
+  let now = 0;
+  let requests = 0;
+  const adapter = {
+    documentUri: (filename: string) => `file://${filename}`,
+    request: async () => {
+      requests += 1;
+      return { classpaths: ['/deps/one.jar'], modulepaths: [] };
+    },
+  } as unknown as ILspAdapter;
+  await assert.rejects(
+    waitForImportedJavaProjects(
+      adapter,
+      [readinessProject(['/deps/one.jar', '/deps/missing.jar'])],
+      'jdtls-shard-1',
+      10_000,
+      undefined,
+      undefined,
+      {
+        now: () => now,
+        sleep: async (milliseconds) => { now += milliseconds; },
+        stallTimeoutMs: 2_000,
+        initialPollMs: 250,
+        maxPollMs: 1_000,
+      },
+    ),
+    /stopped progressing.*1\/2 Bazel entries are missing.*\/deps\/missing\.jar/,
+  );
+  assert.equal(requests, 5);
+  assert.equal(now, 2_000);
+});
+
+test('classpath readiness surfaces repeated JDT request failures instead of waiting for the startup deadline', async () => {
+  let now = 0;
+  let requests = 0;
+  const adapter = {
+    documentUri: (filename: string) => `file://${filename}`,
+    request: async () => {
+      requests += 1;
+      throw new Error('project is unavailable');
+    },
+  } as unknown as ILspAdapter;
+  await assert.rejects(
+    waitForImportedJavaProjects(
+      adapter,
+      [readinessProject(['/deps/one.jar'])],
+      'jdtls-shard-1',
+      10_000,
+      undefined,
+      undefined,
+      {
+        now: () => now,
+        sleep: async (milliseconds) => { now += milliseconds; },
+        maxConsecutiveErrors: 3,
+        initialPollMs: 250,
+        maxPollMs: 1_000,
+      },
+    ),
+    /failed 3 consecutive times.*project is unavailable/,
+  );
+  assert.equal(requests, 3);
+  assert.equal(now, 750);
+});
+
+test('classpath readiness tolerates a transient non-existing project during native import', async () => {
+  let now = 0;
+  let requests = 0;
+  const adapter = {
+    documentUri: (filename: string) => `file://${filename}`,
+    request: async () => {
+      requests += 1;
+      if (requests <= 4) {
+        throw new Error('Launch configuration 123 references non-existing project spring-sample.');
+      }
+      return { classpaths: ['/deps/one.jar'], modulepaths: [] };
+    },
+  } as unknown as ILspAdapter;
+  await waitForImportedJavaProjects(
+    adapter,
+    [readinessProject(['/deps/one.jar'])],
+    'jdtls-shard-1',
+    10_000,
+    undefined,
+    undefined,
+    {
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds; },
+      stallTimeoutMs: 5_000,
+      maxConsecutiveErrors: 3,
+      initialPollMs: 250,
+      maxPollMs: 1_000,
+    },
+  );
+  assert.equal(requests, 5);
+  assert.equal(now, 2_750);
+});
+
+function readinessProject(languageServerClasspath: string[]) {
+  return {
+    buildRootId: 'bazel:.', projectName: 'project', buildRootPath: '/workspace',
+    sourcePaths: [], generatedSourcePaths: [], sourceMappings: [], sourceLayout: 'linked' as const,
+    consolidatedSourceRoots: [], uriAliases: [], compileClasspath: [], runtimeClasspath: [],
+    languageServerClasspath, buildSystems: ['bazel'],
+    modelSource: 'bazel-java-info' as const, representativeDocumentPath: '/workspace/App.java',
+  };
+}
 
 test('retains bounded language-server stderr for startup diagnostics', () => {
   const adapter = new DiagnosticStdioAdapter();

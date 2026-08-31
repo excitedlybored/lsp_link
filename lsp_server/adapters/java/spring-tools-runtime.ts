@@ -13,6 +13,7 @@ function extensionCandidates(): string[] {
   const home = os.homedir();
   const candidates = [
     configured,
+    ...cloneLocalExtensionCandidates(),
     path.join(home, '.cache', 'gitnexus', 'spring-tools', 'current', 'extension'),
     path.join(home, 'Library', 'Application Support', 'Code', 'User', 'globalStorage', 'vmware.vscode-spring-boot', 'extension'),
   ].filter((value): value is string => Boolean(value));
@@ -21,6 +22,18 @@ function extensionCandidates(): string[] {
     for (const name of fs.readdirSync(extensionsDir)) {
       if (name.startsWith('vmware.vscode-spring-boot-')) candidates.push(path.join(extensionsDir, name));
     }
+  }
+  return candidates;
+}
+
+function cloneLocalExtensionCandidates(): string[] {
+  const candidates: string[] = [];
+  let current = path.resolve(process.cwd());
+  while (true) {
+    candidates.push(path.join(current, '.gitnexus', 'tools', 'spring-tools', '5.3.0.RELEASE', 'extension'));
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
   return candidates;
 }

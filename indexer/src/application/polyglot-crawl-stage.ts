@@ -8,7 +8,7 @@ import { crawlLspBuildRoot, workspaceDocument } from '../ingest/crawler.js';
 import type { LspAnalysisRun, LspBuildRoot, LspServer } from '../model.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
 import type { RepositoryInventoryBatch } from '../repository/model.js';
-import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
+import { LspAdapterRegistry } from '../../../lsp_server/public-api.js';
 
 export interface PolyglotCrawlRequest {
   workspacePath: string;

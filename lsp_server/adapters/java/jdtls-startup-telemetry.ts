@@ -10,6 +10,21 @@ export interface JdtlsProcessMetadata {
   processStderrTail?: string;
 }
 
+export interface JdtlsClasspathReadinessProgress {
+  attempts: number;
+  totalRoots: number;
+  completedRoots: number;
+  currentRootId?: string;
+  expectedEntries: number;
+  classpathEntries: number;
+  modulepathEntries: number;
+  actualEntries: number;
+  matchedEntries: number;
+  missingEntries: number;
+  lastProgressAt: number;
+  lastError?: string;
+}
+
 export interface JdtlsStartupTelemetryOptions {
   shardId: string;
   sourceFileCount: number;
@@ -30,6 +45,7 @@ export class JdtlsStartupTelemetry {
 
   private phase = 'created';
   private pendingRoots = 0;
+  private classpathReadiness?: JdtlsClasspathReadinessProgress;
   private readonly heartbeatMs: number;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
@@ -63,6 +79,11 @@ export class JdtlsStartupTelemetry {
     this.pendingRoots = count;
   }
 
+  setClasspathReadiness(progress: JdtlsClasspathReadinessProgress): void {
+    this.classpathReadiness = { ...progress };
+    this.pendingRoots = Math.max(0, progress.totalRoots - progress.completedRoots);
+  }
+
   remainingMs(phase = this.phase): number {
     const remaining = this.deadlineAt - this.now();
     if (remaining <= 0) {
@@ -92,6 +113,16 @@ export class JdtlsStartupTelemetry {
     const remainingMs = Math.max(0, this.deadlineAt - this.now());
     const nodeRssMiB = bytesToMiB(process.memoryUsage().rss);
     const jdtRssMiB = processId === undefined ? undefined : this.processRss(processId);
+    let classpathReadiness: Record<string, unknown> | undefined;
+    if (this.classpathReadiness) {
+      const { lastProgressAt, ...progress } = this.classpathReadiness;
+      classpathReadiness = {
+        ...progress,
+        rootProgressPercent: percentage(progress.completedRoots, progress.totalRoots),
+        entryProgressPercent: percentage(progress.matchedEntries, progress.expectedEntries),
+        stalledForMs: Math.max(0, this.now() - lastProgressAt),
+      };
+    }
     this.log(`[jdtls-startup] ${JSON.stringify({
       event,
       shardId: this.options.shardId,
@@ -101,6 +132,7 @@ export class JdtlsStartupTelemetry {
       sourceFiles: this.options.sourceFileCount,
       classpathEntries: this.options.classpathEntryCount,
       pendingRoots: this.pendingRoots,
+      classpathReadiness,
       heapXmx: this.options.heapXmx,
       processId,
       processExitCode: metadata.processExitCode ?? undefined,
@@ -167,6 +199,11 @@ function bytesToMiB(value: number): number {
 
 function roundMiB(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function percentage(completed: number, total: number): number {
+  if (total <= 0) return 100;
+  return Math.round(Math.max(0, Math.min(1, completed / total)) * 10_000) / 100;
 }
 
 function formatDuration(milliseconds: number): string {

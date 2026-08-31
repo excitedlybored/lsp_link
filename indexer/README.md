@@ -283,6 +283,12 @@ worker (default 4, maximum 16). Enrichment reports processed, failed, and total 
 counts periodically. `--artifact-max-classes N` can cap detailed parsing when a
 complete dependency-bytecode crawl is not required.
 
+Generated JDT projects use Eclipse linked source folders by default. Large
+Bazel inventories reuse validated source snapshots under
+`.gitnexus/jdtls/consolidated-sources`, so a warm run does not copy Java files
+into its temporary Eclipse project. Set `GITNEXUS_JDT_SOURCE_LAYOUT=copied`
+only when diagnosing compatibility with an Eclipse/JDT extension.
+
 Intermediate output is durable and resumable. By default it is written to
 `<output>.checkpoints`: one atomic checkpoint per completed build root, then
 one for each complete LSP crawl, call-normalization, and JVM-enrichment stage.
@@ -347,6 +353,12 @@ framework API. LSP can add exact source ranges and protocol-derived evidence.
 A framework extractor can derive concepts such as Temporal workflows, Spring
 services, and Kafka consumers without relying on application naming or layout.
 
+Spring Tools custom responses are preserved losslessly on root-scoped
+`LspServer.observationsJson`. This keeps executable projects and framework
+structure available even though they are outside standard LSP, while leaving
+normalized controller, bean, and request-mapping projections to a separate
+derived stage.
+
 ```mermaid
 flowchart LR
   S["Repository source"] --> BZ["Prepared build model\napplication and dependency JARs"]
@@ -401,8 +413,9 @@ The default resolver contains:
 Maven and Gradle providers intentionally query JDT LS after import instead of
 running Maven or Gradle again. The JDT extension commands are invoked through
 `workspace/executeCommand`; all imported projects returned by
-`java.project.getAll` are queried, including module paths. Provider evidence is
-merged when a mixed build root reports the same JAR through M2E and Buildship.
+`java.project.getAll` are queried, including module paths. A mixed root has one
+selected native importer, so its artifacts carry either M2E or Buildship
+provenance rather than duplicate labels for the same effective classpath.
 
 The implementation is grouped by responsibility under `src/artifact/classpath`:
 

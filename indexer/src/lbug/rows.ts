@@ -57,6 +57,7 @@ export interface LspServerRow {
   command: Nullable<string>;
   status: string;
   capabilitiesJson: string;
+  observationsJson: Nullable<string>;
   buildRootId: Nullable<string>;
   processShardId: Nullable<string>;
 }
@@ -283,6 +284,7 @@ export const toServerRow = (value: LspServer): LspServerRow => ({
   ...value,
   version: value.version ?? null,
   command: value.command ?? null,
+  observationsJson: value.observationsJson ?? null,
   buildRootId: value.buildRootId ?? null,
   processShardId: value.processShardId ?? null,
 });
