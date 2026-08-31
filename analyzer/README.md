@@ -36,7 +36,9 @@ relationships between protocol observations and compiled artifact identities.
 Framework-specific interpretation belongs in
 [`extractors`](extractors/README.md). Each technology is an isolated semantic
 extractor containing evidence queries and Python assembly logic; Temporal is
-the first implementation.
+the first implementation. Its scalable path consumes compiled annotations,
+interface relationships, and resolved bytecode calls from a healthy `core`
+index; exhaustive LSP evidence is optional source-level enrichment.
 
 The tested 40-root Bazel fixture produced 40/40 confirmed Temporal workflow
 contracts and 37/37 source implementations with no missing or extra workflow

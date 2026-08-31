@@ -16,6 +16,7 @@ import {
   type LspSymbolKind,
   type LspSymbolKindName,
 } from '../model.js';
+import { codeOriginForDocumentOrigin, isExternalCodeOrigin } from '../code-origin.js';
 import { emptyObservationBatch, type LspObservationBatch } from './batch.js';
 
 export interface DocumentSymbolObservation {
@@ -249,6 +250,7 @@ export function materializeSymbol(
     observation.name,
     observation.detail ?? '',
   );
+  const codeOrigin = document.codeOrigin ?? codeOriginForDocumentOrigin(document.origin);
   return {
     id,
     documentId: document.id,
@@ -263,7 +265,8 @@ export function materializeSymbol(
     selectionRange: observation.selectionRange,
     signature: observation.detail,
     stableKey: semanticKey,
-    isExternal: document.origin !== 'workspace',
+    isExternal: isExternalCodeOrigin(codeOrigin),
+    codeOrigin,
   } as LspSymbol;
 }
 

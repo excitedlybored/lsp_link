@@ -22,6 +22,7 @@ import type {
   LspSymbol,
   LspSymbolNodeTable,
 } from '../model.js';
+import { codeOriginForDocumentOrigin } from '../code-origin.js';
 import {
   assertSelectionWithinRange,
   assertSymbolClass,
@@ -81,6 +82,7 @@ export interface LspDocumentRow {
   version: Nullable<number>;
   contentHash: Nullable<string>;
   origin: string;
+  codeOrigin: string;
   wasOpened: boolean;
   buildRootId: Nullable<string>;
 }
@@ -109,6 +111,7 @@ export interface LspSymbolRow extends FlatRangeRow {
   signature: Nullable<string>;
   stableKey: string;
   isExternal: boolean;
+  codeOrigin: string;
 }
 
 /** Concrete persistence target plus its flat row. */
@@ -293,6 +296,7 @@ export const toBuildRootRow = (value: LspBuildRoot): LspBuildRootRow => ({
 
 export const toDocumentRow = (value: LspDocument): LspDocumentRow => ({
   ...value,
+  codeOrigin: value.codeOrigin ?? codeOriginForDocumentOrigin(value.origin),
   filePath: value.filePath ?? null,
   version: value.version ?? null,
   contentHash: value.contentHash ?? null,
@@ -320,6 +324,7 @@ export const toSymbolRow = (value: LspSymbol): LspSymbolRow => {
     signature: value.signature ?? null,
     stableKey: value.stableKey,
     isExternal: value.isExternal,
+    codeOrigin: value.codeOrigin ?? (value.isExternal ? 'unknown' : 'repository'),
   };
 };
 

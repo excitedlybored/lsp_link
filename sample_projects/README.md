@@ -40,3 +40,25 @@ npm run index -- build sample_projects/02_python_fastapi_quant \
 npm run index -- build sample_projects/03_typescript_express_gateway \
   --output /tmp/typescript-express-gateway.lbug
 ```
+
+## Test every sample
+
+The normal test suite checks that every directory in `sample_projects` is
+discoverable, routes to a registered language adapter, and—where applicable—has
+complete Java build-root ownership.
+
+Run the external-tool end-to-end suite sequentially with:
+
+```bash
+npm run test:samples
+```
+
+This launches the actual Java indexer for every Java sample and a live LSP
+symbol request for the Python and TypeScript samples. Each sample has a
+30-minute timeout by default. Both settings can be overridden:
+
+```bash
+SAMPLE_INDEXER_FILTER='spring-boot-demo|spring-petclinic' \
+SAMPLE_INDEXER_TIMEOUT_MS=3600000 \
+npm run test:samples
+```

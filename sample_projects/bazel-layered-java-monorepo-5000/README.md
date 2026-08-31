@@ -13,8 +13,8 @@ component packages:
 | --- | ---: | --- |
 | Central dependency bundles and compiler plugin | 2 | 20 shared platform documents |
 | Production libraries | 250 | Chained reusable Java libraries |
-| Application services | 150 | Java libraries, executable launchers, and tests |
-| Workflow libraries | 60 | Workflow-tagged production libraries and tests |
+| Temporal workflows | 60 | Contracts, activities, implementations, workers, compensation, and tests |
+| Application services | 150 | Java libraries, Temporal workflow launchers, executables, and tests |
 | QA simulators | 40 | Simulator libraries, executable launchers, and tests |
 
 Every component declares a production `java_library` and relevant `java_test`.
@@ -22,6 +22,25 @@ Services and simulators also declare a `java_binary`. Direct dependencies form
 one deterministic chain across the decentralized component layer, while every
 component consumes one centralized dependency bundle and the shared annotation
 processor.
+
+Every workflow package follows the standard Temporal Java shape: an annotated
+workflow contract with workflow, signal, query, and update methods; an
+annotated activity contract; deterministic orchestration state; an activity
+implementation; worker registration; and an explicit compensation path.
+The workflow implementation also exercises bounded retry loops, pause/resume
+coordination, cancellation checks, child workflow creation, multi-step state
+transitions, audit recording, payment authorization, completion notification,
+and reverse-order compensation. Activity implementations use longer internal
+helper chains for validation, normalization, risk scoring, identifier creation,
+notification formatting, audit persistence, reversals, and releases. These
+paths deliberately create a dense, deterministic bytecode call graph for
+validating method-call tracking without adding more documents.
+Application services create typed workflow stubs and start executions. QA
+simulators drive update, cancellation-signal, and query paths against the same
+contracts. The fixture includes a small source-compatible Temporal API surface
+under the platform bundle so the sample remains hermetic and does not require
+an external artifact repository; the application code uses the canonical
+`io.temporal.*` identities consumed by the Temporal semantic extractor.
 
 Each package also declares representative targets named `*_deploy_bannedcheck`,
 `*-sonar`, and `*-sq`, plus coverage/reporting-only targets. The supplied
@@ -83,3 +102,8 @@ npm run index -- build \
 The sample config uses prebuilt indexing, a one-hour total preparation budget,
 four-way bounded concurrency, resumable facts-first crawling, unlimited class
 enrichment, source fetching, and strict build-root failure enforcement.
+It deliberately uses the scalable `core` crawl profile. The Temporal extractor
+can identify the standard workflow annotations, implementations, and SDK calls
+from the JVM graph produced by this profile. Use `exhaustive` only when precise
+source ranges, hover bindings, and LSP call-hierarchy observations are also
+required across all 5,000 documents.

@@ -40,6 +40,13 @@ semantic inventory in legacy and facts-first crawl checkpoints.
 
 ## Node classes
 
+Primary source-identity and compiled-code nodes carry a `codeOrigin` ownership value.
+Repository-focused consumers should default to `repository`,
+`generated_first_party`, and `first_party_artifact`, while retaining dependency
+and standard-library nodes for resolution and explicit traversal. The six
+values, classification rules, persistence coverage, and database queries are
+defined in [Code-origin classification](../docs/code-origin.md).
+
 | Table | Role |
 | --- | --- |
 | `LspAnalysisRun` | Workspace, protocol, position encoding, outcome, and run counters |
@@ -228,27 +235,29 @@ For every Bazel header JAR on a prepared build-root classpath, the stage:
 6. parses every unique dependency class without classloading, prioritizing stage-1 seeds, and
    records the dependency logic graph.
 
-`JvmClass` represents a class supplied by a compiled dependency artifact, not
-source owned by the indexed repository. The crawler inventories its `.class`
-entry from the JAR; vendored ASM then statically observes the compiled bytecode and
-metadata to recover its methods, fields, annotations, inheritance, and
-bytecode-level calls. Those recovered facts connect dependency classes to one
-another, while LSP bindings connect repository symbols and annotation uses to
-their canonical dependency `JvmClass` or `JvmMethod` identity. ASM reads
-the artifact only; it does not execute dependency code.
+`JvmClass` represents a class supplied by a normalized compiled artifact. For
+Bazel this includes application-produced JARs from the resolved build scope as
+well as external dependency JARs. The crawler inventories each `.class` entry;
+vendored ASM then statically observes compiled bytecode and metadata to recover
+methods, fields, annotations, inheritance, and bytecode-level calls. Those
+facts connect application and dependency classes directly, while LSP bindings
+optionally connect source observations to canonical `JvmClass` or `JvmMethod`
+identities. ASM reads artifacts only; it never executes application or
+dependency code.
 
 The combination supplies the cross-boundary link required for framework-aware
-analysis: LSP establishes what the repository source references, and JVM
-enrichment establishes the identity and structure of the referenced compiled
-framework API. A framework extractor can then derive higher-level concepts
-such as Temporal workflows, Spring services, and Kafka consumers without
-relying on annotation names alone.
+analysis: the JVM graph provides scalable application annotations,
+implementations, and resolved bytecode calls together with the referenced
+framework API. LSP can add exact source ranges and protocol-derived evidence.
+A framework extractor can derive concepts such as Temporal workflows, Spring
+services, and Kafka consumers without relying on application naming or layout.
 
 ```mermaid
 flowchart LR
-  S["Repository source\nannotations and calls"] --> L["JDT / LSP crawl\nsymbols, hovers, resolutions"]
+  S["Repository source"] --> BZ["Successful Bazel build\napplication and dependency JARs"]
+  S --> L["JDT / LSP crawl\nsymbols and optional exhaustive evidence"]
   L --> B["LspJvmBinding\ncanonical cross-boundary link"]
-  J["Dependency JARs"] --> V["persistent ASM worker"]
+  BZ --> V["persistent ASM worker"]
   V --> C["JvmClass"] --> M["JvmMethod / JvmField\nannotations, inheritance, calls"]
   B --> C
   B --> M

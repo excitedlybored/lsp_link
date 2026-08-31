@@ -1,4 +1,5 @@
 import type { LspSymbolNodeTable } from '../model.js';
+import type { CodeOrigin } from '../code-origin.js';
 
 export type JvmArtifactStageStatus = 'running' | 'complete' | 'partial' | 'failed';
 
@@ -42,6 +43,7 @@ export interface JvmArtifact {
   callSiteCount: number;
   contentHash: string;
   classpathOrdinal: number;
+  codeOrigin: CodeOrigin;
   processingStatus: 'pending' | 'running' | 'complete' | 'partial' | 'failed';
   errorCount: number;
   completedAt?: string;
@@ -86,6 +88,7 @@ export interface JvmClass {
   seedUris: string[];
   wasDisassembled: boolean;
   annotations: string[];
+  codeOrigin: CodeOrigin;
 }
 
 export interface JvmMethod {
@@ -100,6 +103,7 @@ export interface JvmMethod {
   hasCode: boolean;
   isExternalPlaceholder: boolean;
   annotations: string[];
+  codeOrigin: CodeOrigin;
 }
 
 export interface JvmField {
@@ -112,6 +116,7 @@ export interface JvmField {
   declaration?: string;
   access?: string;
   annotations: string[];
+  codeOrigin: CodeOrigin;
 }
 
 export interface JvmCallSite {
@@ -124,6 +129,7 @@ export interface JvmCallSite {
   targetName: string;
   targetDescriptor: string;
   status: 'resolved' | 'external' | 'unresolved';
+  codeOrigin: CodeOrigin;
 }
 
 export type JvmEntityKind =

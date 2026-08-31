@@ -19,6 +19,8 @@ WHERE hasSite.kind = 'HAS_CALLSITE'
   AND targetClass.id = targetResolution.classId
   AND targetClass.artifactId = targetResolution.artifactId
   AND targetClass.binaryName STARTS WITH $sdkNamespacePrefix
+OPTIONAL MATCH (callerOwner)-[ownsCaller:LspRelation]->(caller)
+WHERE ownsCaller.kind = 'CONTAINS'
 OPTIONAL MATCH (site)-[normalizes:DerivedCallRelation]->(logical:LspLogicalInvocation)
 WHERE normalizes.kind = 'NORMALIZES_TO'
 RETURN DISTINCT site.id AS callSiteId,
@@ -26,6 +28,9 @@ RETURN DISTINCT site.id AS callSiteId,
        logical.stableKey AS logicalInvocationStableKey,
        logical.observationCount AS logicalObservationCount,
        logical.confidence AS logicalConfidence,
+       callerOwner.id AS callerOwnerId,
+       callerOwner.name AS callerOwnerName,
+       NULL AS callerOwnerPackageName,
        caller.id AS callerId,
        caller.name AS callerName,
        caller.uri AS callerUri,
@@ -37,7 +42,12 @@ RETURN DISTINCT site.id AS callSiteId,
        callee.uri AS targetUri,
        targetClass.id AS targetJvmClassId,
        targetClass.binaryName AS targetJvmClass,
+       targetClass.id AS targetOwnerId,
+       targetClass.simpleName AS targetOwnerName,
+       targetClass.packageName AS targetOwnerPackageName,
        targetClass.artifactId AS targetArtifactId,
+       NULL AS bytecodeOffset,
+       'lsp' AS evidenceSource,
        resolves.mappingConfidence AS confidence,
        resolves.providerAuthority AS providerAuthority
 ORDER BY callerUri, startLine, startCharacter

@@ -20,7 +20,9 @@ export class JvmArtifactRepository {
 
   async writeBatch(batch: JvmArtifactBatch): Promise<void> {
     await this.insertRowsInTransactions('JvmArtifactEnrichmentRun', batch.runs.map(runRow));
-    await this.insertRowsInTransactions('JvmArtifact', batch.artifacts.map(artifactRow));
+    for (const rows of artifactRowGroups(batch.artifacts)) {
+      await this.insertRowsInTransactions('JvmArtifact', rows);
+    }
     await this.insertRowsInTransactions('JvmClassResolution', batch.resolutions);
     await this.insertRowsInTransactions('JvmBinaryReference', batch.binaryReferences);
     await this.insertRowsInTransactions('JvmClass', batch.classes.map(classRow));
@@ -44,7 +46,9 @@ export class JvmArtifactRepository {
   /** Idempotent bounded write used by resumable ASM streaming enrichment. */
   async mergeBatch(batch: JvmArtifactBatch): Promise<void> {
     await this.mergeRowsInTransactions('JvmArtifactEnrichmentRun', batch.runs.map(runRow), 'id');
-    await this.mergeRowsInTransactions('JvmArtifact', batch.artifacts.map(artifactRow), 'id');
+    for (const rows of artifactRowGroups(batch.artifacts)) {
+      await this.mergeRowsInTransactions('JvmArtifact', rows, 'id');
+    }
     await this.mergeResolutions(batch.resolutions);
     await this.mergeRowsInTransactions('JvmBinaryReference', batch.binaryReferences, 'binaryName');
     await this.mergeRowsInTransactions('JvmClass', batch.classes.map(classRow), 'id');
@@ -82,7 +86,7 @@ export class JvmArtifactRepository {
       + `target.owner = site.targetOwner, target.name = site.targetName, `
       + `target.descriptor = site.targetDescriptor, target.declaration = NULL, `
       + `target.access = NULL, target.hasCode = false, target.isExternalPlaceholder = true, `
-      + `target.annotations = [] `
+      + `target.annotations = [], target.codeOrigin = owner.codeOrigin `
       + `MERGE (owner)-[declaration:JvmRelation {id: 'jvm-relation:' + sha256($stageId + $separator `
       + `+ 'DECLARES_METHOD' + $separator + owner.id + $separator + targetId + $separator + '0' + $separator)}]->(target) `
       + `ON CREATE SET declaration.kind = 'DECLARES_METHOD', declaration.stageId = $stageId, `
@@ -343,19 +347,60 @@ const runRow = (value: JvmArtifactBatch['runs'][number]) => ({
   ...value, completedAt: value.completedAt ?? null, providerVersion: value.providerVersion ?? null,
 });
 const artifactRow = (value: JvmArtifactBatch['artifacts'][number]) => ({
-  ...value, coordinate: value.coordinate ?? null, binaryJarPath: value.binaryJarPath ?? null,
-  headerJarPath: value.headerJarPath ?? null, sourceJarPath: value.sourceJarPath ?? null,
+  id: value.id,
+  stageId: value.stageId,
+  buildRootIds: value.buildRootIds,
+  classpathProviders: value.classpathProviders,
+  classpathScopes: value.classpathScopes,
+  modulePath: value.modulePath,
+  coordinate: value.coordinate ?? null,
+  classpathEntryPath: value.classpathEntryPath,
+  headerJarPath: value.headerJarPath ?? null,
+  binaryJarPath: value.binaryJarPath ?? null,
+  sourceJarPath: value.sourceJarPath ?? null,
+  sourceOrigin: value.sourceOrigin,
+  associationStatus: value.associationStatus,
+  classCount: value.classCount,
+  methodCount: value.methodCount,
+  fieldCount: value.fieldCount,
+  callSiteCount: value.callSiteCount,
+  contentHash: value.contentHash,
+  classpathOrdinal: value.classpathOrdinal,
+  codeOrigin: value.codeOrigin ?? 'unknown',
+  processingStatus: value.processingStatus,
+  errorCount: value.errorCount,
   completedAt: value.completedAt ?? null,
 });
+
+/**
+ * Ladybug's JavaScript parameter encoder infers each object in an UNWIND list
+ * independently. A nullable string therefore becomes ANY on one row and
+ * STRING on another, which makes an otherwise valid STRUCT list
+ * heterogeneous. Keep rows with the same nullable-field shape together while
+ * preserving database NULLs.
+ */
+function artifactRowGroups(values: JvmArtifactBatch['artifacts']): ReturnType<typeof artifactRow>[][] {
+  const groups = new Map<string, ReturnType<typeof artifactRow>[]>();
+  for (const value of values) {
+    const key = [
+      value.coordinate, value.headerJarPath, value.binaryJarPath,
+      value.sourceJarPath, value.completedAt,
+    ].map((item) => item == null ? '0' : '1').join('');
+    const rows = groups.get(key) ?? [];
+    rows.push(artifactRow(value));
+    groups.set(key, rows);
+  }
+  return [...groups.values()];
+}
 const classRow = (value: JvmArtifactBatch['classes'][number]) => ({
-  ...value, access: value.access ?? null, superName: value.superName ?? null,
+  ...value, codeOrigin: value.codeOrigin ?? 'unknown', access: value.access ?? null, superName: value.superName ?? null,
   sourceEntry: value.sourceEntry ?? null,
 });
 const methodRow = (value: JvmArtifactBatch['methods'][number]) => ({
-  ...value, declaration: value.declaration ?? null, access: value.access ?? null,
+  ...value, codeOrigin: value.codeOrigin ?? 'unknown', declaration: value.declaration ?? null, access: value.access ?? null,
 });
 const fieldRow = (value: JvmArtifactBatch['fields'][number]) => ({
-  ...value, declaration: value.declaration ?? null, access: value.access ?? null,
+  ...value, codeOrigin: value.codeOrigin ?? 'unknown', declaration: value.declaration ?? null, access: value.access ?? null,
 });
 
 const WRITE_TRANSACTION_BATCH_SIZE = 1_000;

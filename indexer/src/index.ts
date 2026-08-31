@@ -1,4 +1,5 @@
 export * from './model.js';
+export * from './code-origin.js';
 export * from './lbug/schema.js';
 export * from './lbug/rows.js';
 export * from './lbug/repository.js';

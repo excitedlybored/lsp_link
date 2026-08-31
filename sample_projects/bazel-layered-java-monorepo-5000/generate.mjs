@@ -14,8 +14,8 @@ const MARKER = '.synthetic-bazel-sample.json';
 
 const CATEGORY_PLAN = [
   { name: 'libraries', packages: 250, binary: false, platform: 'framework_bundle' },
-  { name: 'services', packages: 150, binary: true, platform: 'cloud_bundle' },
   { name: 'workflows', packages: 60, binary: false, platform: 'workflow_bundle' },
+  { name: 'services', packages: 150, binary: true, platform: 'cloud_bundle' },
   { name: 'simulators', packages: 40, binary: true, platform: 'framework_bundle' },
 ];
 
@@ -25,9 +25,9 @@ export function createScalePlan(sourceCount = DEFAULT_SOURCES, packageCount = DE
   if (packageCount !== DEFAULT_PACKAGES) {
     throw new Error(`packages must be ${DEFAULT_PACKAGES}; the category proportions are part of this fixture`);
   }
-  const minimum = PLATFORM_SOURCES + packageCount * 3;
+  const minimum = DEFAULT_SOURCES;
   if (sourceCount < minimum) {
-    throw new Error(`sources must be at least ${minimum} so every package has production, test, and optional launcher code`);
+    throw new Error(`sources must be at least ${minimum} so the Temporal architecture and every component remain complete`);
   }
   const distributable = sourceCount - PLATFORM_SOURCES;
   const perPackage = Math.floor(distributable / packageCount);
@@ -140,9 +140,8 @@ function writeRootFiles(output, plan) {
 
 function writePlatformLayer(output) {
   const bundles = [
-    ['framework', 'framework_bundle', 6],
-    ['cloud', 'cloud_bundle', 6],
-    ['workflow', 'workflow_bundle', 6],
+    ['framework', 'framework_bundle', 3],
+    ['cloud', 'cloud_bundle', 3],
   ];
   const build = [
     'load("@rules_java//java:java_library.bzl", "java_library")',
@@ -150,7 +149,7 @@ function writePlatformLayer(output) {
     'package(default_visibility = ["//visibility:public"])',
     '',
   ];
-  for (const [directory, target] of bundles) {
+  for (const [directory, target, sourceCount] of bundles) {
     const dependency = target === 'framework_bundle' ? [] : ['        ":framework_bundle",'];
     build.push(
       'java_library(',
@@ -160,7 +159,7 @@ function writePlatformLayer(output) {
       ')',
       '',
     );
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < sourceCount; index += 1) {
       const className = `${pascal(directory)}Capability${pad(index, 2)}`;
       writeJava(output, `build-platforms/dependencies/src/main/java/com/example/layered/platform/${directory}/${className}.java`, [
         `package com.example.layered.platform.${directory};`,
@@ -172,6 +171,15 @@ function writePlatformLayer(output) {
       ]);
     }
   }
+  build.push(
+    'java_library(',
+    '    name = "workflow_bundle",',
+    '    srcs = glob(["src/main/java/io/temporal/**/*.java"]),',
+    '    deps = [":framework_bundle"],',
+    ')',
+    '',
+  );
+  writeTemporalSdk(output);
   write(output, 'build-platforms/dependencies/BUILD.bazel', build.join('\n'));
 
   writeJava(output, 'build-platforms/plugins/src/main/java/com/example/layered/plugins/GeneratedMarker.java', [
@@ -233,30 +241,28 @@ function writeComponent(output, component, allComponents) {
   const previous = component.ordinal === 0 ? undefined : allComponents[component.ordinal - 1];
   const previousLabel = previous ? componentLabel(previous) : undefined;
 
-  for (let index = 0; index < mainCount; index += 1) {
-    const className = `${pascal(target)}Part${pad(index, 2)}`;
-    writeJava(output, `${packagePath}/src/main/java/${packageName.replaceAll('.', '/')}/${className}.java`, [
-      `package ${packageName};`,
-      '',
-      `public final class ${className} {`,
-      `    private ${className}() {}`,
-      `    public static String id() { return "${component.name}:${id}:${index}"; }`,
-      `    public static int shard() { return ${component.ordinal}; }`,
-      '}',
-    ]);
+  if (component.name === 'workflows') {
+    writeWorkflowSources(output, packagePath, packageName, target, id, mainCount);
+  } else {
+    const specialized = component.name === 'services' || component.name === 'simulators' ? 1 : 0;
+    if (component.name === 'services') writeServiceWorkflowLauncher(output, packagePath, packageName, target, component.categoryIndex);
+    if (component.name === 'simulators') writeSimulatorWorkflowDriver(output, packagePath, packageName, target, component.categoryIndex);
+    for (let index = 0; index < mainCount - specialized; index += 1) {
+      const className = `${pascal(target)}Part${pad(index, 2)}`;
+      writeJava(output, `${packagePath}/src/main/java/${packageName.replaceAll('.', '/')}/${className}.java`, [
+        `package ${packageName};`,
+        '',
+        `public final class ${className} {`,
+        `    private ${className}() {}`,
+        `    public static String id() { return "${component.name}:${id}:${index}"; }`,
+        `    public static int shard() { return ${component.ordinal}; }`,
+        '}',
+      ]);
+    }
   }
 
-  const primaryClass = `${pascal(target)}Part00`;
   const testClass = `${pascal(target)}Test`;
-  writeJava(output, `${packagePath}/src/test/java/${packageName.replaceAll('.', '/')}/${testClass}.java`, [
-    `package ${packageName};`,
-    '',
-    `public final class ${testClass} {`,
-    '    public static void main(String[] args) {',
-    `        if (${primaryClass}.id().isEmpty()) throw new AssertionError("missing component id");`,
-    '    }',
-    '}',
-  ]);
+  writeComponentTest(output, component, packagePath, packageName, target, testClass);
 
   let mainClass;
   if (component.binary) {
@@ -267,7 +273,11 @@ function writeComponent(output, component, allComponents) {
       `public final class ${mainClass} {`,
       '    private ' + mainClass + '() {}',
       '    public static void main(String[] args) {',
-      `        System.out.println("${component.name}:${id}");`,
+      ...(component.name === 'services' ? [
+        `        ${pascal(target)}WorkflowLauncher.launchDefault("service-${id}");`,
+      ] : component.name === 'simulators' ? [
+        `        ${pascal(target)}WorkflowDriver.driveDefault("simulation-${id}");`,
+      ] : [`        System.out.println("${component.name}:${id}");`]),
       '    }',
       '}',
     ]);
@@ -276,6 +286,16 @@ function writeComponent(output, component, allComponents) {
   const tags = component.name === 'simulators'
     ? ['qa', 'simulator']
     : component.name === 'workflows' ? ['production', 'workflow'] : ['production', singular(component.name)];
+  const workflowDependency = component.name === 'services' || component.name === 'simulators'
+    ? componentLabelByCategory('workflows', component.categoryIndex % 60)
+    : undefined;
+  const dependencyLabels = [...new Set([
+    `//build-platforms/dependencies:${component.platform}`,
+    ...((component.name === 'services' || component.name === 'simulators')
+      ? ['//build-platforms/dependencies:workflow_bundle'] : []),
+    ...(previousLabel ? [previousLabel] : []),
+    ...(workflowDependency ? [workflowDependency] : []),
+  ])];
   write(output, `${packagePath}/BUILD.bazel`, [
     'load("//tools/build_defs:layered_java.bzl", "layered_java_component")',
     '',
@@ -289,8 +309,7 @@ function writeComponent(output, component, allComponents) {
     ] : []),
     `    test_class = "${packageName}.${testClass}",`,
     '    deps = [',
-    `        "//build-platforms/dependencies:${component.platform}",`,
-    ...(previousLabel ? [`        "${previousLabel}",`] : []),
+    ...dependencyLabels.map((label) => `        "${label}",`),
     '    ],',
     `    tags = ${starlarkList(tags)},`,
     ')',
@@ -298,10 +317,473 @@ function writeComponent(output, component, allComponents) {
   ].join('\n'));
 }
 
+function writeTemporalSdk(output) {
+  const annotations = [
+    ['workflow', 'WorkflowInterface', 'TYPE'],
+    ['workflow', 'WorkflowMethod', 'METHOD'],
+    ['workflow', 'SignalMethod', 'METHOD'],
+    ['workflow', 'QueryMethod', 'METHOD'],
+    ['workflow', 'UpdateMethod', 'METHOD'],
+    ['activity', 'ActivityInterface', 'TYPE'],
+    ['activity', 'ActivityMethod', 'METHOD'],
+  ];
+  for (const [namespace, name, target] of annotations) {
+    writeJava(output, `build-platforms/dependencies/src/main/java/io/temporal/${namespace}/${name}.java`, [
+      `package io.temporal.${namespace};`,
+      '',
+      'import java.lang.annotation.ElementType;',
+      'import java.lang.annotation.Retention;',
+      'import java.lang.annotation.RetentionPolicy;',
+      'import java.lang.annotation.Target;',
+      '',
+      '@Retention(RetentionPolicy.RUNTIME)',
+      `@Target(ElementType.${target})`,
+      `public @interface ${name} {}`,
+    ]);
+  }
+  writeJava(output, 'build-platforms/dependencies/src/main/java/io/temporal/workflow/Workflow.java', [
+    'package io.temporal.workflow;',
+    '',
+    'import java.util.function.BooleanSupplier;',
+    '',
+    'public final class Workflow {',
+    '    private Workflow() {}',
+    '    public static <T> T newActivityStub(Class<T> activityType) { return null; }',
+    '    public static <T> T newChildWorkflowStub(Class<T> workflowType) { return null; }',
+    '    public static void await(BooleanSupplier condition) {}',
+    '    public static void sleep(long milliseconds) {}',
+    '}',
+  ]);
+  writeJava(output, 'build-platforms/dependencies/src/main/java/io/temporal/client/WorkflowOptions.java', [
+    'package io.temporal.client;',
+    '',
+    'public final class WorkflowOptions {',
+    '    public static Builder newBuilder() { return new Builder(); }',
+    '    public static final class Builder {',
+    '        public Builder setTaskQueue(String taskQueue) { return this; }',
+    '        public Builder setWorkflowId(String workflowId) { return this; }',
+    '        public WorkflowOptions build() { return new WorkflowOptions(); }',
+    '    }',
+    '}',
+  ]);
+  writeJava(output, 'build-platforms/dependencies/src/main/java/io/temporal/client/WorkflowClient.java', [
+    'package io.temporal.client;',
+    '',
+    'import java.util.concurrent.Callable;',
+    '',
+    'public final class WorkflowClient {',
+    '    public <T> T newWorkflowStub(Class<T> workflowType, WorkflowOptions options) { return null; }',
+    '    public static <R> void start(Callable<R> invocation) {}',
+    '}',
+  ]);
+  writeJava(output, 'build-platforms/dependencies/src/main/java/io/temporal/worker/Worker.java', [
+    'package io.temporal.worker;',
+    '',
+    'public final class Worker {',
+    '    public void registerWorkflowImplementationTypes(Class<?>... workflowTypes) {}',
+    '    public void registerActivitiesImplementations(Object... activities) {}',
+    '}',
+  ]);
+  writeJava(output, 'build-platforms/dependencies/src/main/java/io/temporal/worker/WorkerFactory.java', [
+    'package io.temporal.worker;',
+    '',
+    'import io.temporal.client.WorkflowClient;',
+    '',
+    'public final class WorkerFactory {',
+    '    public static WorkerFactory newInstance(WorkflowClient client) { return new WorkerFactory(); }',
+    '    public Worker newWorker(String taskQueue) { return new Worker(); }',
+    '    public void start() {}',
+    '}',
+  ]);
+}
+
+function writeWorkflowSources(output, packagePath, packageName, target, id, mainCount) {
+  const base = pascal(target);
+  const sourceRoot = `${packagePath}/src/main/java/${packageName.replaceAll('.', '/')}`;
+  writeJava(output, `${sourceRoot}/${base}Contract.java`, [
+    `package ${packageName};`, '',
+    'import io.temporal.workflow.QueryMethod;',
+    'import io.temporal.workflow.SignalMethod;',
+    'import io.temporal.workflow.UpdateMethod;',
+    'import io.temporal.workflow.WorkflowInterface;',
+    'import io.temporal.workflow.WorkflowMethod;', '',
+    '@WorkflowInterface',
+    `public interface ${base}Contract {`,
+    `    @WorkflowMethod ${base}Result execute(${base}Request request);`,
+    '    @SignalMethod void cancel(String reason);',
+    '    @SignalMethod void pause(String reason);',
+    '    @SignalMethod void resume();',
+    `    @QueryMethod ${base}State status();`,
+    '    @QueryMethod String auditTrail();',
+    '    @UpdateMethod void amendReference(String reference);',
+    '    @UpdateMethod void adjustAmount(long amount);',
+    '}',
+  ]);
+  writeJava(output, `${sourceRoot}/${base}Activities.java`, [
+    `package ${packageName};`, '',
+    'import io.temporal.activity.ActivityInterface;',
+    'import io.temporal.activity.ActivityMethod;', '',
+    '@ActivityInterface',
+    `public interface ${base}Activities {`,
+    `    @ActivityMethod void validate(${base}Request request);`,
+    `    @ActivityMethod String loadProfile(${base}Request request);`,
+    `    @ActivityMethod String screenRisk(${base}Request request, String profile);`,
+    `    @ActivityMethod String reserve(${base}Request request);`,
+    '    @ActivityMethod String authorize(String reservationId, long amount);',
+    '    @ActivityMethod String book(String reservationId);',
+    '    @ActivityMethod void notifyCompletion(String reference, String bookingId);',
+    '    @ActivityMethod void audit(String reference, String stage, String detail);',
+    '    @ActivityMethod void reverseAuthorization(String authorizationId, String reason);',
+    '    @ActivityMethod void release(String reservationId, String reason);',
+    '}',
+  ]);
+  writeJava(output, `${sourceRoot}/${base}Impl.java`, [
+    `package ${packageName};`, '',
+    'import io.temporal.workflow.Workflow;', '',
+    `public final class ${base}Impl implements ${base}Contract {`,
+    `    private final ${base}Activities activities = Workflow.newActivityStub(${base}Activities.class);`,
+    `    private ${base}State state = ${base}State.CREATED;`,
+    '    private String reference;',
+    '    private long amount;',
+    '    private boolean cancelled;', '',
+    '    private boolean paused;',
+    '    private String cancellationReason = "not-cancelled";',
+    '    private final StringBuilder audit = new StringBuilder();', '',
+    `    @Override public ${base}Result execute(${base}Request request) {`,
+    '        reference = request.reference();',
+    '        amount = request.amount();',
+    '        String reservationId = null;',
+    '        String authorizationId = null;',
+    '        try {',
+    '            String profile = validateAndLoad(request);',
+    '            String risk = assessRisk(request, profile);',
+    '            reservationId = reserveCapacity(request, risk);',
+    '            authorizationId = authorizePayment(reservationId);',
+    '            String childBooking = coordinateChildIfRequired(request, risk);',
+    '            String bookingId = childBooking.isBlank()',
+    '                ? bookWithRetry(reservationId) : childBooking;',
+    '            completeBooking(bookingId);',
+    `            return new ${base}Result(reference, state, bookingId);`,
+    '        } catch (RuntimeException failure) {',
+    '            compensateFailure(reservationId, authorizationId, failure);',
+    '            throw failure;',
+    '        }',
+    '    }',
+    `    private String validateAndLoad(${base}Request request) {`,
+    `        transition(${base}State.VALIDATING, "validate-request");`,
+    '        activities.validate(request);',
+    '        return loadProfileWithRetry(request);',
+    '    }',
+    `    private String loadProfileWithRetry(${base}Request request) {`,
+    '        RuntimeException lastFailure = null;',
+    '        for (int attempt = 1; attempt <= 3; attempt++) {',
+    '            try {',
+    '                String profile = activities.loadProfile(request);',
+    '                record("profile-loaded-attempt-" + attempt);',
+    '                return profile;',
+    '            } catch (RuntimeException failure) {',
+    '                lastFailure = failure;',
+    '                waitBeforeRetry(attempt);',
+    '            }',
+    '        }',
+    '        throw new IllegalStateException("profile unavailable", lastFailure);',
+    '    }',
+    `    private String assessRisk(${base}Request request, String profile) {`,
+    `        transition(${base}State.SCREENING, "screen-risk");`,
+    '        String risk = activities.screenRisk(request, profile);',
+    '        if ("blocked".equals(risk)) throw new IllegalStateException("risk rejected");',
+    '        return risk;',
+    '    }',
+    `    private String reserveCapacity(${base}Request request, String risk) {`,
+    '        awaitActive();',
+    '        checkCancellation();',
+    '        String reservationId = activities.reserve(request);',
+    `        transition(${base}State.RESERVED, "reserved:" + risk);`,
+    '        return reservationId;',
+    '    }',
+    '    private String authorizePayment(String reservationId) {',
+    '        checkCancellation();',
+    '        String authorizationId = activities.authorize(reservationId, amount);',
+    `        transition(${base}State.AUTHORIZED, "authorized");`,
+    '        return authorizationId;',
+    '    }',
+    `    private String coordinateChildIfRequired(${base}Request request, String risk) {`,
+    '        if (amount < 10_000L && !"review".equals(risk)) return "";',
+    `        ${base}Contract child = Workflow.newChildWorkflowStub(${base}Contract.class);`,
+    `        ${base}Result childResult = child.execute(new ${base}Request(reference + "-child", amount / 2));`,
+    '        record("child:" + childResult.state());',
+    '        return childResult.bookingId();',
+    '    }',
+    '    private String bookWithRetry(String reservationId) {',
+    '        RuntimeException lastFailure = null;',
+    '        for (int attempt = 1; attempt <= 3; attempt++) {',
+    '            checkCancellation();',
+    '            try {',
+    '                String bookingId = activities.book(reservationId);',
+    '                record("booked-attempt-" + attempt);',
+    '                return bookingId;',
+    '            } catch (RuntimeException failure) {',
+    '                lastFailure = failure;',
+    '                waitBeforeRetry(attempt);',
+    '            }',
+    '        }',
+    '        throw new IllegalStateException("booking unavailable", lastFailure);',
+    '    }',
+    '    private void completeBooking(String bookingId) {',
+    '        activities.notifyCompletion(reference, bookingId);',
+    `        transition(${base}State.BOOKED, "completed:" + bookingId);`,
+    '    }',
+    '    private void compensateFailure(String reservationId, String authorizationId, RuntimeException failure) {',
+    `        transition(${base}State.COMPENSATING, failure.getClass().getSimpleName());`,
+    `        String reason = ${base}Compensation.reason(failure);`,
+    '        if (authorizationId != null) activities.reverseAuthorization(authorizationId, reason);',
+    '        if (reservationId != null) activities.release(reservationId, reason);',
+    `        transition(cancelled ? ${base}State.CANCELLED : ${base}State.COMPENSATED, reason);`,
+    '    }',
+    '    private void waitBeforeRetry(int attempt) {',
+    '        record("retry-" + attempt);',
+    '        Workflow.sleep(attempt * 100L);',
+    '    }',
+    '    private void awaitActive() {',
+    '        if (paused) Workflow.await(() -> !paused || cancelled);',
+    '        checkCancellation();',
+    '    }',
+    '    private void checkCancellation() {',
+    '        if (cancelled) throw new IllegalStateException(cancellationReason);',
+    '    }',
+    `    private void transition(${base}State next, String detail) {`,
+    '        state = next;',
+    '        record(next.name() + ":" + detail);',
+    '        activities.audit(reference, next.name(), detail);',
+    '    }',
+    '    private void record(String value) {',
+    '        if (!audit.isEmpty()) audit.append("|");',
+    '        audit.append(value);',
+    '    }',
+    '    @Override public void cancel(String reason) {',
+    '        cancellationReason = reason;',
+    '        cancelled = true;',
+    '        record("cancel:" + reason);',
+    '    }',
+    '    @Override public void pause(String reason) { paused = true; record("pause:" + reason); }',
+    '    @Override public void resume() { paused = false; record("resume"); }',
+    `    @Override public ${base}State status() { return state; }`,
+    '    @Override public String auditTrail() { return audit.toString(); }',
+    '    @Override public void amendReference(String value) { reference = value; record("reference-amended"); }',
+    '    @Override public void adjustAmount(long value) {',
+    '        if (value <= 0) throw new IllegalArgumentException("amount must be positive");',
+    '        amount = value;',
+    '        record("amount-adjusted");',
+    '    }',
+    '}',
+  ]);
+  writeJava(output, `${sourceRoot}/${base}ActivityImpl.java`, [
+    `package ${packageName};`, '',
+    `public final class ${base}ActivityImpl implements ${base}Activities {`,
+    `    @Override public void validate(${base}Request request) {`,
+    '        requireReference(request.reference());',
+    '        requirePositiveAmount(request.amount());',
+    '    }',
+    `    @Override public String loadProfile(${base}Request request) {`,
+    '        return profileKey(normalize(request.reference()));',
+    '    }',
+    `    @Override public String screenRisk(${base}Request request, String profile) {`,
+    '        int score = riskScore(normalize(request.reference()), request.amount(), profile);',
+    '        return score > 80 ? "blocked" : score > 50 ? "review" : "approved";',
+    '    }',
+    `    @Override public String reserve(${base}Request request) {`,
+    `        return reservationKey("${id}", normalize(request.reference()), request.amount());`,
+    '    }',
+    '    @Override public String authorize(String reservationId, long amount) {',
+    '        requirePositiveAmount(amount);',
+    '        return authorizationKey(reservationId, amount);',
+    '    }',
+    '    @Override public String book(String reservationId) { return bookingKey(reservationId); }',
+    '    @Override public void notifyCompletion(String reference, String bookingId) {',
+    '        publish(formatNotification(normalize(reference), bookingId));',
+    '    }',
+    '    @Override public void audit(String reference, String stage, String detail) {',
+    '        persistAudit(formatAudit(normalize(reference), stage, detail));',
+    '    }',
+    '    @Override public void reverseAuthorization(String authorizationId, String reason) {',
+    '        persistReversal(reversalKey(authorizationId, reason));',
+    '    }',
+    '    @Override public void release(String reservationId, String reason) {',
+    '        persistRelease(releaseKey(reservationId, reason));',
+    '    }',
+    '    private static String normalize(String value) { return value == null ? "" : value.trim().toLowerCase(); }',
+    '    private static void requireReference(String value) {',
+    '        if (normalize(value).isBlank()) throw new IllegalArgumentException("reference required");',
+    '    }',
+    '    private static void requirePositiveAmount(long value) {',
+    '        if (value <= 0) throw new IllegalArgumentException("amount must be positive");',
+    '    }',
+    '    private static int riskScore(String reference, long amount, String profile) {',
+    '        return Math.floorMod(reference.hashCode() + profile.hashCode() + Long.hashCode(amount), 100);',
+    '    }',
+    '    private static String profileKey(String reference) { return "profile:" + reference; }',
+    '    private static String reservationKey(String shard, String reference, long amount) {',
+    '        return "reservation:" + shard + ":" + reference + ":" + amount;',
+    '    }',
+    '    private static String authorizationKey(String reservationId, long amount) {',
+    '        return "authorization:" + reservationId + ":" + amount;',
+    '    }',
+    '    private static String bookingKey(String reservationId) { return "booking:" + reservationId; }',
+    '    private static String formatNotification(String reference, String bookingId) {',
+    '        return "completed:" + reference + ":" + bookingId;',
+    '    }',
+    '    private static String formatAudit(String reference, String stage, String detail) {',
+    '        return reference + ":" + stage + ":" + detail;',
+    '    }',
+    '    private static String reversalKey(String authorizationId, String reason) {',
+    '        return "reverse:" + authorizationId + ":" + reason;',
+    '    }',
+    '    private static String releaseKey(String reservationId, String reason) {',
+    '        return "release:" + reservationId + ":" + reason;',
+    '    }',
+    '    private static void publish(String event) { if (event.isBlank()) throw new IllegalStateException(); }',
+    '    private static void persistAudit(String event) { if (event.isBlank()) throw new IllegalStateException(); }',
+    '    private static void persistReversal(String event) { if (event.isBlank()) throw new IllegalStateException(); }',
+    '    private static void persistRelease(String event) { if (event.isBlank()) throw new IllegalStateException(); }',
+    '}',
+  ]);
+  writeJava(output, `${sourceRoot}/${base}Request.java`, [
+    `package ${packageName};`, '',
+    `public record ${base}Request(String reference, long amount) {}`,
+  ]);
+  writeJava(output, `${sourceRoot}/${base}Result.java`, [
+    `package ${packageName};`, '',
+    `public record ${base}Result(String reference, ${base}State state, String bookingId) {}`,
+  ]);
+  writeJava(output, `${sourceRoot}/${base}State.java`, [
+    `package ${packageName};`, '',
+    `public enum ${base}State { CREATED, VALIDATING, SCREENING, RESERVED, AUTHORIZED, BOOKED, COMPENSATING, COMPENSATED, CANCELLED }`,
+  ]);
+  writeJava(output, `${sourceRoot}/${base}Worker.java`, [
+    `package ${packageName};`, '',
+    'import io.temporal.client.WorkflowClient;',
+    'import io.temporal.worker.Worker;',
+    'import io.temporal.worker.WorkerFactory;', '',
+    `public final class ${base}Worker {`,
+    `    public static final String TASK_QUEUE = "workflow-${id}";`,
+    `    private ${base}Worker() {}`,
+    '    public static void register(WorkflowClient client, Object activities) {',
+    '        WorkerFactory factory = WorkerFactory.newInstance(client);',
+    '        Worker worker = factory.newWorker(TASK_QUEUE);',
+    `        worker.registerWorkflowImplementationTypes(${base}Impl.class);`,
+    '        worker.registerActivitiesImplementations(activities);',
+    '        factory.start();',
+    '    }',
+    '}',
+  ]);
+  writeJava(output, `${sourceRoot}/${base}Compensation.java`, [
+    `package ${packageName};`, '',
+    `public final class ${base}Compensation {`,
+    `    private ${base}Compensation() {}`,
+    '    public static String reason(Throwable failure) { return "compensate:" + failure.getClass().getSimpleName(); }',
+    '}',
+  ]);
+  for (let index = 9; index < mainCount; index += 1) {
+    const className = `${base}Support${pad(index - 9, 2)}`;
+    writeJava(output, `${sourceRoot}/${className}.java`, [
+      `package ${packageName};`, '',
+      `public final class ${className} { private ${className}() {} }`,
+    ]);
+  }
+}
+
+function writeServiceWorkflowLauncher(output, packagePath, packageName, target, index) {
+  const base = pascal(target);
+  const workflow = workflowIdentity(index % 60);
+  writeJava(output, `${packagePath}/src/main/java/${packageName.replaceAll('.', '/')}/${base}WorkflowLauncher.java`, [
+    `package ${packageName};`, '',
+    'import io.temporal.client.WorkflowClient;',
+    'import io.temporal.client.WorkflowOptions;',
+    `import ${workflow.packageName}.${workflow.base}Contract;`,
+    `import ${workflow.packageName}.${workflow.base}Request;`, '',
+    `public final class ${base}WorkflowLauncher {`,
+    `    private ${base}WorkflowLauncher() {}`,
+    `    public static ${workflow.base}Contract launch(WorkflowClient client, String reference) {`,
+    '        WorkflowOptions options = WorkflowOptions.newBuilder()',
+    `            .setTaskQueue("workflow-${workflow.id}")`,
+    '            .setWorkflowId("transaction-" + reference)',
+    '            .build();',
+    `        ${workflow.base}Contract workflow = client.newWorkflowStub(${workflow.base}Contract.class, options);`,
+    `        WorkflowClient.start(() -> workflow.execute(new ${workflow.base}Request(reference, 100L)));`,
+    '        return workflow;',
+    '    }',
+    '    public static void launchDefault(String reference) { launch(new WorkflowClient(), reference); }',
+    '}',
+  ]);
+}
+
+function writeSimulatorWorkflowDriver(output, packagePath, packageName, target, index) {
+  const base = pascal(target);
+  const workflow = workflowIdentity(index % 60);
+  writeJava(output, `${packagePath}/src/main/java/${packageName.replaceAll('.', '/')}/${base}WorkflowDriver.java`, [
+    `package ${packageName};`, '',
+    'import io.temporal.client.WorkflowClient;',
+    'import io.temporal.client.WorkflowOptions;',
+    `import ${workflow.packageName}.${workflow.base}Contract;`,
+    `import ${workflow.packageName}.${workflow.base}State;`, '',
+    `public final class ${base}WorkflowDriver {`,
+    `    private ${base}WorkflowDriver() {}`,
+    `    public static ${workflow.base}State drive(WorkflowClient client, String reference) {`,
+    `        ${workflow.base}Contract workflow = client.newWorkflowStub(`,
+    `            ${workflow.base}Contract.class,`,
+    `            WorkflowOptions.newBuilder().setTaskQueue("workflow-${workflow.id}").setWorkflowId(reference).build());`,
+    '        workflow.pause("simulated maintenance");',
+    '        workflow.amendReference(reference + "-amended");',
+    '        workflow.adjustAmount(250L);',
+    '        workflow.resume();',
+    '        workflow.cancel("simulated cancellation");',
+    '        workflow.auditTrail();',
+    '        return workflow.status();',
+    '    }',
+    '    public static void driveDefault(String reference) { drive(new WorkflowClient(), reference); }',
+    '}',
+  ]);
+}
+
+function writeComponentTest(output, component, packagePath, packageName, target, testClass) {
+  const base = pascal(target);
+  const assertion = component.name === 'workflows'
+    ? `if (!${base}Contract.class.isAnnotationPresent(io.temporal.workflow.WorkflowInterface.class)) throw new AssertionError("missing workflow contract");`
+    : component.name === 'services'
+      ? `if (${base}WorkflowLauncher.class.getDeclaredMethods().length == 0) throw new AssertionError("missing workflow launcher");`
+      : component.name === 'simulators'
+        ? `if (${base}WorkflowDriver.class.getDeclaredMethods().length == 0) throw new AssertionError("missing workflow driver");`
+        : `if (${base}Part00.id().isEmpty()) throw new AssertionError("missing component id");`;
+  writeJava(output, `${packagePath}/src/test/java/${packageName.replaceAll('.', '/')}/${testClass}.java`, [
+    `package ${packageName};`, '',
+    `public final class ${testClass} {`,
+    '    public static void main(String[] args) {',
+    `        ${assertion}`,
+    '    }',
+    '}',
+  ]);
+}
+
+function workflowIdentity(index) {
+  const id = pad(index, 4);
+  const target = `workflow_${id}`;
+  return {
+    id,
+    target,
+    base: pascal(target),
+    packageName: `com.example.layered.workflows.${target}`,
+  };
+}
+
 function componentLabel(component) {
   const id = pad(component.categoryIndex, 4);
   const target = `${singular(component.name)}_${id}`;
   return `//components/${component.name}/${target}:${target}`;
+}
+
+function componentLabelByCategory(category, index) {
+  const target = `${singular(category)}_${pad(index, 4)}`;
+  return `//components/${category}/${target}:${target}`;
 }
 
 function macroSource() {
@@ -324,7 +806,7 @@ function macroSource() {
     '            name = name + "_application",',
     '            srcs = launcher_srcs,',
     '            main_class = main_class,',
-    '            runtime_deps = [":" + name],',
+    '            deps = [":" + name],',
     '            tags = tags + ["application"],',
     '        )',
     '    java_test(',
@@ -332,7 +814,7 @@ function macroSource() {
     '        srcs = test_srcs,',
     '        main_class = test_class,',
     '        use_testrunner = False,',
-    '        deps = [":" + name],',
+    '        deps = [":" + name] + deps,',
     '        tags = tags + ["relevant-test"],',
     '    )',
     '    java_library(',

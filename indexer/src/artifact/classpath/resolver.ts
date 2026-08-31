@@ -1,4 +1,5 @@
 import { mergeArtifactDescriptors } from './descriptor-normalizer.js';
+import { classifyArtifactCodeOrigin } from '../../code-origin.js';
 import { loadJdtRuntimeClasspath } from './jdt-runtime-classpath.js';
 import { createDefaultArtifactClasspathProviders, JdtLsClasspathProvider } from './providers.js';
 import type {
@@ -30,7 +31,14 @@ export class ArtifactClasspathResolver {
     if (artifacts.length === 0 && context.lspClient) {
       await this.resolveWithProvider(new JdtLsClasspathProvider(), providerContext, artifacts, attempts);
     }
-    return { artifacts: mergeArtifactDescriptors(artifacts), attempts };
+    const merged = mergeArtifactDescriptors(artifacts);
+    for (const artifact of merged) artifact.codeOrigin ??= classifyArtifactCodeOrigin({
+      artifactPath: artifact.binaryJarPath ?? artifact.headerJarPath ?? artifact.classpathEntryPath,
+      workspacePath: context.root.workspacePath,
+      providerIds: artifact.providerIds,
+      coordinate: artifact.coordinate,
+    });
+    return { artifacts: merged, attempts };
   }
 
   private async resolveWithProvider(

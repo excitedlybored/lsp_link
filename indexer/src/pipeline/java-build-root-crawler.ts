@@ -13,27 +13,50 @@ import type { ILspAdapter } from '../../../lsp_server/contracts/lsp-adapter.inte
 import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
 
+export interface CrawlJavaBuildRootRequest {
+  adapterRegistry: LspAdapterRegistry;
+  artifactClasspathResolver: ArtifactClasspathResolver;
+  repositoryPath: string;
+  run: LspAnalysisRun;
+  root: JavaBuildRoot;
+  files: string[];
+  preparation?: JavaBuildRootPreparation;
+  artifactManifestPaths?: string[];
+  sharedAdapter?: ILspAdapter;
+  processShardId?: string;
+  requireSharedAdapter?: boolean;
+  crawlPlanner?: CrawlPlannerMode;
+  crawlProfile?: CrawlProfile;
+}
+
 export async function crawlJavaBuildRoot(
-  adapterRegistry: LspAdapterRegistry,
-  artifactClasspathResolver: ArtifactClasspathResolver,
-  repositoryPath: string,
-  run: LspAnalysisRun,
-  root: JavaBuildRoot,
-  files: string[],
-  preparation?: JavaBuildRootPreparation,
-  artifactManifestPaths: string[] = [],
-  sharedAdapter?: ILspAdapter,
-  processShardId?: string,
-  requireSharedAdapter = false,
-  crawlPlanner: CrawlPlannerMode = 'legacy',
-  crawlProfile: CrawlProfile = 'exhaustive',
+  request: CrawlJavaBuildRootRequest,
 ): Promise<JavaBuildRootCrawlResult> {
+  const {
+    adapterRegistry,
+    artifactClasspathResolver,
+    repositoryPath,
+    run,
+    root,
+    files,
+    preparation,
+    artifactManifestPaths = [],
+    sharedAdapter,
+    processShardId,
+    requireSharedAdapter = false,
+    crawlPlanner = 'legacy',
+    crawlProfile = 'exhaustive',
+  } = request;
   const buildRoot = createBuildRoot(run, root, preparation);
   const server = createLspServer(run, root, processShardId);
+  const configuredOrigins = new Map((preparation?.crawlSources ?? []).flatMap((source) => [
+    [path.resolve(source.path), source.origin] as const,
+    [path.resolve(source.analysisPath), source.origin] as const,
+  ]));
   const documents = files.map((file) => workspaceDocument(
     file,
     root.id,
-    isGeneratedCrawlFile(file, root.workspacePath) ? 'generated' : 'workspace',
+    documentOrigin(file, root.workspacePath, configuredOrigins.get(path.resolve(file))),
   ));
 
   if (root.systems.includes('bazel') && preparation?.status === 'failed') {
@@ -120,6 +143,16 @@ export async function crawlJavaBuildRoot(
   } finally {
     if (!sharedAdapter) await adapterRegistry.shutdownAdapter(adapter);
   }
+}
+
+function documentOrigin(
+  filePath: string,
+  workspacePath: string,
+  configuredOrigin?: 'repository' | 'generated' | 'source_jar',
+): 'workspace' | 'generated' {
+  if (configuredOrigin === 'repository') return 'workspace';
+  if (configuredOrigin === 'generated' || configuredOrigin === 'source_jar') return 'generated';
+  return isGeneratedCrawlFile(filePath, workspacePath) ? 'generated' : 'workspace';
 }
 
 function isGeneratedCrawlFile(filePath: string, workspacePath: string): boolean {

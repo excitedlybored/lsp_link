@@ -45,14 +45,23 @@ export function emptyObservationBatch(): LspObservationBatch {
 
 export function mergeObservationBatches(...batches: LspObservationBatch[]): LspObservationBatch {
   const merged = emptyObservationBatch();
-  for (const batch of batches) {
-    for (const key of Object.keys(merged) as Array<keyof LspObservationBatch>) {
-      // All batch properties are homogeneous arrays at their own key.
-      const target = merged[key] as unknown[];
-      for (const value of batch[key] as unknown[]) target.push(value);
-    }
-  }
+  for (const batch of batches) appendObservationBatch(merged, batch);
   return merged;
+}
+
+/**
+ * Appends observations without copying the target's existing contents.
+ * Use this for incremental crawls; repeatedly merging an accumulated batch
+ * creates quadratic data movement as the repository grows.
+ */
+export function appendObservationBatch(
+  target: LspObservationBatch,
+  source: LspObservationBatch,
+): void {
+  for (const key of Object.keys(target) as Array<keyof LspObservationBatch>) {
+    const destination = target[key] as unknown[];
+    for (const value of source[key] as unknown[]) destination.push(value);
+  }
 }
 
 /** Last observation for an id wins; provider disagreement remains distinct because its ids include provenance. */

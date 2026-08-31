@@ -13,6 +13,10 @@ import {
   type BazelCrawlSource,
   type BazelSourceInventoryComparison,
 } from './bazel-source-inventory.js';
+import {
+  BAZEL_ASPECT_RELATIVE_PATH,
+  ensureBazelSourceAspect,
+} from './bazel-aspect-installer.js';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const PROGRESS_INTERVAL_MS = 15_000;
@@ -22,7 +26,6 @@ const MAX_MAX_BUFFER_MB = 2048;
 const MODEL_RELATIVE_PATH = '.gitnexus/jdtls/bazel-project.json';
 const SOURCE_INVENTORY_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-inventory.json';
 const HANDOFF_RELATIVE_PATH = '.gitnexus/jdtls/bazel-handoff.json';
-const ASPECT_RELATIVE_PATH = '.gitnexus/jdtls/bazel-source-aspect.bzl';
 const ASPECT_MANIFEST_SUFFIX = '.gitnexus-sources.json';
 const ASPECT_BEP_RELATIVE_PATH = '.gitnexus/jdtls/bazel-aspect-build.bep.json';
 
@@ -455,14 +458,14 @@ export async function ensureBazelProjectModel(
     const targetFile = path.join(workspacePath, '.gitnexus/jdtls/bazel-targets.txt');
     fs.mkdirSync(path.dirname(targetFile), { recursive: true });
     fs.writeFileSync(targetFile, `${rootLabels.join('\n')}\n`);
-    ensureSourceAspect(workspacePath);
+    ensureBazelSourceAspect(workspacePath);
     const aspectBepPath = path.join(workspacePath, ASPECT_BEP_RELATIVE_PATH);
     fs.rmSync(aspectBepPath, { force: true });
     // Always ask Bazel to refresh configured sources. Bazel's own action cache
     // keeps this incremental while still noticing arbitrary generator inputs.
     await runBazel(bazelBinary, [
       'build', '--strict_java_deps=off', `--target_pattern_file=${targetFile}`,
-      `--aspects=//.gitnexus/jdtls:${path.basename(ASPECT_RELATIVE_PATH)}%gitnexus_source_aspect`,
+      `--aspects=//.gitnexus/jdtls:${path.basename(BAZEL_ASPECT_RELATIVE_PATH)}%gitnexus_source_aspect`,
       '--output_groups=+gitnexus_source_manifest,+gitnexus_java_artifacts',
       `--build_event_json_file=${aspectBepPath}`,
     ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, 'aspect-build');
@@ -673,81 +676,6 @@ function combinedJavaInfoCqueryExpression(): string {
     + `["R:" + f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in v.transitive_runtime_jars.to_list()] + `
     + `["S:" + f.path for k, v in providers(target).items() if str(k).endswith("%JavaInfo") for f in v.source_jars]) `
     + `if len(${javaInfoKeys}) > 0 else ""`;
-}
-
-function ensureSourceAspect(workspacePath: string): void {
-  const aspectPath = path.join(workspacePath, ASPECT_RELATIVE_PATH);
-  const buildPath = path.join(path.dirname(aspectPath), 'BUILD.bazel');
-  fs.mkdirSync(path.dirname(aspectPath), { recursive: true });
-  const aspect = [
-    // rules_java may expose native java_* rules through its public
-    // compatibility provider while custom rules still return its private
-    // provider. Preserve both identities so one aspect works with each form.
-    'load("@rules_java//java:defs.bzl", PublicJavaInfo = "JavaInfo")',
-    'load("@rules_java//java/private:java_info.bzl", PrivateJavaInfo = "JavaInfo")',
-    '',
-    'GitNexusJavaGraphInfo = provider(fields = ["manifests", "artifacts"])',
-    '',
-    'def _gitnexus_source_aspect_impl(target, ctx):',
-    '    sources = []',
-    '    dependencies = []',
-    '    transitive_manifests = []',
-    '    transitive_artifacts = []',
-    '    if hasattr(ctx.rule.attr, "srcs"):',
-    '        for source_target in ctx.rule.attr.srcs:',
-    '            for source in source_target.files.to_list():',
-    '                sources.append({"path": source.path, "shortPath": source.short_path, "isSource": source.is_source})',
-    '    for attribute in ["deps", "exports", "runtime_deps", "plugins"]:',
-    '        if hasattr(ctx.rule.attr, attribute):',
-    '            for dependency in getattr(ctx.rule.attr, attribute):',
-    '                dependencies.append({"label": str(dependency.label), "attribute": attribute})',
-    '                if GitNexusJavaGraphInfo in dependency:',
-    '                    transitive_manifests.append(dependency[GitNexusJavaGraphInfo].manifests)',
-    '                    transitive_artifacts.append(dependency[GitNexusJavaGraphInfo].artifacts)',
-    '    direct_manifests = []',
-    '    direct_artifacts = []',
-    '    compile_jars = []',
-    '    runtime_jars = []',
-    '    source_jars = []',
-    '    java_info = None',
-    '    if PublicJavaInfo in target:',
-    '        java_info = target[PublicJavaInfo]',
-    '    elif PrivateJavaInfo in target:',
-    '        java_info = target[PrivateJavaInfo]',
-    '    has_java_info = java_info != None',
-    '    if has_java_info:',
-    '        compile_jars = java_info.compile_jars.to_list()',
-    '        runtime_jars = list(java_info.runtime_output_jars)',
-    '        source_jars = list(java_info.source_jars)',
-    '        direct_artifacts = compile_jars + runtime_jars + source_jars',
-    `    output = ctx.actions.declare_file(ctx.label.name + "${ASPECT_MANIFEST_SUFFIX}")`,
-    '    ctx.actions.write(output, json.encode({',
-    '            "label": str(ctx.label),',
-    '            "ruleKind": ctx.rule.kind,',
-    '            "hasJavaInfo": has_java_info,',
-    '            "sources": sources,',
-    '            "dependencies": dependencies,',
-    '            "compileArtifacts": [artifact.path for artifact in compile_jars],',
-    '            "runtimeArtifacts": [artifact.path for artifact in runtime_jars],',
-    '            "sourceJars": [artifact.path for artifact in source_jars],',
-    '    }))',
-    '    direct_manifests = [output]',
-    '    manifests = depset(direct = direct_manifests, transitive = transitive_manifests)',
-    '    artifacts = depset(direct = direct_artifacts, transitive = transitive_artifacts)',
-    '    return [',
-    '        GitNexusJavaGraphInfo(manifests = manifests, artifacts = artifacts),',
-    '        OutputGroupInfo(gitnexus_source_manifest = manifests, gitnexus_java_artifacts = artifacts),',
-    '    ]',
-    '',
-    'gitnexus_source_aspect = aspect(',
-    '    implementation = _gitnexus_source_aspect_impl,',
-    '    attr_aspects = ["deps", "exports", "runtime_deps", "plugins"],',
-    ')',
-    '',
-  ].join('\n');
-  const build = `exports_files(["${path.basename(ASPECT_RELATIVE_PATH)}"])\n`;
-  if (!fs.existsSync(aspectPath) || fs.readFileSync(aspectPath, 'utf8') !== aspect) fs.writeFileSync(aspectPath, aspect);
-  if (!fs.existsSync(buildPath) || fs.readFileSync(buildPath, 'utf8') !== build) fs.writeFileSync(buildPath, build);
 }
 
 interface BepFile {

@@ -19,7 +19,7 @@ export const JVM_ARTIFACT_SCHEMA_QUERIES = [
     classpathEntryPath STRING, headerJarPath STRING, binaryJarPath STRING, sourceJarPath STRING,
     sourceOrigin STRING, associationStatus STRING, classCount INT64, methodCount INT64,
     fieldCount INT64, callSiteCount INT64, contentHash STRING,
-    classpathOrdinal INT32, processingStatus STRING, errorCount INT64, completedAt STRING,
+    classpathOrdinal INT32, codeOrigin STRING, processingStatus STRING, errorCount INT64, completedAt STRING,
     PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmClassResolution (
     binaryName STRING, stageId STRING, classId STRING, artifactId STRING,
@@ -30,18 +30,20 @@ export const JVM_ARTIFACT_SCHEMA_QUERIES = [
     id STRING, stageId STRING, artifactId STRING, binaryName STRING,
     packageName STRING, simpleName STRING, kind STRING, access STRING,
     superName STRING, interfaces STRING[] DEFAULT [], sourceEntry STRING, isSeed BOOLEAN,
-    seedUris STRING[] DEFAULT [], wasDisassembled BOOLEAN, annotations STRING[] DEFAULT [], PRIMARY KEY (id))`,
+    seedUris STRING[] DEFAULT [], wasDisassembled BOOLEAN, annotations STRING[] DEFAULT [],
+    codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmMethod (
     id STRING, stageId STRING, classId STRING, owner STRING, name STRING,
     descriptor STRING, declaration STRING, access STRING, hasCode BOOLEAN,
-    isExternalPlaceholder BOOLEAN, annotations STRING[] DEFAULT [], PRIMARY KEY (id))`,
+    isExternalPlaceholder BOOLEAN, annotations STRING[] DEFAULT [], codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmField (
     id STRING, stageId STRING, classId STRING, owner STRING, name STRING,
-    descriptor STRING, declaration STRING, access STRING, annotations STRING[] DEFAULT [], PRIMARY KEY (id))`,
+    descriptor STRING, declaration STRING, access STRING, annotations STRING[] DEFAULT [],
+    codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmCallSite (
     id STRING, stageId STRING, callerMethodId STRING, bytecodeOffset INT64,
     opcode STRING, targetOwner STRING, targetName STRING,
-    targetDescriptor STRING, status STRING, PRIMARY KEY (id))`,
+    targetDescriptor STRING, status STRING, codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE REL TABLE JvmRelation (
     FROM JvmArtifactEnrichmentRun TO JvmArtifact,
     FROM JvmArtifact TO JvmClass,

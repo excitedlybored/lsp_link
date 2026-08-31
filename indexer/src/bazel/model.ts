@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
+import type { CodeOrigin } from '../code-origin.js';
 
 export interface BazelConfiguredTargetEvidence {
   label: string;
@@ -38,6 +39,7 @@ export interface BazelTarget {
   label: string;
   ruleKind?: string;
   selected: boolean;
+  codeOrigin: CodeOrigin;
 }
 
 export interface BazelSource {
@@ -45,12 +47,14 @@ export interface BazelSource {
   graphId: string;
   path: string;
   isGenerated: boolean;
+  codeOrigin: CodeOrigin;
 }
 
 export interface BazelArtifact {
   id: string;
   graphId: string;
   path: string;
+  codeOrigin: CodeOrigin;
 }
 
 export type BazelRelationKind =
@@ -117,7 +121,7 @@ function appendRoot(batch: BazelBuildGraphBatch, root: BazelPreparedRootGraph): 
     }
     const target: BazelTarget = {
       id: stableId('bazel-target', root.rootId, label), graphId, buildRootId: root.rootId,
-      label, ruleKind, selected: selectedLabels.has(label),
+      label, ruleKind, selected: selectedLabels.has(label), codeOrigin: 'repository',
     };
     targetsByLabel.set(label, target);
     return target;
@@ -128,6 +132,7 @@ function appendRoot(batch: BazelBuildGraphBatch, root: BazelPreparedRootGraph): 
     if (current) return current;
     const source: BazelSource = {
       id: stableId('bazel-source', root.rootId, resolved), graphId, path: resolved, isGenerated,
+      codeOrigin: isGenerated ? 'generated_first_party' : 'repository',
     };
     sourcesByPath.set(resolved, source);
     return source;
@@ -138,6 +143,7 @@ function appendRoot(batch: BazelBuildGraphBatch, root: BazelPreparedRootGraph): 
     if (current) return current;
     const artifact: BazelArtifact = {
       id: stableId('bazel-artifact', root.rootId, resolved), graphId, path: resolved,
+      codeOrigin: 'first_party_artifact',
     };
     artifactsByPath.set(resolved, artifact);
     return artifact;

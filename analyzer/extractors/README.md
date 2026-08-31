@@ -63,17 +63,68 @@ uv run --with-requirements analyzer/requirements.txt \
 The Temporal extractor combines independent evidence:
 
 - enriched `io.temporal.*` JVM classes establish dependency presence;
+- compiled class and method annotations identify workflow/activity contracts
+  and workflow, signal, query, and update entry points in scalable `core` runs;
+- `BYTECODE_INTERFACE` and exact method descriptors connect contracts to their
+  implementations without LSP implementation requests;
+- resolved bytecode calls identify activity invocations, Temporal SDK
+  operations, and typed workflow, signal, query, and update calls in scalable
+  `core` runs;
 - annotation hovers bound to exact `JvmClass` identities confirm
-  workflow/activity contracts and method roles;
+  workflow/activity contracts and method roles when exhaustive evidence exists;
 - workflow contracts are confirmed by `@WorkflowInterface` or a contained
   `@WorkflowMethod`, avoiding application naming conventions;
-- `IMPLEMENTATION_OF` maps contracts and methods to concrete classes;
-- `LspCallSite` plus `RESOLVES_TO` preserves every invocation range;
+- `IMPLEMENTATION_OF` optionally confirms bytecode implementation mappings;
+- `LspCallSite` plus `RESOLVES_TO` optionally adds precise source ranges;
 - resolved Temporal SDK calls identify stub creation, starts, worker
   registration, signals, queries, and other runtime operations.
 
+The required completeness profile is therefore `core`: document symbols plus
+a complete, untruncated JVM artifact-enrichment run are sufficient for standard
+Temporal annotations, interface implementation, and SDK calls. `exhaustive`
+remains useful as optional source-level enrichment for precise ranges, hover
+bindings, and call-hierarchy observations. Custom wrappers, reflection, code
+outside the selected Bazel scope, and runtime-only registration magic can still
+make extraction incomplete because they leave no standard resolvable evidence.
+
 Use `--include-raw` to include every evidence-query row. Without it, the report
 contains assembled workflows and an `evidenceQueryCounts` audit trail.
+
+### Visualization-ready output
+
+The assembled Temporal report always includes `findings.graph`, a versioned,
+renderer-neutral directed graph with `perspective: "workflow"`. It represents
+the behavior of each Temporal workflow, rather than reproducing the Java class
+hierarchy. Java identities remain available as a connected supporting layer.
+Consumers do not need to infer flow relationships from the nested report. The
+graph contains:
+
+- `schemaVersion`: currently `1`, for compatibility checks;
+- `nodes`: workflows, workflow entry points and steps, activities, signal/query/
+  update handlers, and meaningful Temporal runtime operations;
+- `edges`: semantic flow such as `INVOKES_ACTIVITY`, `INVOKES_WORKFLOW`,
+  `STARTS_WORKFLOW`, `SIGNALS`, `QUERIES`, `UPDATES`, and registration or
+  preparation operations;
+- `observations`: exact LSP ranges or JVM bytecode offsets retained on call
+  edges, including provider, confidence, and evidence identity;
+- `groups`: one directly renderable flow subgraph per workflow, with its root,
+  steps, connected activities or Temporal operations, and member edges;
+- `supportingEvidence`: a `java-evidence` graph of contracts, implementation
+  classes, methods, declarations, implementation relations, and resolved calls;
+- `supportingEvidence.bindings`: `EVIDENCED_BY` mappings from primary workflow
+  nodes to their Java nodes, allowing renderers to show code in a tooltip or
+  side panel, or expand it in place without changing the primary perspective;
+- `nodeKinds` and `edgeKinds`: a compact legend that a renderer can use for
+  styling and filtering.
+
+Repeated calls between the same methods are represented by one edge with an
+`observationCount` and a complete `observations` array. This keeps overview
+diagrams small without losing drill-down evidence. Arrays and generated IDs
+are deterministic for the same evidence, so visualization layouts and diffs
+can be cached. The format can be mapped directly to Cytoscape, D3, Graphviz,
+Mermaid, or a custom UI. Summary fields expose `visualizationNodeCount`,
+`visualizationEdgeCount`, `visualizationGroupCount`, and supporting code-evidence
+counts for validation.
 
 Every report has a top-level `qualification` and an `indexHealth` section. The
 health record selects the newest analysis run and scopes Bazel roots, artifact

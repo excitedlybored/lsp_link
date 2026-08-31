@@ -1,8 +1,8 @@
 {
   "id": "temporal",
   "schemaVersion": 1,
-  "version": "1.1.0",
-  "description": "Temporal Java workflows identified only from persisted LSP and JVM artifact evidence.",
+  "version": "1.3.0",
+  "description": "Temporal Java workflows identified from scalable JVM evidence with optional LSP enrichment.",
   "dataSource": "ladybugdb-only",
   "identityPolicy": "framework-semantic-identities",
   "semanticTypes": {
@@ -26,11 +26,7 @@
       "JvmArtifactEnrichmentRun"
     ],
     "lspCapabilities": [
-      "textDocument/documentSymbol",
-      "textDocument/hover",
-      "textDocument/implementation",
-      "callHierarchy/outgoingCalls",
-      "callHierarchy/incomingCalls"
+      "textDocument/documentSymbol"
     ]
   },
   "assemblerModule": "analyzer.extractors.temporal.assembler",
@@ -70,10 +66,29 @@
       }
     },
     {
+      "id": "jvm_workflow_contracts",
+      "category": "contract",
+      "description": "Workflow interfaces confirmed directly from compiled class and method annotations.",
+      "file": "queries/jvm_workflow_contracts.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"},
+        "workflowEntryPointType": {"semanticType": "workflowEntryPoint"}
+      }
+    },
+    {
       "id": "activity_contracts",
       "category": "contract",
       "description": "Interfaces whose nearby LSP hover resolves @ActivityInterface.",
       "file": "queries/activity_contracts.cypher",
+      "parameters": {
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
+      "id": "jvm_activity_contracts",
+      "category": "contract",
+      "description": "Activity interfaces confirmed directly from compiled class annotations.",
+      "file": "queries/jvm_activity_contracts.cypher",
       "parameters": {
         "activityContractType": {"semanticType": "activityContract"}
       }
@@ -92,10 +107,33 @@
       }
     },
     {
+      "id": "jvm_annotated_methods",
+      "category": "entrypoint",
+      "description": "Workflow, signal, query, update, and activity methods identified from bytecode annotations.",
+      "file": "queries/jvm_annotated_methods.cypher",
+      "parameters": {
+        "workflowEntryPointType": {"semanticType": "workflowEntryPoint"},
+        "signalEntryPointType": {"semanticType": "signalEntryPoint"},
+        "queryEntryPointType": {"semanticType": "queryEntryPoint"},
+        "updateEntryPointType": {"semanticType": "updateEntryPoint"},
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
       "id": "implementations",
       "category": "implementation",
       "description": "LSP textDocument/implementation relations between classes and interfaces.",
       "file": "queries/implementations.cypher"
+    },
+    {
+      "id": "jvm_implementations",
+      "category": "implementation",
+      "description": "Compiled classes connected to workflow and activity interfaces by BYTECODE_INTERFACE.",
+      "file": "queries/jvm_implementations.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"},
+        "activityContractType": {"semanticType": "activityContract"}
+      }
     },
     {
       "id": "method_implementations",
@@ -104,10 +142,29 @@
       "file": "queries/method_implementations.cypher"
     },
     {
+      "id": "jvm_method_implementations",
+      "category": "implementation",
+      "description": "Concrete bytecode methods matched exactly to implemented interface methods.",
+      "file": "queries/jvm_method_implementations.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"},
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
       "id": "resolved_calls",
       "category": "flow",
       "description": "Ranged call sites with their LSP-resolved targets and containing symbols.",
       "file": "queries/resolved_calls.cypher"
+    },
+    {
+      "id": "jvm_resolved_calls",
+      "category": "flow",
+      "description": "Resolved bytecode call sites with owning classes and methods.",
+      "file": "queries/jvm_resolved_calls.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"}
+      }
     },
     {
       "id": "temporal_sdk_calls",
@@ -118,6 +175,19 @@
         "workflowClientType": {"semanticType": "workflowClient"},
         "serviceClientType": {"semanticType": "serviceClient"},
         "sdkNamespacePrefix": "io.temporal."
+      }
+    },
+    {
+      "id": "jvm_temporal_sdk_calls",
+      "category": "runtime",
+      "description": "Resolved bytecode calls into canonical io.temporal APIs or annotated workflow contract methods.",
+      "file": "queries/jvm_temporal_sdk_calls.cypher",
+      "parameters": {
+        "sdkNamespacePrefix": "io.temporal.",
+        "workflowEntryPointType": {"semanticType": "workflowEntryPoint"},
+        "signalEntryPointType": {"semanticType": "signalEntryPoint"},
+        "queryEntryPointType": {"semanticType": "queryEntryPoint"},
+        "updateEntryPointType": {"semanticType": "updateEntryPoint"}
       }
     }
   ]

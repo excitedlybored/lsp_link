@@ -17,8 +17,8 @@ test('plans exactly 5,000 Java documents across the layered architecture', () =>
   assert.equal(plan.components.reduce((sum, component) => sum + component.documents, 0), 4_980);
   assert.deepEqual(plan.categories, [
     { name: 'libraries', packages: 250 },
-    { name: 'services', packages: 150 },
     { name: 'workflows', packages: 60 },
+    { name: 'services', packages: 150 },
     { name: 'simulators', packages: 40 },
   ]);
 });
@@ -38,6 +38,39 @@ test('materializes and validates the complete 5,000-document Bazel fixture', (t)
     5_000,
   );
   assert.ok(fs.existsSync(path.join(temporary, 'build-platforms/plugins/BUILD.bazel')));
+  assert.equal(
+    execFileSync('git', ['-C', temporary, 'grep', '-l', '@WorkflowInterface', '--', 'components/workflows'], { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).length,
+    60,
+  );
+  assert.equal(
+    execFileSync('git', ['-C', temporary, 'grep', '-l', 'newWorkflowStub', '--', 'components/services'], { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).length,
+    150,
+  );
+  assert.equal(
+    execFileSync('git', ['-C', temporary, 'grep', '-l', 'simulated cancellation', '--', 'components/simulators'], { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).length,
+    40,
+  );
+  assert.equal(
+    execFileSync('git', ['-C', temporary, 'grep', '-l', 'newChildWorkflowStub', '--', 'components/workflows'], { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).length,
+    60,
+  );
+  assert.equal(
+    execFileSync('git', ['-C', temporary, 'grep', '-l', 'compensateFailure', '--', 'components/workflows'], { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).length,
+    60,
+  );
+  assert.equal(
+    execFileSync('git', ['-C', temporary, 'grep', '-l', 'workflow.adjustAmount', '--', 'components/simulators'], { encoding: 'utf8' })
+      .trim().split('\n').filter(Boolean).length,
+    40,
+  );
+  assert.ok(fs.existsSync(path.join(
+    temporary, 'build-platforms/dependencies/src/main/java/io/temporal/workflow/WorkflowInterface.java',
+  )));
   assert.match(
     fs.readFileSync(path.join(temporary, 'tools/build_defs/layered_java.bzl'), 'utf8'),
     /name \+ "_deploy_bannedcheck"/,

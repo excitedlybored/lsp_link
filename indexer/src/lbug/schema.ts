@@ -40,7 +40,7 @@ CREATE NODE TABLE LspBuildRoot (
 export const LSP_DOCUMENT_SCHEMA = `
 CREATE NODE TABLE LspDocument (
   id STRING, uri STRING, filePath STRING, languageId STRING, version INT64,
-  contentHash STRING, origin STRING, wasOpened BOOLEAN, buildRootId STRING,
+  contentHash STRING, origin STRING, codeOrigin STRING, wasOpened BOOLEAN, buildRootId STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -51,7 +51,7 @@ CREATE NODE TABLE ${table} (
   startLine INT64, startCharacter INT64, endLine INT64, endCharacter INT64,
   selectionStartLine INT64, selectionStartCharacter INT64,
   selectionEndLine INT64, selectionEndCharacter INT64,
-  signature STRING, stableKey STRING, isExternal BOOLEAN,
+  signature STRING, stableKey STRING, isExternal BOOLEAN, codeOrigin STRING,
   PRIMARY KEY (id)
 )`;
 

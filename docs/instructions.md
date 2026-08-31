@@ -28,6 +28,12 @@ already completed, run `bazel-prepare`; it reuses Bazel's cache while producing
 the indexer-specific metadata and handoff. A successful second command writes
 the LadybugDB graph to `INDEX_OUTPUT`.
 
+Code-bearing database nodes include `codeOrigin`, which separates editable
+repository code, generated first-party source, first-party compiled artifacts,
+third-party dependencies, standard-library code, and unclassified evidence.
+See [Code-origin classification](code-origin.md) for definitions, persistence
+coverage, filtering guidance, and query examples.
+
 Preparation prints a start and completion line for target discovery, tag
 filtering, execution-root lookup, and the recursive Java aspect build. A Bazel
 stage that runs longer than 15 seconds emits a heartbeat with elapsed time,

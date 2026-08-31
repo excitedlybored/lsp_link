@@ -1,3 +1,5 @@
+import type { CodeOrigin } from './code-origin.js';
+
 /**
  * LSP-native persisted data classes.
  *
@@ -185,6 +187,7 @@ export interface LspDocument {
   version?: number;
   contentHash?: string;
   origin: LspDocumentOrigin;
+  codeOrigin: CodeOrigin;
   /** Whether this run successfully sent textDocument/didOpen for the document. */
   wasOpened: boolean;
   buildRootId?: string;
@@ -203,6 +206,7 @@ export interface LspSymbolCommon {
   signature?: string;
   stableKey: string;
   isExternal: boolean;
+  codeOrigin: CodeOrigin;
 }
 
 /** One exact data class for a standard LSP SymbolKind. */

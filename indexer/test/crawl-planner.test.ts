@@ -46,7 +46,8 @@ test('semantic inventory comparison ignores redundant raw position observations'
   const original = emptyObservationBatch();
   const candidate = emptyObservationBatch();
   original.documents.push({
-    id: 'document', uri: occurrence.uri, languageId: 'java', origin: 'workspace', wasOpened: true,
+    id: 'document', uri: occurrence.uri, languageId: 'java', origin: 'workspace',
+    codeOrigin: 'repository', wasOpened: true,
   });
   candidate.documents.push(...original.documents);
   original.occurrences.push(occurrence, {

@@ -11,6 +11,7 @@ import {
   ingestRun,
 } from '../dist/ingest/builders.js';
 import {
+  appendObservationBatch,
   dedupeObservationBatch,
   emptyObservationBatch,
   mergeObservationBatches,
@@ -57,6 +58,20 @@ test('merges and deduplicates batches larger than the JavaScript argument limit'
   assert.equal(deduped.documents.length, 100_000);
   assert.equal(deduped.documents[0].sequence, 100_000);
   assert.equal(deduped.documents.at(-1).sequence, 99_999);
+});
+
+test('appends observations in place without replacing existing batch arrays', () => {
+  const target = emptyObservationBatch();
+  const documents = target.documents;
+  target.documents.push({ id: 'document:existing' });
+  const source = emptyObservationBatch();
+  source.documents.push({ id: 'document:new' });
+
+  appendObservationBatch(target, source);
+
+  assert.equal(target.documents, documents);
+  assert.deepEqual(target.documents.map(({ id }) => id), ['document:existing', 'document:new']);
+  assert.deepEqual(source.documents.map(({ id }) => id), ['document:new']);
 });
 
 test('normalizes hierarchy, call sites, occurrences, and run provenance into one batch', () => {

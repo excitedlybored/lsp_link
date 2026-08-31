@@ -12,7 +12,10 @@ test('builds a separate Bazel target, source, artifact, and dependency evidence 
         { label: '//shared:api', attribute: 'deps' },
         { label: '//runtime:agent', attribute: 'runtime_deps' },
       ],
-      directSources: [{ path: '/workspace/service/Service.java', isSource: true }],
+      directSources: [
+        { path: '/workspace/service/Service.java', isSource: true },
+        { path: '/execroot/bazel-out/generated/Generated.java', isSource: false },
+      ],
       sourceJars: ['/execroot/service-src.jar'],
       compileArtifacts: ['/execroot/service-hjar.jar'],
       runtimeArtifacts: ['/execroot/service.jar'],
@@ -23,8 +26,18 @@ test('builds a separate Bazel target, source, artifact, and dependency evidence 
   assert.equal(batch.targets.length, 3);
   assert.equal(batch.targets.find((target) => target.label === '//service:lib')?.selected, true);
   assert.equal(batch.targets.find((target) => target.label === '//shared:api')?.selected, false);
-  assert.equal(batch.sources.length, 1);
+  assert.ok(batch.targets.every((target) => target.codeOrigin === 'repository'));
+  assert.equal(batch.sources.length, 2);
+  assert.equal(
+    batch.sources.find((source) => source.path.endsWith('/Service.java'))?.codeOrigin,
+    'repository',
+  );
+  assert.equal(
+    batch.sources.find((source) => source.path.endsWith('/Generated.java'))?.codeOrigin,
+    'generated_first_party',
+  );
   assert.equal(batch.artifacts.length, 3);
+  assert.ok(batch.artifacts.every((artifact) => artifact.codeOrigin === 'first_party_artifact'));
   assert.deepEqual(
     batch.relations.filter((relation) => relation.kind === 'DEPENDS_ON')
       .map((relation) => relation.attribute),
@@ -38,5 +51,10 @@ test('declares Bazel evidence independently from LSP and JVM schemas', () => {
     query.startsWith('CREATE NODE TABLE BazelTarget')));
   assert.ok(BAZEL_BUILD_GRAPH_SCHEMA_QUERIES.some((query) =>
     query.includes('FROM BazelTarget TO BazelTarget')));
+  for (const table of ['BazelTarget', 'BazelSource', 'BazelArtifact']) {
+    const schema = BAZEL_BUILD_GRAPH_SCHEMA_QUERIES.find((query) =>
+      query.includes(`TABLE ${table} (`));
+    assert.match(schema ?? '', /codeOrigin STRING/);
+  }
   assert.ok(BAZEL_BUILD_GRAPH_SCHEMA_QUERIES.every((query) => !query.includes('LspRelation')));
 });

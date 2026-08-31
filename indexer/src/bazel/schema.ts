@@ -7,11 +7,11 @@ export const BAZEL_BUILD_GRAPH_SCHEMA_QUERIES = [
     PRIMARY KEY (id))`,
   `CREATE NODE TABLE BazelTarget (
     id STRING, graphId STRING, buildRootId STRING, label STRING, ruleKind STRING,
-    selected BOOLEAN, PRIMARY KEY (id))`,
+    selected BOOLEAN, codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE BazelSource (
-    id STRING, graphId STRING, path STRING, isGenerated BOOLEAN, PRIMARY KEY (id))`,
+    id STRING, graphId STRING, path STRING, isGenerated BOOLEAN, codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE BazelArtifact (
-    id STRING, graphId STRING, path STRING, PRIMARY KEY (id))`,
+    id STRING, graphId STRING, path STRING, codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE REL TABLE BazelRelation (
     FROM BazelBuildGraphRun TO BazelTarget,
     FROM BazelTarget TO BazelTarget,

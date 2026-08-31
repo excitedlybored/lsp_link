@@ -22,6 +22,7 @@ import {
   type LspParameter,
   type LspSymbol,
 } from '../model.js';
+import { codeOriginForDocumentOrigin } from '../code-origin.js';
 import {
   ingestCalls,
   ingestDocumentSymbols,
@@ -35,6 +36,7 @@ import {
   type IngestionContext,
 } from './builders.js';
 import {
+  appendObservationBatch,
   dedupeObservationBatch,
   emptyObservationBatch,
   mergeObservationBatches,
@@ -224,7 +226,7 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
         const observed = ingestDocumentSymbols(context, observations);
         registry.addBatch(observed);
         symbolsByDocument.set(document.id, observed.symbols);
-        batch = mergeObservationBatches(batch, observed);
+        appendObservationBatch(batch, observed);
         return countObservations(observed);
       } finally {
         await adapter.closeDocument(filePath);
@@ -234,7 +236,7 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
   }
 
   // Run/build-root/document provenance is emitted after didOpen outcomes are known.
-  batch = mergeObservationBatches(batch, ingestRun(run, [server], documents, [buildRoot]));
+  appendObservationBatch(batch, ingestRun(run, [server], documents, [buildRoot]));
 
   // Pass 2: every discovered symbol receives every eligible semantic request.
   // In facts-first mode this phase completes across the root before token gap
@@ -307,7 +309,7 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
     }
   }
 
-  batch = mergeObservationBatches(batch, registry.takeMaterializedBatch());
+  appendObservationBatch(batch, registry.takeMaterializedBatch());
   const coverageBatch = buildCoverageBatch(run, server, coverage);
   if (profile === 'exhaustive' && plannerMode === 'facts-first') {
     console.log(
@@ -315,7 +317,8 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
       + `${plannerStats.queried} unresolved positions queried`,
     );
   }
-  return dedupeObservationBatch(mergeObservationBatches(batch, coverageBatch));
+  appendObservationBatch(batch, coverageBatch);
+  return dedupeObservationBatch(batch);
 }
 
 async function collectDocumentFacts(
@@ -834,7 +837,7 @@ function appendDiagnostics(
 }
 
 class SymbolRegistry {
-  private readonly symbols: LspSymbol[] = [];
+  private readonly symbolsByUri = new Map<string, LspSymbol[]>();
   private readonly documents = new Map<string, LspDocument>();
   private readonly pending = emptyObservationBatch();
 
@@ -846,16 +849,16 @@ class SymbolRegistry {
     seed: LspObservationBatch,
   ) {
     for (const document of seed.documents) this.documents.set(document.uri, document);
-    for (const symbol of seed.symbols) this.symbols.push(symbol);
+    for (const symbol of seed.symbols) this.addSymbol(symbol);
   }
 
   addBatch(batch: LspObservationBatch): void {
     for (const document of batch.documents) this.documents.set(document.uri, document);
-    for (const symbol of batch.symbols) this.symbols.push(symbol);
+    for (const symbol of batch.symbols) this.addSymbol(symbol);
   }
 
   find(uri: string, range: LspRange): LspSymbol | undefined {
-    const candidates = this.symbols.filter((symbol) => symbol.uri === uri);
+    const candidates = this.symbolsByUri.get(uri) ?? [];
     const exact = candidates.find((symbol) => rangeKey(symbol.selectionRange) === rangeKey(range));
     if (exact) return exact;
     return candidates
@@ -864,8 +867,8 @@ class SymbolRegistry {
   }
 
   findContaining(uri: string, line: number, character: number): LspSymbol | undefined {
-    return this.symbols
-      .filter((symbol) => symbol.uri === uri && positionInRange({ line, character }, symbol.range))
+    return (this.symbolsByUri.get(uri) ?? [])
+      .filter((symbol) => positionInRange({ line, character }, symbol.range))
       .sort((a, b) => rangeSize(a.range) - rangeSize(b.range))[0];
   }
 
@@ -876,12 +879,18 @@ class SymbolRegistry {
     const kindName = symbolKindName(item.kind);
     if (kindName === 'Unknown') throw new Error(`Unknown LSP SymbolKind ${item.kind} for ${item.name}`);
     const symbol = materializeSymbol(document, item, kindName);
-    this.symbols.push(symbol);
+    this.addSymbol(symbol);
     this.pending.symbols.push(symbol);
     return symbol;
   }
 
   documentForUri(uri: string): LspDocument | undefined { return this.documents.get(uri); }
+
+  private addSymbol(symbol: LspSymbol): void {
+    const symbols = this.symbolsByUri.get(symbol.uri) ?? [];
+    symbols.push(symbol);
+    this.symbolsByUri.set(symbol.uri, symbols);
+  }
 
   takeMaterializedBatch(): LspObservationBatch { return this.pending; }
 
@@ -890,9 +899,10 @@ class SymbolRegistry {
     if (existing) return existing;
     const filePath = uri.startsWith('file://') ? safeFilePath(uri) : undefined;
     const insideRepository = filePath ? isInside(this.repositoryPath, filePath) : false;
+    const origin = insideRepository ? 'generated' : classifyExternalOrigin(uri);
     const document: LspDocument = {
       id: stableId('document', uri), uri, filePath, languageId: 'java',
-      origin: insideRepository ? 'generated' : classifyExternalOrigin(uri),
+      origin, codeOrigin: codeOriginForDocumentOrigin(origin),
       wasOpened: false,
       buildRootId: insideRepository ? this.buildRoot.id : undefined,
     };
@@ -1149,13 +1159,6 @@ function countObservations(batch: LspObservationBatch): ObservationCounts {
   };
 }
 
-function appendObservationBatch(target: LspObservationBatch, source: LspObservationBatch): void {
-  for (const key of Object.keys(target) as Array<keyof LspObservationBatch>) {
-    const destination = target[key] as unknown[];
-    for (const value of source[key] as unknown[]) destination.push(value);
-  }
-}
-
 function createCoverageState(capability: string, supported: boolean): CoverageState {
   return {
     capability, supported, eligibleCount: 0, attemptedCount: 0, successCount: 0,
@@ -1301,6 +1304,6 @@ export function workspaceDocument(
   const uri = pathToFileURL(absolute).href;
   return {
     id: stableId('document', uri), uri, filePath: absolute, languageId: 'java',
-    origin, wasOpened: false, buildRootId,
+    origin, codeOrigin: codeOriginForDocumentOrigin(origin), wasOpened: false, buildRootId,
   };
 }

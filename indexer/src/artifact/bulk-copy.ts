@@ -256,10 +256,10 @@ export async function bulkCopyArtifactGraph(
 }
 
 const NODE_TABLES = [
-  { key: 'JvmClass', name: 'JvmClass', columns: ['id','stageId','artifactId','binaryName','packageName','simpleName','kind','access','superName','sourceEntry','isSeed','wasDisassembled'] },
-  { key: 'JvmMethod', name: 'JvmMethod', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access','hasCode','isExternalPlaceholder'] },
-  { key: 'JvmField', name: 'JvmField', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access'] },
-  { key: 'JvmCallSite', name: 'JvmCallSite', columns: ['id','stageId','callerMethodId','bytecodeOffset','opcode','targetOwner','targetName','targetDescriptor','status'] },
+  { key: 'JvmClass', name: 'JvmClass', columns: ['id','stageId','artifactId','binaryName','packageName','simpleName','kind','access','superName','sourceEntry','isSeed','wasDisassembled','codeOrigin'] },
+  { key: 'JvmMethod', name: 'JvmMethod', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access','hasCode','isExternalPlaceholder','codeOrigin'] },
+  { key: 'JvmField', name: 'JvmField', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access','codeOrigin'] },
+  { key: 'JvmCallSite', name: 'JvmCallSite', columns: ['id','stageId','callerMethodId','bytecodeOffset','opcode','targetOwner','targetName','targetDescriptor','status','codeOrigin'] },
   { key: 'JvmClassResolution', name: 'JvmClassResolution', columns: ['binaryName','stageId','classId','artifactId','classpathOrdinal'] },
   { key: 'JvmBinaryReference', name: 'JvmBinaryReference', columns: ['binaryName','stageId'] },
 ] as const;
@@ -272,10 +272,10 @@ const RELATION_TABLES = [
 ] as const;
 
 function writeFacts(csv: CsvFiles, batch: JvmArtifactBatch): void {
-  for (const v of batch.classes) csv.row('JvmClass', [v.id,v.stageId,v.artifactId,v.binaryName,v.packageName,v.simpleName,v.kind,v.access,v.superName,v.sourceEntry,v.isSeed,v.wasDisassembled]);
-  for (const v of batch.methods) csv.row('JvmMethod', [v.id,v.stageId,v.classId,v.owner,v.name,v.descriptor,v.declaration,v.access,v.hasCode,v.isExternalPlaceholder]);
-  for (const v of batch.fields) csv.row('JvmField', [v.id,v.stageId,v.classId,v.owner,v.name,v.descriptor,v.declaration,v.access]);
-  for (const v of batch.callSites) csv.row('JvmCallSite', [v.id,v.stageId,v.callerMethodId,v.bytecodeOffset,v.opcode,v.targetOwner,v.targetName,v.targetDescriptor,v.status]);
+  for (const v of batch.classes) csv.row('JvmClass', [v.id,v.stageId,v.artifactId,v.binaryName,v.packageName,v.simpleName,v.kind,v.access,v.superName,v.sourceEntry,v.isSeed,v.wasDisassembled,v.codeOrigin]);
+  for (const v of batch.methods) csv.row('JvmMethod', [v.id,v.stageId,v.classId,v.owner,v.name,v.descriptor,v.declaration,v.access,v.hasCode,v.isExternalPlaceholder,v.codeOrigin]);
+  for (const v of batch.fields) csv.row('JvmField', [v.id,v.stageId,v.classId,v.owner,v.name,v.descriptor,v.declaration,v.access,v.codeOrigin]);
+  for (const v of batch.callSites) csv.row('JvmCallSite', [v.id,v.stageId,v.callerMethodId,v.bytecodeOffset,v.opcode,v.targetOwner,v.targetName,v.targetDescriptor,v.status,v.codeOrigin]);
   for (const v of batch.relations) csv.row(`JvmRelation-${v.sourceKind}-${v.targetKind}`, [v.sourceId,v.targetId,v.id,v.kind,v.stageId,v.status,v.ordinal]);
   for (const v of batch.binaryReferenceRelations) csv.row(`JvmBinaryReferenceRelation-${v.targetKind}`, [v.binaryName,v.targetId,v.id,v.kind,v.stageId,v.ordinal]);
 }

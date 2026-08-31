@@ -118,6 +118,7 @@ export async function streamJvmArtifacts(
       associationStatus: source.path && binaryJarPath ? 'complete' : binaryJarPath ? 'binary_only' : 'header_only',
       classCount: 0, methodCount: 0, fieldCount: 0, callSiteCount: 0,
       contentHash: hashFile(crawlJarPath), classpathOrdinal,
+      codeOrigin: descriptor.codeOrigin ?? 'unknown',
       processingStatus: 'pending', errorCount: 0,
     };
     metadata.artifacts.push(artifact);
@@ -431,7 +432,7 @@ function normalizeFact(
       sourceEntry: artifact.sourceJarPath
         ? `${fact.binaryName.replaceAll('.', '/').replace(/\$.*$/, '')}.java` : undefined,
       isSeed: uris.length > 0, seedUris: uris, wasDisassembled: fact.detailed,
-      annotations: [...fact.annotations],
+      annotations: [...fact.annotations], codeOrigin: artifact.codeOrigin,
     });
     batch.resolutions.push({
       binaryName: fact.binaryName, stageId, classId, artifactId: artifact.id,
@@ -461,7 +462,7 @@ function normalizeFact(
       id, stageId, classId, owner: fact.owner, name: fact.name, descriptor: fact.descriptor,
       declaration: `${fact.access ? `${fact.access} ` : ''}${fact.name}${fact.descriptor}`,
       access: fact.access || undefined, hasCode: fact.hasCode,
-      isExternalPlaceholder: false, annotations: [...fact.annotations],
+      isExternalPlaceholder: false, annotations: [...fact.annotations], codeOrigin: artifact.codeOrigin,
     });
     batch.relations.push(createJvmRelation(
       stageId, 'JvmClass', classId, 'JvmMethod', id, 'DECLARES_METHOD', fact.ordinal,
@@ -473,7 +474,7 @@ function normalizeFact(
     batch.fields.push({
       id, stageId, classId, owner: fact.owner, name: fact.name, descriptor: fact.descriptor,
       declaration: `${fact.access ? `${fact.access} ` : ''}${fact.name}:${fact.descriptor}`,
-      access: fact.access || undefined, annotations: [...fact.annotations],
+      access: fact.access || undefined, annotations: [...fact.annotations], codeOrigin: artifact.codeOrigin,
     });
     batch.relations.push(createJvmRelation(
       stageId, 'JvmClass', classId, 'JvmField', id, 'DECLARES_FIELD', fact.ordinal,
@@ -491,7 +492,7 @@ function normalizeFact(
     id: callId, stageId, callerMethodId: callerId,
     bytecodeOffset: fact.bytecodeOffset, opcode: fact.opcode,
     targetOwner: fact.targetOwner, targetName: fact.targetName,
-    targetDescriptor: fact.targetDescriptor, status: 'external',
+    targetDescriptor: fact.targetDescriptor, status: 'external', codeOrigin: artifact.codeOrigin,
   });
   batch.relations.push(createJvmRelation(
     stageId, 'JvmMethod', callerId, 'JvmCallSite', callId,

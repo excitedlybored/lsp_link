@@ -1,3 +1,5 @@
+import type { CodeOrigin } from '../../code-origin.js';
+
 export type ArtifactClasspathProviderId =
   | 'bazel-java-info'
   | 'maven-m2e'
@@ -17,6 +19,7 @@ export interface NormalizedArtifactDescriptor {
   binaryJarPath?: string;
   sourceJarPath?: string;
   coordinate?: string;
+  codeOrigin?: CodeOrigin;
   /** Original JAR basenames retained for resolving provider-specific external URIs. */
   classpathEntryAliases?: string[];
 }
