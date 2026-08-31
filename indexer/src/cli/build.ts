@@ -17,7 +17,8 @@ async function main(): Promise<void> {
   console.log(JSON.stringify({
     output,
     crawlProfile: options.crawlProfile,
-    crawlPlanner: options.crawlPlanner,
+    crawlStrategy: 'efficient-facts-first',
+    crawlCacheId: batch.analysisRuns[0]?.id.replace(/^run:/, ''),
     bazelBuildMode: options.bazelBuildMode,
     bazelTargetQuery: options.bazelTargetQuery,
     runConfigPath: options.runConfigPath,

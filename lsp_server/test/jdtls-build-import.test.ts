@@ -21,13 +21,15 @@ import {
   resolveBazelTargetScope,
 } from '../adapters/java/bazel-project-model.js';
 import { planJdtlsBuildRootShards, prepareJdtlsShardWorkspace } from '../adapters/java/jdtls-sharding.js';
-import { isJdtlsEmptyTypeDefinitionResponse } from '../adapters/java/jdtls-adapter.js';
+import { isJdtlsEmptyTypeDefinitionResponse, JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
+import { buildJdtlsShardUriMappings, LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
 import {
   createBazelSourceInventory,
   readBazelSourceInventory,
   sourceInventoryHash,
   validateBazelSourceJarEntry,
 } from '../adapters/java/bazel-source-inventory.js';
+import type { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 
 const runtime: JdtlsRuntime = {
   jdkJavaBin: '/jdk/25/bin/java',
@@ -63,6 +65,8 @@ test('resolves a deterministic Java target scope before configured analysis', as
     console.error = originalConsoleError;
   }
   assert.equal(resolved.targetQuery, 'set(//custom:app //service:lib //service:lib-test)');
+  assert.equal(resolved.complete, true);
+  assert.deepEqual(resolved.warnings, []);
   assert.deepEqual(resolved.resolvedLabels, ['//custom:app', '//service:lib', '//service:lib-test']);
   assert.ok(resolved.excluded.some((value) => value.label === '//reports:coverage' && value.reason === 'tag:coverage'));
   assert.ok(resolved.excluded.some((value) => value.label === '//service:service-sonar'));
@@ -71,12 +75,48 @@ test('resolves a deterministic Java target scope before configured analysis', as
   assert.ok(progress.some((line) => line.includes('[bazel:scope] resolved 3 selected targets; 2 excluded')));
 });
 
+test('retains valid Bazel query results when an unrelated package is broken', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bazel-partial-scope-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const fakeBazel = path.join(root, 'bazel');
+  fs.writeFileSync(fakeBazel, [
+    '#!/bin/sh',
+    'case "$*" in',
+    '  *"attr(\\"tags\\""*) exit 0 ;;',
+    '  *) printf "%s\\n" "java_library rule //healthy:service" "java_test rule //healthy:service-test";',
+    '     printf "%s\\n" "ERROR: error loading package broken: invalid macro reference" >&2;',
+    '     exit 3 ;;',
+    'esac',
+  ].join('\n'));
+  fs.chmodSync(fakeBazel, 0o755);
+
+  const resolved = await resolveBazelTargetScope(root, fakeBazel, {
+    includeTargetPatterns: ['//...'], includeRuleKinds: ['java_library', 'java_test'],
+    explicitTargets: [], excludeTargetNamePatterns: [], excludeLabels: [], excludeTags: ['coverage'],
+  }, 'partial-scope-hash', 5_000);
+
+  assert.deepEqual(resolved.resolvedLabels, ['//healthy:service', '//healthy:service-test']);
+  assert.equal(resolved.targetQuery, 'set(//healthy:service //healthy:service-test)');
+  assert.equal(resolved.complete, false);
+  assert.equal(resolved.warnings.length, 1);
+  assert.match(resolved.warnings[0]!, /invalid macro reference/);
+});
+
 test('normalizes only Bazel main-repository label prefixes', () => {
   assert.equal(normalizeBazelMainRepositoryLabel('//app:lib'), '//app:lib');
   assert.equal(normalizeBazelMainRepositoryLabel('@//app:lib'), '//app:lib');
   assert.equal(normalizeBazelMainRepositoryLabel('@@//app:lib'), '//app:lib');
   assert.equal(normalizeBazelMainRepositoryLabel('@third_party//app:lib'), '@third_party//app:lib');
   assert.equal(normalizeBazelMainRepositoryLabel('@@third_party+//app:lib'), '@@third_party+//app:lib');
+});
+
+test('routes extensions declared by a newly registered semantic LSP adapter', () => {
+  const registry = new LspAdapterRegistry([]);
+  registry.registerAdapter({
+    id: 'kotlin-lsp', language: 'kotlin', fileExtensions: ['.kt', '.kts'],
+  } as ILspAdapter);
+  assert.equal(registry.getLanguageForFile('/workspace/Service.kt'), 'kotlin');
+  assert.equal(registry.getLanguageForFile('/workspace/build.gradle.kts'), 'kotlin');
 });
 
 test('rejects pre-fix source inventory schemas', (t) => {
@@ -748,9 +788,53 @@ test('discovers Java from a configured source JAR when the repository has no che
     assert.equal(result.crawlSources?.length, 1);
     assert.equal(result.crawlSources?.[0]?.origin, 'source_jar');
     assert.equal(result.crawlSources?.[0]?.sourceJarAssociations[0]?.sourceJarEntry, 'example/GeneratedOnly.java');
+    const sourceJarTarget = path.join(executionRoot, 'bazel-out/generated-real.srcjar');
+    fs.renameSync(sourceJar, sourceJarTarget);
+    fs.symlinkSync(sourceJarTarget, sourceJar);
+    const prebuilt = await ensureBazelProjectModel(root, { buildMode: 'prebuilt' });
+    assert.equal(prebuilt.status, 'cached', prebuilt.reason);
   } finally {
     delete process.env.GITNEXUS_BAZEL_BIN;
   }
+});
+
+test('builds and applies enterprise-scale JDT URI mappings without repeated sorting or scanning', () => {
+  const rootCount = 3_816;
+  const mappingCount = 8_735;
+  const sourcePaths = Array.from(
+    { length: rootCount },
+    (_, index) => path.resolve(`/workspace/target-${index}/src/main/java`),
+  );
+  const sourceMappings = Array.from({ length: mappingCount }, (_, index) => {
+    const sourceRoot = sourcePaths[index % rootCount]!;
+    return {
+      sourcePath: path.join('/authoritative', `Type${index}.java`),
+      analysisPath: path.join(sourceRoot, 'example', `Type${index}.java`),
+      sourceRoot,
+    };
+  });
+  const shard = {
+    id: 'jdtls-shard-1', roots: [], sourceFileCount: mappingCount,
+    workspacePath: path.resolve('/staged-workspace'),
+    projectModels: [{
+      buildRootId: 'bazel:.', projectName: 'gitnexus-project', buildRootPath: '/workspace',
+      sourcePaths, generatedSourcePaths: [], sourceMappings,
+      compileClasspath: [], runtimeClasspath: [], languageServerClasspath: [],
+      buildSystems: ['bazel'], modelSource: 'bazel-java-info' as const,
+    }],
+  };
+
+  const started = performance.now();
+  const mappings = buildJdtlsShardUriMappings(shard);
+  const adapter = new JavaJdtlsAdapter({ uriMappings: mappings });
+  for (let index = 0; index < 100; index += 1) {
+    adapter.documentUri(`/external/maven/Dependency${index}.java`);
+  }
+  const elapsedMs = performance.now() - started;
+
+  assert.equal(mappings.length, rootCount + mappingCount);
+  assert.match(adapter.documentUri(sourceMappings[17]!.sourcePath), /Type17\.java$/);
+  assert.ok(elapsedMs < 1_000, `URI mapping setup and 100 misses took ${elapsedMs.toFixed(1)} ms`);
 });
 
 test('preserves a custom Bazel classpath model while generating its source sidecar', async (t) => {

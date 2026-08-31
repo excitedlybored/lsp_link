@@ -1,6 +1,6 @@
 # Standalone LSP Server (`lsp_server/`)
 
-This directory contains the standalone server launcher for **Eclipse JDT Language Server (`eclipse.jdt.ls`)** and adapters for TypeScript, Python, C++, Rust, C#, and COBOL.
+This directory contains the standalone server launcher for **Eclipse JDT Language Server (`eclipse.jdt.ls`)** and adapters for Kotlin, TypeScript, Python, C++, Rust, C#, and COBOL.
 
 ## Install after cloning
 
@@ -17,9 +17,29 @@ The root `.npmrc` enforces offline installation and `./install.sh` runs `npm ci
 --offline`. Do not commit an Artifactory URL or authentication token in this
 repository. Java JDT.LS, clangd, rust-analyzer, and the other non-Node language
 servers remain separately installed system/runtime prerequisites. Eclipse
-JDT.LS 1.57.0 is the exception: its official distribution is bundled at
-`vendor/jdtls/1.57.0` and is selected before an installed editor extension.
-Only a JDK 21+ remains necessary for Java indexing.
+JDT.LS 1.57.0 is bundled at `vendor/jdtls/1.57.0`. JetBrains Kotlin LSP
+262.9593.0 is stored as checksum-pinned archive chunks under
+`vendor/kotlin-lsp/archive` and extracted by `./install.sh` into the ignored
+`.gitnexus/tools/kotlin-lsp/262.9593.0` tool cache. The adapters select these
+clone-local runtimes before looking for system installations. Only a JDK 21+
+remains necessary for Java indexing; Kotlin LSP includes its own runtime.
+
+### Kotlin
+
+The registry includes the official JetBrains Kotlin LSP adapter for `.kt` and
+`.kts`. The checksum-pinned Linux x64 distribution and its Java runtime are
+committed as four Git-safe archive chunks of at most 90,000,000 bytes.
+`./install.sh` verifies every chunk, stream-extracts the runtime without writing
+an oversized intermediate archive, and verifies the launcher version without
+accessing the network or modifying the user profile. Set
+`GITNEXUS_KOTLIN_LSP_BIN` to an absolute launcher path only when a centrally
+managed runtime must override the bundled version. Each indexing session
+receives an isolated temporary Kotlin LSP system/cache directory which is
+removed during adapter shutdown.
+
+The Kotlin LSP currently supports JVM projects modeled by Gradle or Maven. A
+loose `.kt` file can still return useful semantics, but a production repository
+should retain its real build files so dependency resolution is authoritative.
 
 ---
 
@@ -58,6 +78,36 @@ npx tsx query.ts context ../sample_projects/spring-boot-demo --symbol DemoWorkfl
 - **Transport**: JSON-RPC 2.0 over `stdio`
 - **Compiler Backends**: native Gradle and Maven import; Bazel external project models
 - **Standard Protocol**: LSP 3.16+ (`documentSymbol`, `prepareCallHierarchy`, `implementation`, `hover`)
+
+## Session and resource ownership
+
+Each language is registered through an adapter factory. The registry creates
+one adapter per workspace, coalesces concurrent startup calls for the same
+session, and owns cleanup after partial startup. Adapter-declared extensions
+are the sole routing catalog used by both the query CLI and production indexer;
+there is no second extension switch in the CLI.
+
+The base stdio adapter enforces `maxConcurrentRequests`, bounds retained
+diagnostic notifications, limits opened document size, propagates protocol
+failures, and caps initialize, query, and shutdown waits. JDT workspaces are
+run-scoped and removed after the owning shard stops, so simultaneous indexing
+runs cannot delete each other's compiler state.
+
+Each active server session also maintains a bounded 2,048-entry LRU for
+read-only semantic RPCs. Its key is the LSP method plus canonicalized parameters,
+including the exact document URI and position. Concurrent identical requests
+share one promise, successful responses are reused, failures are immediately
+evicted, and the cache is cleared at session start and shutdown. Declaration
+reference coverage provides the cross-position optimization: one class-level
+`textDocument/references` result can cover thousands of usages without caching
+by unsafe lexical class names.
+
+JDT process count is constrained by both crawl concurrency and a total heap
+budget. `GITNEXUS_JDT_MAX_TOTAL_HEAP_GB` defaults to `8`; the planner reduces
+the shard count until the aggregate 2/4/6 GB JVM heaps fit. Override
+`GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS` (default `180000`) when an unusually
+large import needs more time. A classpath that is still incomplete at that
+deadline fails the shard instead of being mislabeled as a complete crawl.
 
 JDT LS has one normalized protocol quirk: for `typeDefinition` on Java
 primitives and synthetic `array.length`, some versions emit a response with

@@ -1,0 +1,8 @@
+load("//build_defs:services.bzl", "example_deploy")
+
+filegroup(
+    name = "repository_shape",
+    srcs = glob(["src/**", "features/**", "config/**"]),
+)
+
+example_deploy(name = "example-service")

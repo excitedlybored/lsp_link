@@ -32,6 +32,7 @@ import {
   type JvmArtifactEnrichmentSummary,
 } from './model.js';
 import { createHash } from 'node:crypto';
+import { startMemoryTelemetry } from '../telemetry/memory.js';
 
 export interface StreamingJvmArtifactEnrichmentInput {
   lspRunId: string;
@@ -174,6 +175,13 @@ export async function streamJvmArtifacts(
   let writeChain = Promise.resolve();
   let completedClasses = 0;
   const discoveredCallTargets = new Set<string>();
+  let traversalTruncated = false;
+  const asmTelemetry = startMemoryTelemetry('asm-processing', {
+    artifacts: metadata.artifacts.length,
+    pendingArtifacts: metadata.artifacts.filter((value) => !completedArtifactIds.has(value.id)).length,
+    concurrency,
+  });
+  try {
   let worker = new AsmArtifactWorker(concurrency);
   let restartAvailable = true;
   let workerInfo: AsmWorkerInfo;
@@ -320,7 +328,6 @@ export async function streamJvmArtifacts(
     true,
     configuredMaximum === undefined,
   );
-  let traversalTruncated = false;
   if (configuredMaximum !== undefined) {
     const scheduled = new Set<string>();
     for (const [artifactId, names] of selectedByArtifact) {
@@ -353,6 +360,11 @@ export async function streamJvmArtifacts(
     await writeChain;
   }
   await worker.close();
+  asmTelemetry.end();
+  } catch (error) {
+    asmTelemetry.end('failed');
+    throw error;
+  }
   try {
     run.truncated = traversalTruncated;
     run.status = run.errorCount > 0 || run.truncated ? 'partial' : 'complete';

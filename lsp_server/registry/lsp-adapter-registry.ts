@@ -8,6 +8,7 @@
 import * as path from 'path';
 import { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
+import { KotlinLspAdapter } from '../adapters/kotlin/kotlin-lsp-adapter.js';
 import { SpringBootLanguageServerAdapter } from '../adapters/java/spring-boot-adapter.js';
 import { springToolsEnabled } from '../adapters/java/spring-tools-runtime.js';
 import {
@@ -24,49 +25,85 @@ import { TypeScriptAdapter } from '../adapters/typescript/typescript-adapter.js'
 import { CSharpAdapter } from '../adapters/csharp/csharp-adapter.js';
 import { CobolAdapter } from '../adapters/cobol/cobol-adapter.js';
 
+export interface JdtlsUriMapping {
+  sourcePath: string;
+  stagedPath: string;
+}
+
+export type LspAdapterFactory = () => ILspAdapter;
+
+/** Build source-root and exact-document mappings once per prepared shard. */
+export function buildJdtlsShardUriMappings(shard: PreparedJdtlsShard): JdtlsUriMapping[] {
+  return shard.projectModels.flatMap((model) => {
+    const allRoots = [...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort();
+    const rootIndexes = new Map(allRoots.map((sourcePath, index) => [sourcePath, index]));
+    return [
+      ...allRoots.map((sourcePath, index) => ({
+        sourcePath,
+        stagedPath: path.join(shard.workspacePath, 'projects', model.projectName, `source-${index}`),
+      })),
+      ...model.sourceMappings.map((mapping) => {
+        const rootIndex = rootIndexes.get(mapping.sourceRoot);
+        return {
+          sourcePath: mapping.sourcePath,
+          stagedPath: rootIndex === undefined
+            ? mapping.analysisPath
+            : path.join(
+              shard.workspacePath, 'projects', model.projectName, `source-${rootIndex}`,
+              path.relative(mapping.sourceRoot, mapping.analysisPath),
+            ),
+        };
+      }),
+    ];
+  });
+}
+
 export class LspAdapterRegistry {
   private adapters = new Map<string, ILspAdapter>();
+  private adapterFactories = new Map<string, LspAdapterFactory>();
   private activeAdapters = new Map<string, ILspAdapter>();
+  private startingAdapters = new Map<string, Promise<ILspAdapter | null>>();
   private javaCompanions = new Map<ILspAdapter, ILspAdapter>();
   private javaLayouts = new Map<string, JavaBuildRoot[]>();
   private preparedBazelRoots = new Set<string>();
   private bazelPreparations = new Map<string, Promise<BazelPreparationReport>>();
 
-  private static EXTENSION_MAP: Record<string, string> = {
-    '.java': 'java',
-    '.py': 'python',
-    '.pyi': 'python',
-    '.c': 'cpp',
-    '.cpp': 'cpp',
-    '.cc': 'cpp',
-    '.cxx': 'cpp',
-    '.h': 'cpp',
-    '.hpp': 'cpp',
-    '.rs': 'rust',
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-    '.js': 'typescript',
-    '.jsx': 'typescript',
-    '.mjs': 'typescript',
-    '.cjs': 'typescript',
-    '.cs': 'csharp',
-    '.cbl': 'cobol',
-    '.cob': 'cobol',
-    '.cpy': 'cobol',
-  };
+  private extensionMap: Record<string, string> = {};
 
-  constructor() {
-    this.registerAdapter(new JavaJdtlsAdapter());
-    this.registerAdapter(new PyrightAdapter());
-    this.registerAdapter(new ClangdAdapter());
-    this.registerAdapter(new RustAnalyzerAdapter());
-    this.registerAdapter(new TypeScriptAdapter());
-    this.registerAdapter(new CSharpAdapter());
-    this.registerAdapter(new CobolAdapter());
+  constructor(factories: LspAdapterFactory[] = defaultAdapterFactories()) {
+    for (const factory of factories) this.registerAdapterFactory(factory);
   }
 
+  /** Register one routing prototype. Use registerAdapterFactory for multi-workspace sessions. */
   public registerAdapter(adapter: ILspAdapter): void {
-    this.adapters.set(adapter.language.toLowerCase(), adapter);
+    this.registerAdapterMetadata(adapter);
+  }
+
+  /** Register the sole construction boundary for independently owned LSP sessions. */
+  public registerAdapterFactory(factory: LspAdapterFactory): void {
+    const prototype = factory();
+    const language = prototype.language.toLowerCase();
+    this.registerAdapterMetadata(prototype);
+    this.adapterFactories.set(language, factory);
+  }
+
+  private registerAdapterMetadata(adapter: ILspAdapter): void {
+    const language = adapter.language.toLowerCase();
+    if (this.adapters.has(language)) {
+      throw new Error(`LSP adapter is already registered for ${language}`);
+    }
+    this.adapters.set(language, adapter);
+    for (const rawExtension of adapter.fileExtensions ?? []) {
+      const extension = rawExtension.toLowerCase();
+      if (!/^\.[a-z0-9][a-z0-9.+-]*$/.test(extension)) {
+        throw new Error(`Invalid file extension for ${adapter.id}: ${rawExtension}`);
+      }
+      const current = this.extensionMap[extension];
+      if (current && current !== language) {
+        throw new Error(`File extension ${extension} is already routed to ${current}`);
+      }
+      this.extensionMap[extension] = language;
+    }
   }
 
   public getAdapter(language: string): ILspAdapter | undefined {
@@ -75,7 +112,19 @@ export class LspAdapterRegistry {
 
   public getLanguageForFile(filePath: string): string | null {
     const ext = path.extname(filePath).toLowerCase();
-    return LspAdapterRegistry.EXTENSION_MAP[ext] || null;
+    return this.extensionMap[ext] || null;
+  }
+
+  public getSupportedFileExtensions(): string[] {
+    return Object.keys(this.extensionMap).sort();
+  }
+
+  public getAdapterCatalog(): Array<{ id: string; language: string; fileExtensions: string[] }> {
+    return [...this.adapters.values()].map((adapter) => ({
+      id: adapter.id,
+      language: adapter.language.toLowerCase(),
+      fileExtensions: [...(adapter.fileExtensions ?? [])].map((value) => value.toLowerCase()).sort(),
+    })).sort((left, right) => left.language.localeCompare(right.language));
   }
 
   public async getOrStartAdapter(language: string, workspacePath: string): Promise<ILspAdapter | null> {
@@ -84,23 +133,38 @@ export class LspAdapterRegistry {
     if (this.activeAdapters.has(sessionKey)) {
       return this.activeAdapters.get(sessionKey)!;
     }
+    const starting = this.startingAdapters.get(sessionKey);
+    if (starting) return starting;
+    const start = this.startGenericAdapter(langKey, workspacePath, sessionKey);
+    this.startingAdapters.set(sessionKey, start);
+    try { return await start; }
+    finally { this.startingAdapters.delete(sessionKey); }
+  }
 
-    const adapter = this.createAdapter(langKey);
-    if (!adapter) {
-      return null;
+  private async startGenericAdapter(
+    language: string,
+    workspacePath: string,
+    sessionKey: string,
+  ): Promise<ILspAdapter | null> {
+    const adapter = this.createAdapter(language);
+    if (!adapter) return null;
+    if ([...this.activeAdapters.values()].includes(adapter)) {
+      throw new Error(
+        `Adapter ${adapter.id} is an instance registration already owned by another session; `
+        + 'register an adapter factory for multi-workspace use',
+      );
     }
-
     try {
-      const available = await adapter.isAvailable();
-      if (!available) {
-        return null;
-      }
-
+      if (!(await adapter.isAvailable())) return null;
       await adapter.start(workspacePath);
       this.activeAdapters.set(sessionKey, adapter);
       return adapter;
-    } catch (err: any) {
-      console.warn(`[LSP Registry] Failed to start adapter for ${language}:`, err.message || err);
+    } catch (error) {
+      try { await adapter.shutdown(); } catch { /* partial startup */ }
+      console.warn(
+        `[LSP Registry] Failed to start adapter for ${language}:`,
+        error instanceof Error ? error.message : error,
+      );
       return null;
     }
   }
@@ -153,6 +217,18 @@ export class LspAdapterRegistry {
     const sessionKey = `java:${root.id}:${root.workspacePath}`;
     const active = this.activeAdapters.get(sessionKey);
     if (active) return active;
+    const starting = this.startingAdapters.get(sessionKey);
+    if (starting) return starting;
+    const start = this.startJavaBuildRoot(root, sessionKey);
+    this.startingAdapters.set(sessionKey, start);
+    try { return await start; }
+    finally { this.startingAdapters.delete(sessionKey); }
+  }
+
+  private async startJavaBuildRoot(
+    root: JavaBuildRoot,
+    sessionKey: string,
+  ): Promise<ILspAdapter | null> {
     const adapter = new JavaJdtlsAdapter({
       buildRootId: root.id,
       buildSystems: root.systems,
@@ -189,6 +265,18 @@ export class LspAdapterRegistry {
     const sessionKey = `java-shard:${shard.id}:${shard.workspacePath}`;
     const active = this.activeAdapters.get(sessionKey);
     if (active) return active;
+    const starting = this.startingAdapters.get(sessionKey);
+    if (starting) return starting;
+    const start = this.startJavaShard(shard, sessionKey);
+    this.startingAdapters.set(sessionKey, start);
+    try { return await start; }
+    finally { this.startingAdapters.delete(sessionKey); }
+  }
+
+  private async startJavaShard(
+    shard: PreparedJdtlsShard,
+    sessionKey: string,
+  ): Promise<ILspAdapter | null> {
     const usesNativeImport = (root: JavaBuildRoot): boolean => {
       if (root.systems.includes('bazel') || root.systems.length === 0) return false;
       const workspace = JdtlsWorkspace.inspect(root.workspacePath, {
@@ -210,27 +298,8 @@ export class LspAdapterRegistry {
           path.join(shard.workspacePath, 'projects', model.projectName)),
         ...shard.roots.filter(usesNativeImport).map((root) => root.workspacePath),
       ],
-      uriMappings: shard.projectModels.flatMap((model) =>
-        [
-          ...[...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort()
-            .map((sourcePath, index) => ({
-            sourcePath,
-            stagedPath: path.join(shard.workspacePath, 'projects', model.projectName, `source-${index}`),
-            })),
-          ...model.sourceMappings.map((mapping) => {
-            const allRoots = [...new Set([...model.sourcePaths, ...model.generatedSourcePaths])].sort();
-            const rootIndex = allRoots.indexOf(mapping.sourceRoot);
-            return {
-              sourcePath: mapping.sourcePath,
-              stagedPath: rootIndex < 0
-                ? mapping.analysisPath
-                : path.join(
-                  shard.workspacePath, 'projects', model.projectName, `source-${rootIndex}`,
-                  path.relative(mapping.sourceRoot, mapping.analysisPath),
-                ),
-            };
-          }),
-        ]),
+      uriMappings: buildJdtlsShardUriMappings(shard),
+      sourceFileCount: shard.sourceFileCount,
       buildSystems: nativeBuildSystems,
       bazelModelPrepared: true,
     });
@@ -261,16 +330,7 @@ export class LspAdapterRegistry {
   }
 
   private createAdapter(language: string): ILspAdapter | undefined {
-    switch (language) {
-      case 'java': return new JavaJdtlsAdapter();
-      case 'python': return new PyrightAdapter();
-      case 'cpp': return new ClangdAdapter();
-      case 'rust': return new RustAnalyzerAdapter();
-      case 'typescript': return new TypeScriptAdapter();
-      case 'csharp': return new CSharpAdapter();
-      case 'cobol': return new CobolAdapter();
-      default: return this.getAdapter(language);
-    }
+    return this.adapterFactories.get(language)?.() ?? this.getAdapter(language);
   }
 
   public async shutdownAdapter(adapter: ILspAdapter): Promise<void> {
@@ -291,7 +351,8 @@ export class LspAdapterRegistry {
   }
 
   public async shutdownAll(): Promise<void> {
-    for (const adapter of this.activeAdapters.values()) {
+    await Promise.allSettled([...this.startingAdapters.values()]);
+    for (const adapter of new Set(this.activeAdapters.values())) {
       try {
         await adapter.shutdown();
       } catch {
@@ -299,11 +360,25 @@ export class LspAdapterRegistry {
       }
     }
     this.activeAdapters.clear();
+    this.startingAdapters.clear();
     this.javaCompanions.clear();
     this.javaLayouts.clear();
     this.preparedBazelRoots.clear();
     this.bazelPreparations.clear();
   }
+}
+
+function defaultAdapterFactories(): LspAdapterFactory[] {
+  return [
+    () => new JavaJdtlsAdapter(),
+    () => new KotlinLspAdapter(),
+    () => new PyrightAdapter(),
+    () => new ClangdAdapter(),
+    () => new RustAnalyzerAdapter(),
+    () => new TypeScriptAdapter(),
+    () => new CSharpAdapter(),
+    () => new CobolAdapter(),
+  ];
 }
 
 /**
@@ -316,7 +391,11 @@ async function waitForImportedJavaProjects(
   projectModels: PreparedJdtlsShard['projectModels'],
   shardId: string,
 ): Promise<void> {
-  const deadline = Date.now() + 60_000;
+  const configuredTimeout = Number(process.env.GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS ?? 180_000);
+  if (!Number.isFinite(configuredTimeout) || configuredTimeout < 1) {
+    throw new Error('GITNEXUS_JDT_CLASSPATH_READY_TIMEOUT_MS must be a positive number');
+  }
+  const deadline = Date.now() + configuredTimeout;
   const pending = new Map(projectModels
     .filter((model) => model.representativeDocumentPath)
     .map((model) => [model.buildRootId, model]));
@@ -339,6 +418,8 @@ async function waitForImportedJavaProjects(
     await new Promise((resolve) => setTimeout(resolve, 500));
   } while (Date.now() < deadline);
   if (pending.size > 0) {
-    console.warn(`[${shardId}] JDT classpath readiness incomplete for: ${[...pending.keys()].join(', ')}`);
+    throw new Error(
+      `[${shardId}] JDT classpath readiness timed out for: ${[...pending.keys()].join(', ')}`,
+    );
   }
 }

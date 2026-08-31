@@ -2,7 +2,6 @@ import type { NormalizedArtifactDescriptor, ArtifactClasspathProviderAttempt } f
 import type { JvmArtifactEnrichmentSummary } from '../artifact/model.js';
 import type { LspObservationBatch } from '../ingest/batch.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
-import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
 import type { BazelBuildMode, BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
 import type { BazelScopeResolution } from '../../../lsp_server/adapters/java/bazel-project-model.js';
@@ -12,6 +11,7 @@ import type {
 } from '../../../lsp_server/adapters/java/bazel-source-inventory.js';
 import type { BazelConfiguredTargetEvidence } from '../bazel/model.js';
 import type { BazelBuildGraphBatch } from '../bazel/model.js';
+import type { RepositoryInventoryBatch } from '../repository/model.js';
 
 export interface LspKnowledgeGraphBuildOptions {
   workspace: string;
@@ -23,7 +23,6 @@ export interface LspKnowledgeGraphBuildOptions {
   artifactManifestPaths: string[];
   checkpointDirectory: string;
   resume: boolean;
-  crawlPlanner: CrawlPlannerMode;
   crawlProfile: CrawlProfile;
   bazelBuildMode: BazelBuildMode;
   bazelTargetQuery?: string;
@@ -41,6 +40,7 @@ export interface LspKnowledgeGraphBuildResult {
   callNormalizationBatch: DerivedCallNormalizationBatch;
   output: string;
   bazelBuildGraph: BazelBuildGraphBatch;
+  repositoryInventory: RepositoryInventoryBatch;
 }
 
 export interface JavaBuildRootPreparation {

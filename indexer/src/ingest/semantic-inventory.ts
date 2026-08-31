@@ -24,10 +24,10 @@ export interface SemanticInventoryComparison {
 }
 
 /**
- * Build a planner-independent inventory of discovered semantic facts. Raw
+ * Build a request-schedule-independent inventory of discovered semantic facts. Raw
  * request-specific definition/declaration/hover observations are deliberately
- * excluded: facts-first validation asks whether they discovered any additional
- * entity or relation, not whether both planners issued identical RPCs.
+ * excluded: comparisons ask whether runs discovered any additional entity or
+ * relation, not whether both runs issued identical RPCs.
  */
 export function buildCrawlSemanticInventory(batch: LspObservationBatch): CrawlSemanticInventory {
   const symbolKeys = new Map(batch.symbols.map((symbol) => [symbol.id, symbolKey(symbol)]));

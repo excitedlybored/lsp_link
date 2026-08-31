@@ -9,6 +9,7 @@ import { BaseStdioLspAdapter } from '../base-stdio-adapter.js';
 export class CSharpAdapter extends BaseStdioLspAdapter {
   public readonly id = 'csharp-ls';
   public readonly language = 'csharp';
+  public readonly fileExtensions = ['.cs'] as const;
   public readonly maxConcurrentRequests = 1;
 
   public async isAvailable(): Promise<boolean> {

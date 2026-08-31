@@ -11,8 +11,15 @@ import {
 } from './model.js';
 import type { JvmArtifactStreamingSink } from './streaming-enrichment.js';
 import { JvmArtifactRepository } from './repository.js';
+import {
+  BulkCsvFiles,
+  closeQueryResults,
+  copyNodeCsvFragments,
+  copyRelationCsvFragments,
+  updateArrayProperties,
+} from './bulk-copy-support.js';
+import { withMemoryTelemetry } from '../telemetry/memory.js';
 
-const NULL = '__GITNEXUS_NULL_7d35b31b__';
 const COPY_ROWS_PER_FILE = 500;
 const COPY_FRAGMENTS_PER_ROTATION = positiveInteger(
   process.env.GITNEXUS_LBUG_ROTATE_BATCHES, 20, 'GITNEXUS_LBUG_ROTATE_BATCHES',
@@ -179,33 +186,39 @@ export async function bulkCopyArtifactGraph(
   };
   fs.rmSync(workDirectory, { recursive: true, force: true });
   fs.mkdirSync(workDirectory, { recursive: true });
-  const csv = new CsvFiles(workDirectory);
+  const csv = new BulkCsvFiles(workDirectory, COPY_ROWS_PER_FILE);
   const resolutions = new Map<string, JvmClassResolution>();
   const references = new Map<string, string>();
   try {
-    for (const file of spoolFiles) {
-      for await (const batch of readBatches(file)) {
-        writeFacts(csv, batch);
-        for (const value of batch.resolutions) {
-          const current = resolutions.get(value.binaryName);
-          if (!current || value.classpathOrdinal < current.classpathOrdinal) resolutions.set(value.binaryName, value);
+    await withMemoryTelemetry('csv-generation', async () => {
+      for (const file of spoolFiles) {
+        for await (const batch of readBatches(file)) {
+          writeFacts(csv, batch);
+          for (const value of batch.resolutions) {
+            const current = resolutions.get(value.binaryName);
+            if (!current || value.classpathOrdinal < current.classpathOrdinal) resolutions.set(value.binaryName, value);
+          }
+          for (const value of batch.binaryReferences) references.set(value.binaryName, value.stageId);
         }
-        for (const value of batch.binaryReferences) references.set(value.binaryName, value.stageId);
       }
-    }
-    for (const value of resolutions.values()) csv.row('JvmClassResolution', [
-      value.binaryName, value.stageId, value.classId, value.artifactId, value.classpathOrdinal,
-    ]);
-    for (const [binaryName, stageId] of references) csv.row('JvmBinaryReference', [binaryName, stageId]);
+      for (const value of resolutions.values()) csv.row('JvmClassResolution', [
+        value.binaryName, value.stageId, value.classId, value.artifactId, value.classpathOrdinal,
+      ]);
+      for (const [binaryName, stageId] of references) csv.row('JvmBinaryReference', [binaryName, stageId]);
+      csv.close();
+    }, { graph: 'jvm', spoolFiles: spoolFiles.length });
   } finally {
     csv.close();
   }
 
-  for (const table of NODE_TABLES) for (const file of csv.paths(table.key)) {
-    trace(`node ${table.name} ${path.basename(file)}`);
-    await copyIfPresent(activeConnection, table.name, file, table.columns);
-    await checkpointCopiedFragments();
-  }
+  await withMemoryTelemetry('node-copying', async () => {
+    for (const table of NODE_TABLES) {
+      trace(`node ${table.name}`);
+      await copyNodeCsvFragments(
+        () => activeConnection, csv, table.key, table.name, table.columns, checkpointCopiedFragments,
+      );
+    }
+  }, { graph: 'jvm' });
 
   let repository = new JvmArtifactRepository(activeConnection);
   const metadata = emptyJvmArtifactBatch();
@@ -217,27 +230,29 @@ export async function bulkCopyArtifactGraph(
   // Relationship COPY resolves endpoint primary keys, so the small run and
   // artifact metadata nodes must exist before containment edges are loaded.
   await repository.mergeBatch(metadata);
-  for (const relation of RELATION_TABLES) for (const file of csv.paths(relation.key)) {
-    trace(`relationship ${relation.table} ${relation.from}->${relation.to} ${path.basename(file)}`);
-    await copyRelationIfPresent(
-      activeConnection, relation.table, file, relation.columns, relation.from, relation.to,
-    );
-    await checkpointCopiedFragments();
-  }
+  await withMemoryTelemetry('relationship-copying', async () => {
+    for (const relation of RELATION_TABLES) {
+      trace(`relationship ${relation.table} ${relation.from}->${relation.to}`);
+      await copyRelationCsvFragments(
+        () => activeConnection, csv, relation.key, relation.table, relation.columns, relation.from, relation.to,
+        checkpointCopiedFragments,
+      );
+    }
+  }, { graph: 'jvm' });
 
   // Array properties cannot safely encode arbitrary comma-containing values in
   // Ladybug CSV lists. Apply them after scalar COPY in bounded batches.
   for (const file of spoolFiles) for await (const batch of readBatches(file)) {
     trace(`array properties ${path.basename(file)}`);
-    await updateArrays(activeConnection, 'JvmClass', batch.classes.filter((value) =>
+    await updateArrayProperties(activeConnection, 'JvmClass', batch.classes.filter((value) =>
       value.interfaces.length > 0 || value.seedUris.length > 0 || value.annotations.length > 0,
     ).map((value) => ({
       id: value.id, interfaces: value.interfaces, seedUris: value.seedUris, annotations: value.annotations,
     })), ['interfaces', 'seedUris', 'annotations']);
-    await updateArrays(activeConnection, 'JvmMethod', batch.methods.filter((value) => value.annotations.length > 0).map((value) => ({
+    await updateArrayProperties(activeConnection, 'JvmMethod', batch.methods.filter((value) => value.annotations.length > 0).map((value) => ({
       id: value.id, annotations: value.annotations,
     })), ['annotations']);
-    await updateArrays(activeConnection, 'JvmField', batch.fields.filter((value) => value.annotations.length > 0).map((value) => ({
+    await updateArrayProperties(activeConnection, 'JvmField', batch.fields.filter((value) => value.annotations.length > 0).map((value) => ({
       id: value.id, annotations: value.annotations,
     })), ['annotations']);
   }
@@ -271,55 +286,27 @@ const RELATION_TABLES = [
     .map(([from, to]) => ({ key: `JvmBinaryReferenceRelation-${to}`, table: 'JvmBinaryReferenceRelation', from, to, columns: ['from','to','id','kind','stageId','ordinal'] })),
 ] as const;
 
-function writeFacts(csv: CsvFiles, batch: JvmArtifactBatch): void {
-  for (const v of batch.classes) csv.row('JvmClass', [v.id,v.stageId,v.artifactId,v.binaryName,v.packageName,v.simpleName,v.kind,v.access,v.superName,v.sourceEntry,v.isSeed,v.wasDisassembled,v.codeOrigin]);
-  for (const v of batch.methods) csv.row('JvmMethod', [v.id,v.stageId,v.classId,v.owner,v.name,v.descriptor,v.declaration,v.access,v.hasCode,v.isExternalPlaceholder,v.codeOrigin]);
-  for (const v of batch.fields) csv.row('JvmField', [v.id,v.stageId,v.classId,v.owner,v.name,v.descriptor,v.declaration,v.access,v.codeOrigin]);
-  for (const v of batch.callSites) csv.row('JvmCallSite', [v.id,v.stageId,v.callerMethodId,v.bytecodeOffset,v.opcode,v.targetOwner,v.targetName,v.targetDescriptor,v.status,v.codeOrigin]);
-  for (const v of batch.relations) csv.row(`JvmRelation-${v.sourceKind}-${v.targetKind}`, [v.sourceId,v.targetId,v.id,v.kind,v.stageId,v.status,v.ordinal]);
-  for (const v of batch.binaryReferenceRelations) csv.row(`JvmBinaryReferenceRelation-${v.targetKind}`, [v.binaryName,v.targetId,v.id,v.kind,v.stageId,v.ordinal]);
-}
-
-class CsvFiles {
-  private readonly descriptors = new Map<string, number>();
-  private readonly counts = new Map<string, number>();
-  constructor(private readonly directory: string) {}
-  paths(key: string): string[] {
-    const count = this.counts.get(key) ?? 0;
-    return Array.from({ length: Math.ceil(count / COPY_ROWS_PER_FILE) }, (_, index) => this.path(key, index));
+function writeFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
+  for (const v of batch.classes) csv.object('JvmClass', v as unknown as Record<string, unknown>, NODE_TABLES[0].columns);
+  for (const v of batch.methods) csv.object('JvmMethod', v as unknown as Record<string, unknown>, NODE_TABLES[1].columns);
+  for (const v of batch.fields) csv.object('JvmField', v as unknown as Record<string, unknown>, NODE_TABLES[2].columns);
+  for (const v of batch.callSites) csv.object('JvmCallSite', v as unknown as Record<string, unknown>, NODE_TABLES[3].columns);
+  for (const v of batch.relations) {
+    const key = `JvmRelation-${v.sourceKind}-${v.targetKind}`;
+    const spec = RELATION_TABLES.find((value) => value.key === key)!;
+    csv.object(key, {
+      from: v.sourceId, to: v.targetId, id: v.id, kind: v.kind,
+      stageId: v.stageId, status: v.status, ordinal: v.ordinal ?? null,
+    }, spec.columns);
   }
-  row(key: string, values: unknown[]): void {
-    const count = this.counts.get(key) ?? 0;
-    const index = Math.floor(count / COPY_ROWS_PER_FILE);
-    const descriptorKey = `${key}\0${index}`;
-    let descriptor = this.descriptors.get(descriptorKey);
-    if (descriptor === undefined) {
-      descriptor = fs.openSync(this.path(key, index), 'a');
-      this.descriptors.set(descriptorKey, descriptor);
-    }
-    fs.writeSync(descriptor, `${values.map(csvValue).join(',')}\n`);
-    this.counts.set(key, count + 1);
+  for (const v of batch.binaryReferenceRelations) {
+    const key = `JvmBinaryReferenceRelation-${v.targetKind}`;
+    const spec = RELATION_TABLES.find((value) => value.key === key)!;
+    csv.object(key, {
+      from: v.binaryName, to: v.targetId, id: v.id, kind: v.kind,
+      stageId: v.stageId, ordinal: v.ordinal,
+    }, spec.columns);
   }
-  close(): void { for (const descriptor of this.descriptors.values()) fs.closeSync(descriptor); this.descriptors.clear(); }
-  private path(key: string, index: number): string { return path.join(this.directory, `${key}.${index}.csv`); }
-}
-
-async function copyIfPresent(connection: LbugConnectionLike, table: string, file: string, columns: readonly string[]): Promise<void> {
-  if (!fs.existsSync(file) || fs.statSync(file).size === 0) return;
-  await query(connection, `COPY ${table}(${columns.join(',')}) FROM ${literal(file)} (AUTO_DETECT=false, PARALLEL=false, NULL_STRINGS=[${literal(NULL)}])`);
-}
-
-async function copyRelationIfPresent(connection: LbugConnectionLike, table: string, file: string, columns: readonly string[], from: string, to: string): Promise<void> {
-  if (!fs.existsSync(file) || fs.statSync(file).size === 0) return;
-  // Relationship endpoints are the first two input columns but are not named
-  // relationship properties in COPY's optional column list.
-  await query(connection, `COPY ${table}(${columns.slice(2).join(',')}) FROM ${literal(file)} (AUTO_DETECT=false, PARALLEL=false, NULL_STRINGS=[${literal(NULL)}], FROM=${literal(from)}, TO=${literal(to)})`);
-}
-
-async function updateArrays(connection: LbugConnectionLike, table: string, rows: object[], keys: string[]): Promise<void> {
-  if (rows.length === 0) return;
-  const statement = await connection.prepare(`UNWIND $rows AS row MATCH (n:${table} {id: row.id}) SET ${keys.map((key) => `n.${key}=row.${key}`).join(',')}`);
-  await close(await connection.execute(statement, { rows }));
 }
 
 async function createResolutionLinks(connection: LbugConnectionLike, values: Iterable<JvmClassResolution>): Promise<void> {
@@ -335,17 +322,10 @@ async function* readBatches(file: string): AsyncIterable<JvmArtifactBatch> {
   for await (const line of lines) if (line) yield JSON.parse(line) as JvmArtifactBatch;
 }
 
-function csvValue(value: unknown): string {
-  if (value === undefined || value === null) return NULL;
-  const text = typeof value === 'boolean' ? String(value) : String(value);
-  return `"${text.replaceAll('"', '""')}"`;
-}
-function literal(value: string): string { return `'${value.replaceAll("'", "''")}'`; }
 function safeName(value: string): string { return Buffer.from(value).toString('base64url'); }
 function atomicJson(file: string, value: unknown): void { const temporary = `${file}.tmp`; fs.writeFileSync(temporary, JSON.stringify(value)); fs.renameSync(temporary, file); }
 function mergeBatch(target: JvmArtifactBatch, source: JvmArtifactBatch): void { for (const key of Object.keys(target) as Array<keyof JvmArtifactBatch>) (target[key] as unknown[]).push(...source[key] as unknown[]); }
-async function query(connection: LbugConnectionLike, text: string): Promise<void> { await close(await connection.query(text)); }
-async function close(result: LbugQueryResultLike | LbugQueryResultLike[]): Promise<void> { for (const value of Array.isArray(result) ? result : [result]) await value.close?.(); }
+async function close(result: LbugQueryResultLike | LbugQueryResultLike[]): Promise<void> { await closeQueryResults(result); }
 function positiveInteger(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined) return fallback;
   const parsed = Number(value);

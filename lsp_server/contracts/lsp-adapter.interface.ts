@@ -22,6 +22,9 @@ export interface ILspAdapter {
   /** Target language (e.g. 'java', 'go', 'rust', 'typescript') */
   readonly language: string;
 
+  /** File extensions routed to this adapter, including the leading dot. */
+  readonly fileExtensions?: readonly string[];
+
   /**
    * Max in-flight RPCs against this server.
    * Compilers that serialize internally (JDT.LS, OmniSharp, clangd) should use 1.
@@ -51,9 +54,10 @@ export interface ILspAdapter {
   /** Canonical file URI used in textDocument request parameters. */
   documentUri(filePath: string): string;
 
-  /** Buffered server notifications, removed when read. */
+  /** Bounded subscribed server notifications, removed when read. */
   takeNotifications<T>(method: string): T[];
 
+  /** Send didOpen; rejects when the document cannot be read or delivered. */
   openDocument(filePath: string): Promise<void>;
 
   /** didClose so the compiler working set stays bounded. */

@@ -7,6 +7,10 @@ import type { PipelineCheckpointStore } from '../pipeline/checkpoints.js';
 import type { JvmArtifactEnrichmentSummary } from './model.js';
 import { emptyBazelBuildGraphBatch, type BazelBuildGraphBatch } from '../bazel/model.js';
 import {
+  emptyRepositoryInventoryBatch,
+  type RepositoryInventoryBatch,
+} from '../repository/model.js';
+import {
   ArtifactBulkSpoolSink,
   bulkCopyArtifactGraph,
   completedArtifactSpools,
@@ -15,6 +19,8 @@ import {
   streamJvmArtifacts,
   type StreamingJvmArtifactEnrichmentInput,
 } from './streaming-enrichment.js';
+import { bulkCopyBaseGraph } from './base-graph-bulk-copy.js';
+import { withMemoryTelemetry } from '../telemetry/memory.js';
 
 interface ArtifactPersistenceManifest {
   formatVersion: 2;
@@ -36,6 +42,7 @@ export async function persistStreamingKnowledgeGraph(
   ladybug: LadybugModuleLike,
   resume: boolean,
   bazelBuildGraphBatch: BazelBuildGraphBatch = emptyBazelBuildGraphBatch(),
+  repositoryInventoryBatch: RepositoryInventoryBatch = emptyRepositoryInventoryBatch(),
 ): Promise<{ output: string; artifactEnrichment: JvmArtifactEnrichmentSummary }> {
   const output = path.resolve(requestedOutputPath);
   if (fs.existsSync(output)) throw new Error(`Refusing to overwrite existing LSP database: ${output}`);
@@ -61,12 +68,15 @@ export async function persistStreamingKnowledgeGraph(
     const initial = openLspLadybugDatabase(stagingPath, ladybug);
     try {
       await initial.repository.initializeSchema();
-      await initial.repository.writeBatch(lspBatch);
       await initial.callNormalizationRepository.initializeSchema();
-      await initial.callNormalizationRepository.writeBatch(callNormalizationBatch);
       await initial.bazelBuildGraphRepository.initializeSchema();
-      await initial.bazelBuildGraphRepository.writeBatch(bazelBuildGraphBatch);
+      await initial.repositoryInventoryRepository.initializeSchema();
       await initial.artifactRepository.initializeSchema();
+      console.log('[stage:base-graph-bulk-copy] loading LSP, derived, Bazel, and repository facts');
+      await withMemoryTelemetry('base-graph-insertion', () => bulkCopyBaseGraph(
+          initial.repository.connectionForBulkCopy(), `${stableBase}.bulk-work`,
+          lspBatch, callNormalizationBatch, bazelBuildGraphBatch, repositoryInventoryBatch,
+        ), { graph: 'base' });
     } finally {
       await initial.close();
     }
@@ -118,8 +128,10 @@ export async function persistStreamingKnowledgeGraph(
   }
   await sink.close();
   if (fs.existsSync(output)) throw new Error(`Refusing to overwrite existing LSP database: ${output}`);
-  fs.renameSync(stagingPath, output);
-  manifest.published = true;
-  checkpointStore.save(stage, artifactFingerprint, manifest);
+  await withMemoryTelemetry('final-publication', async () => {
+    fs.renameSync(stagingPath, output);
+    manifest!.published = true;
+    checkpointStore.save(stage, artifactFingerprint, manifest!);
+  }, { output });
   return { output, artifactEnrichment };
 }

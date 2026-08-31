@@ -25,7 +25,6 @@
   },
   "crawl": {
     "profile": "core",
-    "planner": "facts-first",
     "concurrency": 4,
     "resume": true
   },

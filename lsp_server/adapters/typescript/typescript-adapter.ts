@@ -9,6 +9,7 @@ import { BaseStdioLspAdapter } from '../base-stdio-adapter.js';
 export class TypeScriptAdapter extends BaseStdioLspAdapter {
   public readonly id = 'typescript-language-server';
   public readonly language = 'typescript';
+  public readonly fileExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'] as const;
 
   public async isAvailable(): Promise<boolean> {
     const bin = BaseStdioLspAdapter.findBinary('typescript-language-server');

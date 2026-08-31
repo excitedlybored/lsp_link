@@ -17,6 +17,7 @@ import { openLspLadybugDatabase } from '../dist/lbug/repository.js';
 import { streamJvmArtifacts } from '../dist/artifact/streaming-enrichment.js';
 import { ArtifactBulkSpoolSink, bulkCopyArtifactGraph } from '../dist/artifact/bulk-copy.js';
 import { persistStreamingKnowledgeGraph } from '../dist/artifact/streaming-persistence.js';
+import { bulkCopyBaseGraph } from '../dist/artifact/base-graph-bulk-copy.js';
 import { PipelineCheckpointStore } from '../dist/pipeline/checkpoints.js';
 
 test('negotiates one persistent ASM worker without javap', async () => {
@@ -297,6 +298,98 @@ test('rolls back an incomplete spool attempt before replay', async (t) => {
     'failed-attempt batches are truncated before replay');
 });
 
+test('bulk-copies populated base graph families with endpoint and array parity', async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-base-bulk-copy-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const handle = openLspLadybugDatabase(path.join(fixture, 'base.lbug'), lbug);
+  await handle.repository.initializeSchema();
+  await handle.callNormalizationRepository.initializeSchema();
+  await handle.bazelBuildGraphRepository.initializeSchema();
+  await handle.repositoryInventoryRepository.initializeSchema();
+
+  const lspBatch = populatedBaseLspBatch();
+  const normalization = {
+    runs: [{
+      id: 'normalize:run', lspRunId: 'run:base', status: 'complete', algorithmVersion: 'test-v1',
+      startedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:00:01.000Z',
+      observationCount: 0, invocationCount: 1, normalizedObservationCount: 0,
+      ambiguousObservationCount: 0, errorCount: 0,
+    }],
+    invocations: [{
+      id: 'invocation:one', stageId: 'normalize:run', runId: 'run:base', documentId: 'document:base',
+      callerSymbolId: 'symbol:base', callerStableKey: 'caller', targetFamilyId: 'family:target',
+      targetFamilyStableKey: 'target', startLine: 1, startCharacter: 2, endLine: 1,
+      endCharacter: 8, observationCount: 1, directions: ['outgoing'],
+      capabilities: ['callHierarchy/outgoingCalls'], stableKey: 'invocation', status: 'unresolved',
+      confidence: 0.5, algorithmVersion: 'test-v1',
+    }],
+    relations: [{
+      id: 'derived:has', sourceKind: 'DerivedCallNormalizationRun', sourceId: 'normalize:run',
+      targetKind: 'LspLogicalInvocation', targetId: 'invocation:one',
+      kind: 'HAS_LOGICAL_INVOCATION', stageId: 'normalize:run', confidence: 1, ordinal: 0,
+    }],
+  };
+  const bazel = {
+    runs: [{
+      id: 'bazel:run', buildRootId: 'root:base', workspacePath: fixture, status: 'complete',
+      targetCount: 1, sourceCount: 1, artifactCount: 1, relationCount: 3,
+      resolvedTargetCount: 1, excludedTargetCount: 0, excludedTargetsJson: '[]', scopeWarningsJson: '[]',
+    }],
+    targets: [{ id: 'bazel:target', graphId: 'bazel:run', buildRootId: 'root:base', label: '//:base', selected: true, codeOrigin: 'repository' }],
+    sources: [{ id: 'bazel:source', graphId: 'bazel:run', path: '/workspace/Base.kt', isGenerated: false, codeOrigin: 'repository' }],
+    artifacts: [{ id: 'bazel:artifact', graphId: 'bazel:run', path: '/workspace/base.jar', codeOrigin: 'first_party_artifact' }],
+    relations: [
+      { id: 'bazel:r1', graphId: 'bazel:run', sourceKind: 'BazelBuildGraphRun', sourceId: 'bazel:run', targetKind: 'BazelTarget', targetId: 'bazel:target', kind: 'HAS_TARGET', ordinal: 0 },
+      { id: 'bazel:r2', graphId: 'bazel:run', sourceKind: 'BazelTarget', sourceId: 'bazel:target', targetKind: 'BazelSource', targetId: 'bazel:source', kind: 'OWNS_SOURCE', ordinal: 0 },
+      { id: 'bazel:r3', graphId: 'bazel:run', sourceKind: 'BazelTarget', sourceId: 'bazel:target', targetKind: 'BazelArtifact', targetId: 'bazel:artifact', kind: 'RUNTIME_ARTIFACT', ordinal: 0 },
+    ],
+  };
+  const inventory = {
+    runs: [{ id: 'inventory:run', workspacePath: fixture, status: 'complete', documentCount: 1, declarationCount: 1 }],
+    providers: [{
+      id: 'provider:run', runId: 'inventory:run', providerId: 'kotlin-source', providerVersion: '1',
+      authority: 'structural_lexical', languages: ['kotlin'], capabilities: ['declarations'],
+      includeGlobs: ['**/*.kt'], status: 'complete', discoveredCount: 1, indexedCount: 1,
+      skippedCount: 0, errorCount: 0, errorsJson: '[]',
+    }],
+    documents: [{
+      id: 'repository:document', runId: 'inventory:run', path: '/workspace/Base.kt', relativePath: 'Base.kt',
+      languageId: 'kotlin', kind: 'source', contentHash: 'hash', byteSize: 12, lineCount: 1,
+      codeOrigin: 'repository', providerId: 'kotlin-source', providerVersion: '1', authority: 'structural_lexical',
+    }],
+    declarations: [{
+      id: 'repository:declaration', runId: 'inventory:run', documentId: 'repository:document',
+      kind: 'class', name: 'Base', startLine: 0, startCharacter: 0, endLine: 0, endCharacter: 10,
+      providerId: 'kotlin-source', providerVersion: '1', authority: 'structural_lexical', codeOrigin: 'repository',
+    }],
+  };
+  await bulkCopyBaseGraph(
+    handle.repository.connectionForBulkCopy(), path.join(fixture, 'copy-work'),
+    lspBatch, normalization, bazel, inventory,
+  );
+  const connection = handle.repository.connectionForBulkCopy();
+  const counts = await connection.query(
+    'MATCH (document:LspDocument)-[defines:LspRelation]->(symbol:LspClassSymbol) '
+    + 'MATCH (target:BazelTarget)-[owns:BazelRelation]->(source:BazelSource) '
+    + 'MATCH (repo:RepositoryDocument)-[declares:RepositoryInventoryRelation]->(declaration:RepositoryDeclaration) '
+    + 'MATCH (normalization:DerivedCallNormalizationRun)-[has:DerivedCallRelation]->(invocation:LspLogicalInvocation) '
+    + 'RETURN count(DISTINCT symbol) AS symbols, count(DISTINCT source) AS sources, '
+    + 'count(DISTINCT declaration) AS declarations, count(DISTINCT invocation) AS invocations, '
+    + 'symbol.tags AS symbolTags, invocation.directions AS directions, '
+    + 'invocation.capabilities AS capabilities',
+  );
+  const [row] = await counts.getAll();
+  await counts.close();
+  assert.deepEqual({
+    symbols: Number(row.symbols), sources: Number(row.sources),
+    declarations: Number(row.declarations), invocations: Number(row.invocations),
+  }, { symbols: 1, sources: 1, declarations: 1, invocations: 1 });
+  assert.deepEqual(row.symbolTags, [1]);
+  assert.deepEqual(row.directions, ['outgoing']);
+  assert.deepEqual(row.capabilities, ['callHierarchy/outgoingCalls']);
+  await handle.close();
+});
+
 test('resumes production bulk publication atomically with final run-count parity', async (t) => {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-asm-persistence-resume-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
@@ -305,7 +398,7 @@ test('resumes production bulk publication atomically with final run-count parity
   const jar = path.resolve(
     import.meta.dirname, '../../vendor/jdtls/1.57.0/plugins/org.objectweb.asm_9.9.1.jar',
   );
-  const lspBatch = emptyPersistedLspBatch();
+  const lspBatch = populatedBaseLspBatch();
   const enrichmentInput = {
     lspRunId: 'run:persistence-resume', cacheDirectory: fixture, lspBatch,
     fetchSources: false,
@@ -372,6 +465,17 @@ test('resumes production bulk publication atomically with final run-count parity
     methodCount: resumed.artifactEnrichment.run.methodCount,
     callSiteCount: resumed.artifactEnrichment.run.callSiteCount,
   });
+  const baseResult = await handle.artifactRepository.connectionForBulkCopy().query(
+    'MATCH (document:LspDocument)-[:LspRelation]->(symbol:LspClassSymbol) '
+    + 'RETURN count(document) AS documents, count(symbol) AS symbols',
+  );
+  const [baseCounts] = await baseResult.getAll();
+  await baseResult.close();
+  assert.deepEqual(
+    { documents: Number(baseCounts.documents), symbols: Number(baseCounts.symbols) },
+    { documents: 1, symbols: 1 },
+    'base graph is rebuilt cleanly after an interrupted COPY',
+  );
   await handle.close();
 });
 
@@ -614,11 +718,41 @@ function emptyLspBatch(uri) {
   };
 }
 
-function emptyPersistedLspBatch() {
+function populatedBaseLspBatch() {
   return {
-    analysisRuns: [], servers: [], buildRoots: [], documents: [], symbols: [], callSites: [],
-    occurrences: [], hovers: [], diagnostics: [], semanticTokens: [], signatureHelps: [],
-    signatures: [], parameters: [], coverage: [], evidence: [], relations: [],
+    analysisRuns: [{
+      id: 'run:base', workspaceUri: 'file:///workspace', repositoryPath: '/workspace',
+      protocolVersion: '3.18', positionEncoding: 'utf-16', status: 'complete',
+      startedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:00:01.000Z',
+      requestedLanguages: ['kotlin'], errorCount: 0, timeoutCount: 0,
+    }],
+    servers: [{
+      id: 'server:base', runId: 'run:base', name: 'test', languageId: 'kotlin',
+      status: 'ready', capabilitiesJson: '{}', buildRootId: 'root:base',
+    }],
+    buildRoots: [{
+      id: 'root:base', runId: 'run:base', workspaceUri: 'file:///workspace', repositoryPath: '/workspace',
+      relativePath: '.', buildSystems: ['gradle'], javaMajor: 21, importStatus: 'ready', excludedRootIds: [],
+    }],
+    documents: [{
+      id: 'document:base', uri: 'file:///workspace/Base.kt', filePath: '/workspace/Base.kt',
+      languageId: 'kotlin', contentHash: 'hash', origin: 'repository', wasOpened: true,
+      buildRootId: 'root:base',
+    }],
+    symbols: [{
+      id: 'symbol:base', documentId: 'document:base', uri: 'file:///workspace/Base.kt', name: 'Base',
+      kind: 5, kindName: 'Class', tags: [1], range: { start: { line: 0, character: 0 }, end: { line: 2, character: 1 } },
+      selectionRange: { start: { line: 0, character: 6 }, end: { line: 0, character: 10 } },
+      stableKey: 'Base', isExternal: false,
+    }],
+    callSites: [], occurrences: [], hovers: [], diagnostics: [], semanticTokens: [], signatureHelps: [],
+    signatures: [], parameters: [], coverage: [], evidence: [],
+    relations: [{
+      id: 'lsp:defines', sourceKind: 'LspDocument', sourceId: 'document:base',
+      targetKind: 'LspClassSymbol', targetId: 'symbol:base', kind: 'DEFINES', runId: 'run:base',
+      serverId: 'server:base', capability: 'textDocument/documentSymbol', status: 'resolved',
+      providerAuthority: 1, mappingConfidence: 1, isDerived: false, ordinal: 0,
+    }],
   };
 }
 

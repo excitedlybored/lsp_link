@@ -7,10 +7,9 @@ import test from 'node:test';
 import type { CompleteCrawlAdapter, RawCallHierarchyItem } from '../src/ingest/crawler.js';
 import { crawlLspBuildRoot, workspaceDocument } from '../src/ingest/crawler.js';
 import type { CrawlPlannerDecision } from '../src/ingest/crawl-planner.js';
-import { compareCrawlSemanticInventories } from '../src/ingest/semantic-inventory.js';
 import type { LspAnalysisRun, LspBuildRoot, LspRange, LspServer } from '../src/model.js';
 
-test('facts-first crawl preserves semantic inventory while covering cross-document reference tokens', async (t) => {
+test('canonical crawl covers cross-document reference tokens before querying gaps', async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'facts-first-crawl-'));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const callerPath = path.join(workspace, 'Caller.java');
@@ -39,27 +38,22 @@ test('facts-first crawl preserves semantic inventory while covering cross-docume
   };
   const documents = [workspaceDocument(callerPath, root.id), workspaceDocument(servicePath, root.id)];
 
-  const legacyAdapter = fixtureAdapter();
   const factsAdapter = fixtureAdapter();
   const decisions: CrawlPlannerDecision[] = [];
-  const legacy = await crawlLspBuildRoot({
-    run, server, buildRoot: root, documents: documents.map((document) => ({ ...document })),
-    adapter: legacyAdapter.adapter, repositoryPath: workspace, plannerMode: 'legacy',
-  });
   const candidate = await crawlLspBuildRoot({
     run, server, buildRoot: root, documents: documents.map((document) => ({ ...document })),
-    adapter: factsAdapter.adapter, repositoryPath: workspace, plannerMode: 'facts-first',
+    adapter: factsAdapter.adapter, repositoryPath: workspace,
     onPlannerDecision: (decision) => decisions.push(decision),
   });
 
-  assert.equal(legacyAdapter.tokenDefinitionRequests(), 2);
   assert.equal(factsAdapter.tokenDefinitionRequests(), 0);
   assert.ok(decisions.some((decision) =>
     decision.documentUri === callerUri && decision.line === 2 && decision.character === 4
     && decision.action === 'covered' && decision.coveringEvidenceIds.length === 1));
-  assert.deepEqual(compareCrawlSemanticInventories(legacy, candidate), {
-    equivalent: true, differences: [],
-  });
+  assert.ok(candidate.occurrences.some((value) =>
+    value.role === 'reference' && value.uri === callerUri
+    && value.range.start.line === invocationRange.start.line
+    && value.range.start.character === invocationRange.start.character));
 
   function fixtureAdapter(): { adapter: CompleteCrawlAdapter; tokenDefinitionRequests: () => number } {
     let tokenDefinitions = 0;
@@ -133,7 +127,7 @@ test('core crawl bounds requests, reports progress, and records intentionally om
   };
   const batch = await crawlLspBuildRoot({
     ...fixture, documents: [workspaceDocument(filePath, fixture.buildRoot.id)], adapter,
-    profile: 'core', plannerMode: 'facts-first',
+    profile: 'core',
     onProgress: (value) => progress.push(`${value.pass}:${value.completed}/${value.total}`),
   });
 

@@ -16,6 +16,7 @@
     "src/embeddings/**/*.ts",
     "src/ingest/**/*.ts",
     "src/lbug/**/*.ts",
+    "src/repository/**/*.ts",
     "src/index.ts",
     "src/model.ts"
   ]

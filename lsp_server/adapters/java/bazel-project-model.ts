@@ -62,6 +62,8 @@ export interface BazelScopeResolution {
   targetQuery: string;
   resolvedLabels: string[];
   excluded: BazelScopeExclusion[];
+  complete: boolean;
+  warnings: string[];
 }
 
 interface BazelAspectTarget extends BazelConfiguredTargetSources {
@@ -306,8 +308,11 @@ function validateHashedFile(filePath: string, expectedHash: string, description:
 }
 
 function validateExistingFile(filePath: string, description: string): void {
-  const stat = fs.lstatSync(filePath);
-  if (stat.isSymbolicLink() || !stat.isFile()) throw new Error(`${description} is not a regular file: ${filePath}`);
+  // Bazel intentionally exposes many external artifacts through execroot
+  // symlinks. Validate the object the path resolves to; rejecting the link
+  // itself makes a valid prebuilt handoff unusable on Bazel workspaces.
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile()) throw new Error(`${description} is not a regular file: ${filePath}`);
 }
 
 function hashFile(filePath: string): string {
@@ -1014,18 +1019,19 @@ export async function resolveBazelTargetScope(
 ): Promise<BazelScopeResolution> {
   const candidates = new Map<string, string>();
   const exclusions = new Map<string, string>();
+  const warnings: string[] = [];
   for (const [patternIndex, targetPattern] of scope.includeTargetPatterns.entries()) {
-    const output = await runBazel(bazelBinary, ['query', targetPattern, '--output=label_kind'], workspacePath,
+    const output = await runBazel(bazelBinary, ['query', targetPattern, '--output=label_kind', '--keep_going'], workspacePath,
       commandTimeout(timeout, options.deadlineAt), options.signal,
-      `scope-discovery-${patternIndex + 1}-of-${scope.includeTargetPatterns.length}`);
+      `scope-discovery-${patternIndex + 1}-of-${scope.includeTargetPatterns.length}`, warnings);
     for (const line of output.split(/\r?\n/).filter(Boolean)) {
       const match = line.match(/^(.*?) rule (\S+)$/);
       if (match) candidates.set(normalizeBazelMainRepositoryLabel(match[2]!), match[1]!);
     }
     for (const tag of scope.excludeTags) {
       const tagged = await runBazel(bazelBinary, [
-        'query', `attr("tags", "${escapeBazelQueryString(escapeRegex(tag))}", ${targetPattern})`, '--output=label',
-      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, `scope-tag-exclusion-${tag}`);
+        'query', `attr("tags", "${escapeBazelQueryString(escapeRegex(tag))}", ${targetPattern})`, '--output=label', '--keep_going',
+      ], workspacePath, commandTimeout(timeout, options.deadlineAt), options.signal, `scope-tag-exclusion-${tag}`, warnings);
       for (const label of tagged.split(/\r?\n/).filter(Boolean)) {
         exclusions.set(normalizeBazelMainRepositoryLabel(label), `tag:${tag}`);
       }
@@ -1058,7 +1064,8 @@ export async function resolveBazelTargetScope(
   const resolvedLabels = [...candidates.keys()].filter((label) => !exclusions.has(label)).sort();
   if (resolvedLabels.length === 0) throw new Error('Configured Bazel target scope resolved to no targets');
   console.error(
-    `[bazel:scope] resolved ${resolvedLabels.length} selected targets; ${exclusions.size} excluded`,
+    `[bazel:scope] resolved ${resolvedLabels.length} selected targets; ${exclusions.size} excluded; `
+    + `${warnings.length === 0 ? 'complete' : `partial with ${warnings.length} warning(s)`}`,
   );
   return {
     configHash,
@@ -1067,6 +1074,8 @@ export async function resolveBazelTargetScope(
     resolvedLabels,
     excluded: [...exclusions].map(([label, reason]) => ({ label, reason }))
       .sort((left, right) => left.label.localeCompare(right.label)),
+    complete: warnings.length === 0,
+    warnings,
   };
 }
 
@@ -1085,6 +1094,7 @@ async function runBazel(
   timeout: number,
   signal?: AbortSignal,
   progressLabel = args[0] ?? 'command',
+  partialWarnings?: string[],
 ): Promise<string> {
   const maxBytes = bazelMaxBufferBytes();
   const startedAt = Date.now();
@@ -1147,6 +1157,13 @@ async function runBazel(
       const stderrText = Buffer.concat(stderr).toString('utf8').trim();
       if (code !== 0) {
         const exit = closeSignal ? `signal ${closeSignal}` : `exit code ${String(code)}`;
+        if (partialWarnings) {
+          const warning = `Bazel ${progressLabel} returned partial results with ${exit}`
+            + (stderrText ? `: ${stripAnsi(stderrText).split(/\r?\n/).filter(Boolean).at(-1)}` : '');
+          partialWarnings.push(warning);
+          console.error(`[bazel:${progressLabel}] ${warning}`);
+          return finish(undefined, Buffer.concat(stdout).toString('utf8'));
+        }
         return finish(new Error(`Bazel ${progressLabel} failed with ${exit}${stderrText ? `\n${stderrText}` : ''}`));
       }
       console.error(

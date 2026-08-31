@@ -1,9 +1,14 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { globSync } from 'glob';
-import { jdtlsResolutionClasspath, JdtlsWorkspace, type JavaBuildRoot } from './jdtls-runtime.js';
+import {
+  jdtlsHeapGigabytes,
+  jdtlsResolutionClasspath,
+  JdtlsWorkspace,
+  type JavaBuildRoot,
+} from './jdtls-runtime.js';
 import { readBazelSourceInventory, type BazelCrawlSource } from './bazel-source-inventory.js';
 
 export interface JdtlsSourceMapping {
@@ -67,18 +72,40 @@ export function planJdtlsBuildRootShards(
   return shards;
 }
 
+/** Reduce process count until the aggregate configured JVM heap fits the repository budget. */
+export function planJdtlsBuildRootShardsWithinBudget(
+  roots: JavaBuildRoot[],
+  requestedShardCount: number,
+  sourceCounts: Map<string, number>,
+  maxTotalHeapGb: number,
+): JdtlsBuildRootShard[] {
+  if (!Number.isFinite(maxTotalHeapGb) || maxTotalHeapGb < 2) {
+    throw new Error('JDT LS total heap budget must be at least 2 GB');
+  }
+  for (let count = Math.min(requestedShardCount, Math.max(roots.length, 1)); count >= 1; count -= 1) {
+    const plan = planJdtlsBuildRootShards(roots, count, sourceCounts);
+    const heap = plan.reduce((total, shard) => total + jdtlsHeapGigabytes(shard.sourceFileCount), 0);
+    if (heap <= maxTotalHeapGb || count === 1) return plan;
+  }
+  return planJdtlsBuildRootShards(roots, 1, sourceCounts);
+}
+
 /** Materialize staged Eclipse projects consumed by one persistent JDT LS process. */
 export function prepareJdtlsShardWorkspace(
   repositoryPath: string,
   shard: JdtlsBuildRootShard,
+  sessionId = `${process.pid}-${randomUUID()}`,
 ): PreparedJdtlsShard {
+  if (!/^[a-zA-Z0-9._-]+$/.test(sessionId)) throw new Error('Invalid JDT LS workspace session id');
   const repositoryHash = createHash('sha256').update(path.resolve(repositoryPath)).digest('hex').slice(0, 16);
   // Eclipse persists project locations using canonical filesystem paths. On
   // macOS, /tmp is a symlink to /private/tmp; constructing client URIs from
   // the non-canonical spelling makes JDTUtils miss the imported IProject and
   // silently place the document in its classpath-less invisible project.
   const temporaryRoot = fs.realpathSync(os.tmpdir());
-  const workspacePath = path.join(temporaryRoot, 'gitnexus-jdt-projects', repositoryHash, shard.id);
+  const workspacePath = path.join(
+    temporaryRoot, 'gitnexus-jdt-projects', repositoryHash, sessionId, shard.id,
+  );
   fs.mkdirSync(workspacePath, { recursive: true });
   // Shard membership may change as roots are added or rebalanced. Generated
   // projects are disposable; remove stale members so they cannot leak into a
@@ -94,6 +121,13 @@ export function prepareJdtlsShardWorkspace(
   };
   writeJsonAtomically(path.join(workspacePath, 'gitnexus-jdtls-shard.json'), manifest);
   return { ...shard, workspacePath, projectModels };
+}
+
+/** Remove only the run-scoped generated workspace owned by this prepared shard. */
+export function cleanupJdtlsShardWorkspace(shard: PreparedJdtlsShard): void {
+  fs.rmSync(shard.workspacePath, { recursive: true, force: true });
+  const sessionDirectory = path.dirname(shard.workspacePath);
+  try { fs.rmdirSync(sessionDirectory); } catch { /* another shard still owns the session */ }
 }
 
 function loadProjectModel(root: JavaBuildRoot): JdtlsProjectModel {

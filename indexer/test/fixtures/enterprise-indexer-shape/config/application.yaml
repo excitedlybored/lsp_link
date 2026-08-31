@@ -1,0 +1,5 @@
+example:
+  workflow-class: example.ExampleWorkflow
+spring:
+  application:
+    name: example-service

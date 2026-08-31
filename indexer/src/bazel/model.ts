@@ -20,7 +20,7 @@ export interface BazelBuildGraphRun {
   buildRootId: string;
   workspacePath: string;
   configurationHash?: string;
-  status: 'complete';
+  status: 'complete' | 'partial';
   targetCount: number;
   sourceCount: number;
   artifactCount: number;
@@ -30,6 +30,7 @@ export interface BazelBuildGraphRun {
   resolvedTargetCount: number;
   excludedTargetCount: number;
   excludedTargetsJson: string;
+  scopeWarningsJson: string;
 }
 
 export interface BazelTarget {
@@ -89,6 +90,7 @@ export interface BazelPreparedRootGraph {
   scopeResolution?: {
     configHash: string; selectorsJson: string; resolvedLabels: string[];
     excluded: Array<{ label: string; reason: string }>;
+    complete: boolean; warnings: string[];
   };
 }
 
@@ -187,7 +189,8 @@ function appendRoot(batch: BazelBuildGraphBatch, root: BazelPreparedRootGraph): 
   batch.relations.push(...relations);
   batch.runs.push({
     id: graphId, buildRootId: root.rootId, workspacePath: path.resolve(root.workspacePath),
-    configurationHash: root.configurationHash, status: 'complete',
+    configurationHash: root.configurationHash,
+    status: root.scopeResolution?.complete === false ? 'partial' : 'complete',
     targetCount: targetsByLabel.size, sourceCount: sourcesByPath.size,
     artifactCount: artifactsByPath.size, relationCount: relations.length,
     scopeConfigHash: root.scopeResolution?.configHash,
@@ -195,6 +198,7 @@ function appendRoot(batch: BazelBuildGraphBatch, root: BazelPreparedRootGraph): 
     resolvedTargetCount: root.scopeResolution?.resolvedLabels.length ?? selectedLabels.size,
     excludedTargetCount: root.scopeResolution?.excluded.length ?? 0,
     excludedTargetsJson: JSON.stringify(root.scopeResolution?.excluded ?? []),
+    scopeWarningsJson: JSON.stringify(root.scopeResolution?.warnings ?? []),
   });
 }
 

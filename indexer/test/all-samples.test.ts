@@ -227,7 +227,7 @@ function endToEndConfig(prebuilt: boolean): object {
       },
       preparation: { concurrency: 4, timeoutMs: SAMPLE_TIMEOUT_MS },
     },
-    crawl: { profile: 'core', planner: 'facts-first', concurrency: 4, resume: false },
+    crawl: { profile: 'core', concurrency: 4, resume: false },
     artifacts: { concurrency: 4, maxClasses: 1, fetchSources: false, classpathManifests: [] },
     quality: { failOnFailedBuildRoot: true },
     checkpoints: { directory: null },

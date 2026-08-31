@@ -10,7 +10,6 @@ import { JdtlsWorkspace, type JavaBuildRoot } from '../../../lsp_server/adapters
 import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
 import type { JavaBuildRootCrawlResult, JavaBuildRootPreparation } from './types.js';
 import type { ILspAdapter } from '../../../lsp_server/contracts/lsp-adapter.interface.js';
-import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
 
 export interface CrawlJavaBuildRootRequest {
@@ -25,7 +24,6 @@ export interface CrawlJavaBuildRootRequest {
   sharedAdapter?: ILspAdapter;
   processShardId?: string;
   requireSharedAdapter?: boolean;
-  crawlPlanner?: CrawlPlannerMode;
   crawlProfile?: CrawlProfile;
 }
 
@@ -44,7 +42,6 @@ export async function crawlJavaBuildRoot(
     sharedAdapter,
     processShardId,
     requireSharedAdapter = false,
-    crawlPlanner = 'legacy',
     crawlProfile = 'exhaustive',
   } = request;
   const buildRoot = createBuildRoot(run, root, preparation);
@@ -96,7 +93,6 @@ export async function crawlJavaBuildRoot(
       documents,
       adapter,
       repositoryPath,
-      plannerMode: crawlPlanner,
       profile: crawlProfile,
     });
     const artifactResolution = await artifactClasspathResolver.resolveArtifacts({

@@ -21,6 +21,9 @@ import { LSP_RELATION_TABLE, LSP_SCHEMA_QUERIES } from './schema.js';
 import { JvmArtifactRepository } from '../artifact/repository.js';
 import { DerivedCallNormalizationRepository } from '../derived/call-normalization/repository.js';
 import { BazelBuildGraphRepository } from '../bazel/repository.js';
+import { RepositoryInventoryRepository } from '../repository/repository.js';
+
+const DEFAULT_LBUG_BUFFER_POOL_MIB = 1_024;
 
 export interface LbugQueryResultLike {
   close?(): void | Promise<void>;
@@ -56,6 +59,7 @@ export interface LspDatabaseHandle {
   artifactRepository: JvmArtifactRepository;
   callNormalizationRepository: DerivedCallNormalizationRepository;
   bazelBuildGraphRepository: BazelBuildGraphRepository;
+  repositoryInventoryRepository: RepositoryInventoryRepository;
   close(): Promise<void>;
 }
 
@@ -68,7 +72,9 @@ export function openLspLadybugDatabase(
   ladybug: LadybugModuleLike,
 ): LspDatabaseHandle {
   const configuredPool = process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
-  const configuredPoolMiB = configuredPool === undefined ? 0 : Number(configuredPool);
+  const configuredPoolMiB = configuredPool === undefined
+    ? DEFAULT_LBUG_BUFFER_POOL_MIB
+    : Number(configuredPool);
   if (configuredPool !== undefined && (!Number.isInteger(configuredPoolMiB) || configuredPoolMiB < 64)) {
     throw new Error(`GITNEXUS_LBUG_BUFFER_POOL_MB must be an integer of at least 64, got ${configuredPool}`);
   }
@@ -79,6 +85,7 @@ export function openLspLadybugDatabase(
     artifactRepository: new JvmArtifactRepository(connection),
     callNormalizationRepository: new DerivedCallNormalizationRepository(connection),
     bazelBuildGraphRepository: new BazelBuildGraphRepository(connection),
+    repositoryInventoryRepository: new RepositoryInventoryRepository(connection),
     async close(): Promise<void> {
       await connection.close?.();
       await database.close?.();
@@ -88,6 +95,9 @@ export function openLspLadybugDatabase(
 
 export class LspLadybugRepository {
   constructor(private readonly connection: LbugConnectionLike) {}
+
+  /** Internal bulk-loader access; keeps database ownership with the handle. */
+  connectionForBulkCopy(): LbugConnectionLike { return this.connection; }
 
   /** Creates the schema. Intended for a new `.gitnexus/lsp-lbug` database. */
   async initializeSchema(): Promise<void> {

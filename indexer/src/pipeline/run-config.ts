@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { BazelBuildMode, BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
-import type { CrawlPlannerMode } from '../ingest/crawl-planner.js';
 import { CRAWL_PROFILES, type CrawlProfile } from '../ingest/crawl-profile.js';
 
 export interface LspLinkRunConfig {
@@ -15,7 +14,7 @@ export interface LspLinkRunConfig {
     scope: BazelTargetScope;
     preparation: { concurrency: number; timeoutMs: number };
   };
-  crawl: { profile: CrawlProfile; planner: CrawlPlannerMode; concurrency: number; resume: boolean };
+  crawl: { profile: CrawlProfile; concurrency: number; resume: boolean };
   artifacts: {
     concurrency: number; maxClasses?: number; fetchSources: boolean; classpathManifests: string[];
   };
@@ -49,7 +48,7 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   const preparation = object(bazel.preparation === undefined ? {} : bazel.preparation, 'config.bazel.preparation');
   keys(preparation, ['concurrency', 'timeoutMs'], 'config.bazel.preparation');
   const crawl = object(root.crawl === undefined ? {} : root.crawl, 'config.crawl');
-  keys(crawl, ['profile', 'planner', 'concurrency', 'resume'], 'config.crawl');
+  keys(crawl, ['profile', 'concurrency', 'resume'], 'config.crawl');
   const artifacts = object(root.artifacts === undefined ? {} : root.artifacts, 'config.artifacts');
   keys(artifacts, ['concurrency', 'maxClasses', 'fetchSources', 'classpathManifests'], 'config.artifacts');
   const quality = object(root.quality === undefined ? {} : root.quality, 'config.quality');
@@ -57,11 +56,10 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   const checkpoints = object(root.checkpoints === undefined ? {} : root.checkpoints, 'config.checkpoints');
   keys(checkpoints, ['directory'], 'config.checkpoints');
   const buildMode = enumeration(bazel.buildMode === undefined ? 'managed' : bazel.buildMode, ['managed', 'prebuilt'], 'config.bazel.buildMode');
-  const planner = enumeration(crawl.planner === undefined ? 'legacy' : crawl.planner, ['legacy', 'facts-first'], 'config.crawl.planner');
   const profile = enumeration(crawl.profile === undefined ? 'exhaustive' : crawl.profile, CRAWL_PROFILES, 'config.crawl.profile');
   const semantic = {
     schemaVersion: 1, name: string(root.name === undefined ? 'default' : root.name, 'config.name'),
-    bazel: { buildMode, scope }, profile, planner,
+    bazel: { buildMode, scope }, profile,
     artifacts: {
       maxClasses: optionalPositive(artifacts.maxClasses, 'config.artifacts.maxClasses'),
       fetchSources: boolean(artifacts.fetchSources === undefined ? true : artifacts.fetchSources, 'config.artifacts.fetchSources'),
@@ -82,7 +80,6 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
     },
     crawl: {
       profile,
-      planner,
       concurrency: positive(crawl.concurrency === undefined ? 4 : crawl.concurrency, 'config.crawl.concurrency'),
       resume: boolean(crawl.resume === undefined ? true : crawl.resume, 'config.crawl.resume'),
     },

@@ -19,9 +19,9 @@ const token: LspSemanticToken = {
   tokenType: 'method', tokenModifiers: [], status: 'observed',
 };
 
-test('facts-first planner suppresses only token positions covered by mapped references', () => {
+test('the canonical planner suppresses only token positions covered by mapped references', () => {
   const covered = planSemanticTokenPosition({
-    mode: 'facts-first', documentUri: occurrence.uri, token,
+    documentUri: occurrence.uri, token,
     referenceCoverage: new ReferenceCoverageIndex([occurrence]),
   });
   assert.equal(covered.action, 'covered');
@@ -29,17 +29,11 @@ test('facts-first planner suppresses only token positions covered by mapped refe
   assert.deepEqual(covered.coveringEvidenceIds, [occurrence.id]);
 
   const unresolved = planSemanticTokenPosition({
-    mode: 'facts-first', documentUri: occurrence.uri, token: { ...token, character: 12 },
+    documentUri: occurrence.uri, token: { ...token, character: 12 },
     referenceCoverage: new ReferenceCoverageIndex([occurrence]),
   });
   assert.equal(unresolved.action, 'query');
   assert.equal(unresolved.reason, 'unresolved-token');
-
-  const legacy = planSemanticTokenPosition({
-    mode: 'legacy', documentUri: occurrence.uri, token,
-    referenceCoverage: new ReferenceCoverageIndex([occurrence]),
-  });
-  assert.equal(legacy.action, 'query');
 });
 
 test('semantic inventory comparison ignores redundant raw position observations', () => {

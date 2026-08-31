@@ -1,16 +1,12 @@
 import type { LspOccurrence, LspSemanticToken } from '../model.js';
 
-export const CRAWL_PLANNER_MODES = ['legacy', 'facts-first'] as const;
-export type CrawlPlannerMode = (typeof CRAWL_PLANNER_MODES)[number];
-
 export interface CrawlPlannerDecision {
-  mode: CrawlPlannerMode;
   documentUri: string;
   line: number;
   character: number;
   tokenType: string;
   action: 'query' | 'covered';
-  reason: 'legacy-cartesian' | 'unresolved-token' | 'covered-by-reference';
+  reason: 'unresolved-token' | 'covered-by-reference';
   coveringEvidenceIds: string[];
 }
 
@@ -23,7 +19,7 @@ interface ReferenceSpan {
 /**
  * Index declaration-scoped reference results by returned document position.
  * These results already prove that a token is an occurrence of the requested
- * declaration, so a facts-first crawl can reserve position queries for gaps.
+ * declaration, so the canonical crawl can reserve position queries for gaps.
  */
 export class ReferenceCoverageIndex {
   private readonly spansByDocumentAndLine = new Map<string, Map<number, ReferenceSpan[]>>();
@@ -56,15 +52,11 @@ export class ReferenceCoverageIndex {
 }
 
 export function planSemanticTokenPosition(input: {
-  mode: CrawlPlannerMode;
   documentUri: string;
   token: LspSemanticToken;
   referenceCoverage: ReferenceCoverageIndex;
 }): CrawlPlannerDecision {
-  const { mode, documentUri, token, referenceCoverage } = input;
-  if (mode === 'legacy') {
-    return decision('query', 'legacy-cartesian', []);
-  }
+  const { documentUri, token, referenceCoverage } = input;
   const coveringEvidenceIds = referenceCoverage.coveringEvidence(documentUri, token);
   return coveringEvidenceIds.length > 0
     ? decision('covered', 'covered-by-reference', coveringEvidenceIds)
@@ -76,7 +68,7 @@ export function planSemanticTokenPosition(input: {
     evidence: string[],
   ): CrawlPlannerDecision {
     return {
-      mode, documentUri, line: token.line, character: token.character,
+      documentUri, line: token.line, character: token.character,
       tokenType: token.tokenType, action, reason, coveringEvidenceIds: evidence,
     };
   }

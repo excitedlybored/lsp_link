@@ -16,6 +16,7 @@ import { BaseStdioLspAdapter } from '../base-stdio-adapter.js';
 export class CobolAdapter extends BaseStdioLspAdapter {
   public readonly id = 'cobol-lsp';
   public readonly language = 'cobol';
+  public readonly fileExtensions = ['.cbl', '.cob', '.cpy'] as const;
 
   private static findBroadcomChe4zJar(): string | null {
     const searchDirs = [

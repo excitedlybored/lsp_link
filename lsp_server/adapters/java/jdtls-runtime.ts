@@ -98,6 +98,7 @@ export interface JdtlsWorkspaceOptions {
   buildSystems?: JavaBuildSystemKind[];
   excludedRoots?: string[];
   eclipseProjectImport?: boolean;
+  sourceFileCount?: number;
 }
 
 const JAVA_IGNORE = ['**/node_modules/**', '**/build/**', '**/target/**', '**/.git/**'];
@@ -269,11 +270,11 @@ export class JdtlsWorkspace {
   static inspect(workspacePath: string, options: JdtlsWorkspaceOptions = {}): JdtlsWorkspace {
     const enabledKinds = options.buildSystems ? new Set(options.buildSystems) : undefined;
     const buildIgnore = buildScanIgnore(workspacePath, options.excludedRoots ?? []);
-    const sourceFileCount = globSync('**/*.java', {
-      cwd: workspacePath,
-      nodir: true,
-      ignore: buildIgnore,
-    }).length;
+    const sourceFileCount = options.sourceFileCount ?? globSync('**/*.java', {
+        cwd: workspacePath,
+        nodir: true,
+        ignore: buildIgnore,
+      }).length;
 
     const gradleProperties = readGradleProperties(workspacePath);
     const buildSystems = options.buildSystems
@@ -331,9 +332,7 @@ export class JdtlsWorkspace {
   }
 
   heapXmx(): string {
-    if (this.sourceFileCount > 5000) return '6G';
-    if (this.sourceFileCount > 2000) return '4G';
-    return '2G';
+    return jdtlsHeapXmx(this.sourceFileCount);
   }
 
   initializeTimeoutMs(): number {
@@ -366,6 +365,16 @@ export class JdtlsWorkspace {
     }
     return argumentsList.length > 0 ? argumentsList.join(' ') : undefined;
   }
+}
+
+export function jdtlsHeapGigabytes(sourceFileCount: number): number {
+  if (sourceFileCount > 5000) return 6;
+  if (sourceFileCount > 2000) return 4;
+  return 2;
+}
+
+export function jdtlsHeapXmx(sourceFileCount: number): string {
+  return `${jdtlsHeapGigabytes(sourceFileCount)}G`;
 }
 
 export function jdtlsVmArguments(opts: {

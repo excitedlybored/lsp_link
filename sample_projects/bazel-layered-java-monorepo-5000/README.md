@@ -100,7 +100,7 @@ npm run index -- build \
 ```
 
 The sample config uses prebuilt indexing, a one-hour total preparation budget,
-four-way bounded concurrency, resumable facts-first crawling, unlimited class
+four-way bounded concurrency, resumable content-addressed crawling, unlimited class
 enrichment, source fetching, and strict build-root failure enforcement.
 It deliberately uses the scalable `core` crawl profile. The Temporal extractor
 can identify the standard workflow annotations, implementations, and SDK calls

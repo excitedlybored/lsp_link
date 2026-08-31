@@ -29,11 +29,19 @@ interface SymbolLocation {
 /**
  * Scans polyglot source files to resolve a symbol name to its file location and language.
  */
-function findSymbolInWorkspace(workspacePath: string, symbolName: string, langOverride?: string): SymbolLocation | null {
-  const sourceFiles = globSync('**/*.{java,py,c,cpp,cc,cxx,h,hpp,rs,ts,tsx,js,jsx,cs,cbl,cob,cpy,go}', {
+function findSymbolInWorkspace(
+  workspacePath: string,
+  symbolName: string,
+  registry: LspAdapterRegistry,
+  langOverride?: string,
+): SymbolLocation | null {
+  const sourceFiles = globSync(
+    registry.getSupportedFileExtensions().map((extension) => `**/*${extension}`), {
     cwd: workspacePath,
     ignore: ['node_modules/**', 'dist/**', 'target/**', '.git/**', '.venv/**', 'build/**'],
-  });
+    },
+  );
+  const escapedSymbolName = escapeRegExp(symbolName);
 
   let bestMatch: SymbolLocation | null = null;
   let highestScore = 0;
@@ -51,19 +59,19 @@ function findSymbolInWorkspace(workspacePath: string, symbolName: string, langOv
         continue;
       }
 
-      const regex = new RegExp(`\\b${symbolName}\\b`);
+      const regex = new RegExp(`\\b${escapedSymbolName}\\b`);
       const match = regex.exec(line);
 
       if (match) {
         let score = 1;
         // Generic & language-specific definition patterns
-        if (new RegExp(`(public|protected|private)?\\s*(interface|class|enum|record|struct|trait|impl)\\s+${symbolName}\\b`).test(trimmed)) {
+        if (new RegExp(`(public|protected|private)?\\s*(interface|class|enum|record|struct|trait|impl)\\s+${escapedSymbolName}\\b`).test(trimmed)) {
           score = 100;
-        } else if (new RegExp(`(def|fn|function)\\s+${symbolName}\\b`).test(trimmed)) {
+        } else if (new RegExp(`(def|fn|function)\\s+${escapedSymbolName}\\b`).test(trimmed)) {
           score = 95;
-        } else if (new RegExp(`PROGRAM-ID\\.\\s+${symbolName}\\b`, 'i').test(trimmed) || trimmed.startsWith(`${symbolName} SECTION.`)) {
+        } else if (new RegExp(`PROGRAM-ID\\.\\s+${escapedSymbolName}\\b`, 'i').test(trimmed) || trimmed.startsWith(`${symbolName} SECTION.`)) {
           score = 95;
-        } else if (new RegExp(`(public|protected|private)?\\s+[\\w<>\\[\\]]+\\s+${symbolName}\\s*\\(`).test(trimmed)) {
+        } else if (new RegExp(`(public|protected|private)?\\s+[\\w<>\\[\\]]+\\s+${escapedSymbolName}\\s*\\(`).test(trimmed)) {
           score = 80;
         } else if (trimmed.includes(`class ${symbolName}`) || trimmed.includes(`interface ${symbolName}`)) {
           score = 90;
@@ -75,7 +83,7 @@ function findSymbolInWorkspace(workspacePath: string, symbolName: string, langOv
             filePath: fullPath,
             line: lineIdx,
             character: match.index,
-            language: langOverride || path.extname(fullPath).slice(1),
+            language: langOverride || registry.getLanguageForFile(fullPath) || path.extname(fullPath).slice(1),
           };
           if (score >= 100) return bestMatch;
         }
@@ -84,6 +92,10 @@ function findSymbolInWorkspace(workspacePath: string, symbolName: string, langOv
   }
 
   return bestMatch;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function handleCalls(
@@ -122,14 +134,13 @@ async function handleCalls(
     }
     visited.add(key);
 
-    const calls = direction === 'outgoing'
-      ? await adapter.getOutgoingCalls(item)
-      : await adapter.getIncomingCalls(item);
+    const targets = direction === 'outgoing'
+      ? (await adapter.getOutgoingCalls(item)).map((call) => call.to)
+      : (await adapter.getIncomingCalls(item)).map((call) => call.from);
 
-    for (let i = 0; i < calls.length; i++) {
-      const call = calls[i];
-      const target = direction === 'outgoing' ? call.to : call.from;
-      const isLast = i === calls.length - 1;
+    for (let i = 0; i < targets.length; i++) {
+      const target = targets[i]!;
+      const isLast = i === targets.length - 1;
       const branch = isLast ? '└── ' : '├── ';
       const nextPrefix = prefix + (isLast ? '    ' : '│   ');
 
@@ -258,6 +269,7 @@ Options:
     if (args[i] === '--language' && args[i + 1]) languageOverride = args[++i];
   }
 
+  const registry = new LspAdapterRegistry();
   let loc: SymbolLocation | null = null;
 
   if (filePath) {
@@ -268,7 +280,7 @@ Options:
       language: languageOverride || path.extname(filePath).slice(1),
     };
   } else if (symbolName) {
-    loc = findSymbolInWorkspace(workspacePath, symbolName, languageOverride);
+    loc = findSymbolInWorkspace(workspacePath, symbolName, registry, languageOverride);
   }
 
   if (!loc) {
@@ -276,10 +288,11 @@ Options:
     process.exit(1);
   }
 
-  const registry = new LspAdapterRegistry();
   const langKey = registry.getLanguageForFile(loc.filePath) || loc.language || 'java';
 
-  const adapter = await registry.getOrStartAdapterForFile(loc.filePath, workspacePath);
+  const adapter = languageOverride
+    ? await registry.getOrStartAdapter(languageOverride, workspacePath)
+    : await registry.getOrStartAdapterForFile(loc.filePath, workspacePath);
   if (!adapter) {
     console.error(`❌ No active or available LSP adapter found for language '${langKey}'.`);
     process.exit(1);

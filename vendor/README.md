@@ -19,3 +19,11 @@ npm representation in Git.
 
 `python/` seeds the Python analyzer installation. Unlike npm installation, uv
 may use its configured Python index for wheels that are not committed here.
+
+`jdtls/` contains the extracted pinned Java language-server runtime.
+`kotlin-lsp/archive/` contains the pinned Linux x64 Kotlin language server as
+checksum-verified, 90,000,000-byte maximum archive chunks. `install.sh`
+stream-extracts those chunks into the ignored `.gitnexus/tools/kotlin-lsp/`
+cache, avoiding both network access and Git blobs at or above 100 MB. The
+adapters select these clone-local runtimes, so indexing does not depend on
+editor extensions or user-profile launchers.

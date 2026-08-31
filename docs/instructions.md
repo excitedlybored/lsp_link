@@ -141,7 +141,7 @@ handoff, so a failed attempt cannot be followed by prebuilt indexing of stale
 artifacts from an older successful run.
 
 The default policy uses `prebuilt` indexing, the `core` crawl profile, the
-`facts-first` planner,
+canonical efficient crawler,
 resumable checkpoints, four-way preparation/crawl/artifact concurrency, source
 JAR fetching, and strict failed-root enforcement. It has no artifact-class
 limit and uses the output-derived checkpoint directory unless overridden.
@@ -180,7 +180,6 @@ This is the generic shape of a complete version-1 configuration:
   },
   "crawl": {
     "profile": "core",
-    "planner": "facts-first",
     "concurrency": 4,
     "resume": true
   },
@@ -284,9 +283,8 @@ fails preparation.
 | Field | Required | Values and behavior |
 | --- | --- | --- |
 | `profile` | No | `"core"` or `"exhaustive"`; default `"exhaustive"`. `core` collects document symbols while relying on the authoritative Bazel graph and bytecode enrichment for dependency, reference, type, call, and artifact relationships. Reference, hover, hierarchy, semantic-token, signature, and diagnostic requests are explicitly recorded as excluded. `exhaustive` requests the complete LSP capability matrix. The tracked large-repository policy uses `core`. |
-| `planner` | No | `"legacy"` or `"facts-first"`; default `"legacy"`. `legacy` preserves the original request schedule. `facts-first` gathers declaration-scoped facts across a complete root before querying semantic-token gaps and is recommended for this Java run. Planner choice participates in semantic/config and checkpoint validation. |
 | `concurrency` | No | Positive integer; default `4`. Number of persistent JDT.LS crawl shards. |
-| `resume` | No | Boolean; default `true`. Reuse compatible checkpoints when available. `false` starts a new crawl without deleting existing diagnostic checkpoints. |
+| `resume` | No | Boolean; default `true`. Reuse an exact content-addressed crawl ID when available. `false` forces execution without deleting cached identities. |
 
 ### `artifacts`
 
@@ -309,10 +307,17 @@ fails preparation.
 | --- | --- | --- |
 | `directory` | No | Non-empty path string, `null`, or omitted. Relative paths resolve from the config directory. `null`/omitted uses `<output>.checkpoints`. |
 
+Crawl results are stored by their 64-character identity under
+`<directory>/by-id/lsp-crawl/`. The identity covers source and build-file
+contents, semantic configuration, build scope, crawl profile, artifact
+manifests, and adapter routing metadata. An exact hit skips LSP startup and RPC
+collection; changed inputs create a separate entry instead of replacing the
+previous crawl.
+
 ## Configuration identity and prebuilt validation
 
 The semantic configuration hash covers the config name, Bazel build mode and
-scope, crawl planner, artifact class limit, source-fetch policy, and resolved
+scope, crawl profile, artifact class limit, source-fetch policy, and resolved
 classpath-manifest paths. It is stored with the Bazel handoff, inventory,
 checkpoint fingerprints, CLI run, and graph provenance.
 
@@ -348,18 +353,16 @@ the requested graph:
 
 - `--bazel-build-mode`
 - `--bazel-target-query`
-- `--crawl-planner`
 - `--artifact-max-classes`
 - `--no-artifact-source-fetch`
 - `--artifact-classpath-manifest`
 
-Without `--config`, all legacy CLI flags remain available. For example:
+Without `--config`, the CLI flags remain available. For example:
 
 ```bash
 npm run index -- build /path/to/repository \
   --bazel-build-mode managed \
   --bazel-target-query 'set(//application:lib //application:test)' \
-  --crawl-planner facts-first \
   --output /tmp/repository.lbug
 ```
 
@@ -387,7 +390,8 @@ the tools' normal credential stores. Relevant environment variables include:
   one source JAR, in milliseconds. The default is `120000` (two minutes) and
   the value must be a positive integer. The repository-wide preparation
   deadline still takes precedence.
-- `GITNEXUS_LBUG_BUFFER_POOL_MB`: LadybugDB buffer-pool size in MiB, minimum 64.
+- `GITNEXUS_LBUG_BUFFER_POOL_MB`: LadybugDB buffer-pool size in MiB. The
+  default is `1024` (1 GiB), and the minimum override is `64`.
 - `GITNEXUS_LBUG_ROTATE_BATCHES`: positive number of committed COPY fragments
   between staging-connection rotations.
 

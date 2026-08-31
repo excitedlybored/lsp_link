@@ -11,6 +11,37 @@ import {
   fingerprintPipelineInputs,
   PipelineCheckpointStore,
 } from '../src/pipeline/checkpoints.js';
+import {
+  openLspLadybugDatabase,
+  type LadybugModuleLike,
+} from '../src/lbug/repository.js';
+
+test('bounds the default LadybugDB buffer pool at one GiB and accepts an override', async (t) => {
+  const original = process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
+  t.after(() => {
+    if (original === undefined) delete process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
+    else process.env.GITNEXUS_LBUG_BUFFER_POOL_MB = original;
+  });
+  let bufferManagerSize = -1;
+  class FakeDatabase {
+    constructor(_databasePath: string, size = -1) { bufferManagerSize = size; }
+  }
+  class FakeConnection {
+    constructor(_database: FakeDatabase) {}
+  }
+  const ladybug = {
+    Database: FakeDatabase,
+    Connection: FakeConnection,
+  } as unknown as LadybugModuleLike;
+
+  delete process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
+  await openLspLadybugDatabase('/tmp/default-pool.lbug', ladybug).close();
+  assert.equal(bufferManagerSize, 1_024 * 1024 * 1024);
+
+  process.env.GITNEXUS_LBUG_BUFFER_POOL_MB = '512';
+  await openLspLadybugDatabase('/tmp/override-pool.lbug', ladybug).close();
+  assert.equal(bufferManagerSize, 512 * 1024 * 1024);
+});
 
 test('parses knowledge-graph build options with explicit artifact manifests', () => {
   const options = parseLspKnowledgeGraphBuildOptions([
@@ -27,8 +58,6 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
     '--no-artifact-source-fetch',
     '--checkpoint-directory',
     '/checkpoints/run-1',
-    '--crawl-planner',
-    'facts-first',
     '--bazel-build-mode',
     'prebuilt',
     '--bazel-target-query',
@@ -42,7 +71,6 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
   assert.equal(options.fetchArtifactSources, false);
   assert.equal(options.checkpointDirectory, '/checkpoints/run-1');
   assert.equal(options.resume, true);
-  assert.equal(options.crawlPlanner, 'facts-first');
   assert.equal(options.crawlProfile, 'exhaustive');
   assert.equal(options.bazelBuildMode, 'prebuilt');
   assert.equal(options.bazelTargetQuery, 'set(//service:lib //shared:api)');
@@ -54,7 +82,6 @@ test('defaults to resumable checkpoints beside the requested output', () => {
   ]);
   assert.equal(options.checkpointDirectory, '/tmp/result.lbug.checkpoints');
   assert.equal(options.resume, false);
-  assert.equal(options.crawlPlanner, 'legacy');
   assert.equal(options.crawlProfile, 'exhaustive');
   assert.equal(options.bazelBuildMode, 'managed');
 });
@@ -72,6 +99,23 @@ test('writes atomic checkpoints and rejects incompatible input fingerprints', (t
   assert.deepEqual(fs.readdirSync(store.directory), ['lsp-crawl.checkpoint']);
 });
 
+test('retains content-addressed crawl IDs and reuses only exact input identities', (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'kg-crawl-cache-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const store = new PipelineCheckpointStore(path.join(workspace, 'checkpoints'));
+  const first = 'a'.repeat(64);
+  const second = 'b'.repeat(64);
+  store.saveCached('lsp-crawl', first, { symbols: ['first'] });
+  store.saveCached('lsp-crawl', second, { symbols: ['second'] });
+  assert.deepEqual(store.loadCached('lsp-crawl', first), { symbols: ['first'] });
+  assert.deepEqual(store.loadCached('lsp-crawl', second), { symbols: ['second'] });
+  assert.equal(store.loadCached('lsp-crawl', 'c'.repeat(64)), undefined);
+  assert.deepEqual(
+    fs.readdirSync(path.join(store.directory, 'by-id', 'lsp-crawl')).sort(),
+    [`${first}.checkpoint`, `${second}.checkpoint`],
+  );
+});
+
 test('rejects flags that omit their required value', () => {
   assert.throws(
     () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--output']),
@@ -79,10 +123,10 @@ test('rejects flags that omit their required value', () => {
   );
 });
 
-test('rejects unknown crawl planners', () => {
+test('rejects the removed crawl-planner option', () => {
   assert.throws(
-    () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--crawl-planner', 'canonical']),
-    /--crawl-planner must be one of legacy, facts-first/,
+    () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--crawl-planner', 'legacy']),
+    /Unknown argument --crawl-planner/,
   );
 });
 

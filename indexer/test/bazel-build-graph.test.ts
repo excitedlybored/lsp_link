@@ -58,3 +58,18 @@ test('declares Bazel evidence independently from LSP and JVM schemas', () => {
   }
   assert.ok(BAZEL_BUILD_GRAPH_SCHEMA_QUERIES.every((query) => !query.includes('LspRelation')));
 });
+
+test('persists incomplete wildcard discovery instead of claiming a complete Bazel scope', () => {
+  const batch = buildBazelBuildGraphBatch([{
+    rootId: 'bazel:.', workspacePath: '/workspace',
+    configuredTargets: [{
+      label: '//healthy:service', ruleKind: 'java_library', directSources: [], sourceJars: [],
+    }],
+    scopeResolution: {
+      configHash: 'scope', selectorsJson: '{}', resolvedLabels: ['//healthy:service'], excluded: [],
+      complete: false, warnings: ['broken package did not load'],
+    },
+  }]);
+  assert.equal(batch.runs[0]?.status, 'partial');
+  assert.deepEqual(JSON.parse(batch.runs[0]!.scopeWarningsJson), ['broken package did not load']);
+});

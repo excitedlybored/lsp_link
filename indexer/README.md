@@ -22,21 +22,86 @@ target dependencies, owned sources, and compile/runtime/source artifact roles
 use `Bazel*` tables and `BazelRelation`; they are not projected into
 `LspRelation` or inferred from flattened JAR paths.
 
-## Crawl planners
+The repository-inventory stage separately records Kotlin, Gherkin,
+configuration, Starlark, and Bazel module/build documents. It emits
+`RepositoryDocument` and `RepositoryDeclaration` nodes with content hashes and
+zero-based lexical ranges. Provider identity, version, authority, capabilities,
+and per-provider success/error counters are part of the evidence: these
+records make otherwise invisible files, Kotlin declarations, Gherkin scenarios,
+configuration keys, and `.bzl` macro definitions queryable, but do not claim
+type resolution, call hierarchy, or LSP authority.
 
-`--crawl-planner legacy` retains the original per-document request schedule and
-is the default. `--crawl-planner facts-first` separates root-wide declaration
-fact collection from semantic-token gap filling. A mapped reference occurrence
-is accepted as covering that token position; tokens without such evidence are
-still queried for definition, declaration, eligible type/implementation
-locations, and hover. Every suppression can be observed through the planner
-decision callback, and production runs report covered and queried position
-counts per build root.
+Bazel wildcard scope discovery uses `query --keep_going`. Healthy targets from
+a partially broken repository remain eligible, while `BazelBuildGraphRun` is
+persisted with `status = "partial"` and the query diagnostics in
+`scopeWarningsJson`. Explicit targets and the configured aspect build remain
+strict; they still fail when the selected target itself cannot load or lacks
+`JavaInfo`.
 
-Facts-first planning starts only after Maven/Gradle/Bazel import and does not
-change build-root discovery, classpaths, JDT LS sharding, or JVM artifact
-enrichment. Use the repository-level `compare:crawls` command to compare the
-semantic inventory in legacy and facts-first crawl checkpoints.
+The `core` crawl profile remains intentionally declaration-only. Select
+`exhaustive` when source-level Java references, calls, hover, implementation,
+and hierarchy evidence are required. Reflection and string/configuration-driven
+wiring cannot be proven generically by static indexing; the inventory preserves
+the relevant configuration and source evidence without inventing a resolved
+edge.
+
+### Provider interfaces
+
+There are two authority-preserving extension points:
+
+- Semantic language integrations implement `ILspAdapter`. An adapter declares
+  its language and `fileExtensions`; the LSP registry then routes those files
+  without editing a central extension switch. The default registry includes
+  the official JetBrains Kotlin LSP adapter for `.kt` and `.kts`.
+- Non-semantic formats implement `IRepositoryDocumentProvider`. Each provider
+  owns routing, language identification, lifecycle, capabilities, and indexing
+  for one format family. The default registry contains independent Kotlin,
+  Gherkin, configuration, and Starlark providers.
+
+Structural providers cannot claim `semantic_lsp` authority. Ambiguous file
+routing is rejected at planning time. Execution uses bounded concurrency and a
+per-file size limit; one document failure marks only its provider run partial,
+retains the other documents, caps persisted diagnostics, and still invokes
+provider shutdown. Persistence is chunked in transactions of 1,000 rows.
+
+The production runner now uses the same adapter catalog as the standalone LSP
+client. Adapter-declared extensions drive semantic source discovery and the
+checkpoint fingerprint. Java remains a specialized semantic provider because
+it requires build-root ownership, configured Bazel/Maven/Gradle classpaths,
+JDT workspace sharding, and JVM artifact enrichment. Other registered adapters
+use the generic semantic stage. The Kotlin structural provider remains lexical
+and independently queryable; when the Kotlin executable is available, the
+registered semantic adapter adds `Lsp*` observations without changing or
+impersonating the structural provider. If the executable is absent, only that
+semantic partition is marked failed and the structural inventory is retained.
+
+Ownership does not overlap:
+
+- the indexer owns source planning, evidence normalization, checkpoints, and persistence;
+- `lsp_server` owns adapter construction, JSON-RPC backpressure, process readiness, and shutdown;
+- structural providers own only `Repository*` evidence;
+- semantic adapters own only `Lsp*` evidence.
+
+## Canonical crawl and cache identity
+
+There is one crawl algorithm. It gathers declarations and declaration-scoped
+references across a build root first, then queries only semantic-token positions
+not already covered by mapped reference evidence. Tokens with gaps still receive
+definition, declaration, eligible type/implementation, and hover requests.
+Production logs report covered and queried counts for every build root; there is
+no legacy Cartesian mode or planner flag.
+
+Before starting a language server, the runner hashes the workspace path, source
+and build-file contents, semantic adapter catalog, crawl profile, build scope,
+artifact manifests, and semantic configuration. This 64-character `crawlCacheId`
+is also the analysis-run identity. Successful crawl and normalization results are
+stored under `CHECKPOINT_DIRECTORY/by-id/<stage>/<crawlCacheId>.checkpoint`.
+An exact identity is reused without starting an LSP server; changed content or
+semantic configuration receives a new ID and cannot consume stale evidence.
+Multiple identities coexist instead of overwriting the last checkpoint.
+
+`core` and `exhaustive` remain coverage profiles, not different crawl
+algorithms. The cache ID includes the selected profile.
 
 ## Node classes
 

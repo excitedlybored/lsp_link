@@ -19,7 +19,8 @@ import type {
 } from '../pipeline/types.js';
 import type { JavaBuildRoot } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
 import {
-  planJdtlsBuildRootShards,
+  cleanupJdtlsShardWorkspace,
+  planJdtlsBuildRootShardsWithinBudget,
   prepareJdtlsShardWorkspace,
 } from '../../../lsp_server/adapters/java/jdtls-sharding.js';
 import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
@@ -58,7 +59,7 @@ export async function crawlJavaWorkspace(
   const artifactClasspathResolver = new ArtifactClasspathResolver();
   const cachedByRoot = new Map<string, JavaBuildRootCrawlResult>();
   for (const root of activeRoots) {
-    const cached = checkpointStore.load<JavaBuildRootCrawlResult>(
+    const cached = checkpointStore.loadCached<JavaBuildRootCrawlResult>(
       checkpointStore.rootStage(root.id), crawlFingerprint,
     );
     if (cached) cachedByRoot.set(root.id, cached);
@@ -72,8 +73,12 @@ export async function crawlJavaWorkspace(
   }
 
   const preparationsByRoot = new Map(preparations.map((result) => [result.rootId, result]));
+  const workspaceSessionId = `${process.pid}-${randomUUID()}`;
   const sourceCounts = new Map(activeRoots.map((root) => [root.id, filesByRoot.get(root.id)?.length ?? 0]));
-  const shardPlans = planJdtlsBuildRootShards(activeRoots, options.concurrency, sourceCounts)
+  const heapBudgetGb = jdtlsHeapBudgetGb();
+  const shardPlans = planJdtlsBuildRootShardsWithinBudget(
+    activeRoots, options.concurrency, sourceCounts, heapBudgetGb,
+  )
     .filter((plan) => plan.roots.some((root) => !cachedByRoot.has(root.id)));
   console.log(
     `[stage:lsp-crawl] starting ${shardPlans.length} persistent JDT LS shards: `
@@ -81,7 +86,11 @@ export async function crawlJavaWorkspace(
   );
   const shardResults = await mapConcurrently(shardPlans, Math.max(1, shardPlans.length), async (shardPlan) => {
     const pendingRoots = shardPlan.roots.filter((root) => !cachedByRoot.has(root.id));
-    const shard = prepareJdtlsShardWorkspace(workspacePath, { ...shardPlan, roots: pendingRoots });
+    const shard = prepareJdtlsShardWorkspace(
+      workspacePath,
+      { ...shardPlan, roots: pendingRoots },
+      workspaceSessionId,
+    );
     const adapter = await adapterRegistry.getOrStartJavaShard(shard);
     const results: JavaBuildRootCrawlResult[] = [];
     try {
@@ -100,14 +109,13 @@ export async function crawlJavaWorkspace(
           sharedAdapter: adapter ?? undefined,
           processShardId: shard.id,
           requireSharedAdapter: true,
-          crawlPlanner: options.crawlPlanner,
           crawlProfile: options.crawlProfile,
         });
         result.artifacts = retainArtifactClasspathEntries(
           result.artifacts,
           path.join(workspacePath, '.gitnexus', 'jvm-artifacts', 'classpath'),
         );
-        checkpointStore.save(checkpointStore.rootStage(root.id), crawlFingerprint, result);
+        checkpointStore.saveCached(checkpointStore.rootStage(root.id), crawlFingerprint, result);
         completedRootCount += 1;
         console.log(`[${root.id}] complete (${completedRootCount}/${activeRoots.length})`);
         results.push(result);
@@ -115,6 +123,7 @@ export async function crawlJavaWorkspace(
       return results;
     } finally {
       if (adapter) await adapterRegistry.shutdownAdapter(adapter);
+      cleanupJdtlsShardWorkspace(shard);
     }
   });
   const rootResults = [
@@ -128,6 +137,14 @@ export async function crawlJavaWorkspace(
     throw new Error(`Expected ${activeRoots.length} root results, received ${rootResults.length}`);
   }
   return assembleCrawlCheckpoint(run, rootResults);
+}
+
+function jdtlsHeapBudgetGb(): number {
+  const value = Number(process.env.GITNEXUS_JDT_MAX_TOTAL_HEAP_GB ?? 8);
+  if (!Number.isFinite(value) || value < 2) {
+    throw new Error('GITNEXUS_JDT_MAX_TOTAL_HEAP_GB must be at least 2');
+  }
+  return value;
 }
 
 function assembleCrawlCheckpoint(

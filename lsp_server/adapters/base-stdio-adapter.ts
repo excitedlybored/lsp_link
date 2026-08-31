@@ -43,11 +43,16 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   private serverInfo?: { name: string; version?: string };
   private dynamicRegistrations = new Map<string, { id: string; method: string; registerOptions?: unknown }>();
   private notificationBuffer = new Map<string, unknown[]>();
+  private requestLimiter?: AsyncSemaphore;
+  private readonly requestCache = new Map<string, Promise<unknown>>();
+  private requestCacheHits = 0;
+  private requestCacheMisses = 0;
 
   public static findBinary(name: string): string | null {
     const searchPaths = [
       path.resolve(process.cwd(), 'node_modules', '.bin', name),
       path.resolve(process.cwd(), '..', 'node_modules', '.bin', name),
+      path.join(process.env.HOME || '', '.local', 'bin', name),
       path.join(process.env.HOME || '', '.cargo', 'bin', name),
       `/opt/homebrew/bin/${name}`,
       `/usr/local/bin/${name}`,
@@ -83,19 +88,28 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   public async start(workspacePath: string): Promise<void> {
+    if (this.process || this.connection) {
+      throw new Error(`${this.id} session is already started`);
+    }
     this.sessionWorkspacePath = path.resolve(workspacePath);
-    const launch = await this.buildProcessLaunch(workspacePath);
-    this.launchSettings = (launch.initializationOptions?.settings as Record<string, unknown>) ?? {};
-    this.spawnLanguageServer(launch);
-    this.openJsonRpcConnection();
-    await this.performInitializeHandshake(workspacePath, launch);
-    await this.notifyInitialized();
-    await this.waitUntilWorkspaceReady(workspacePath);
+    this.clearRequestCache();
+    try {
+      const launch = await this.buildProcessLaunch(workspacePath);
+      this.launchSettings = (launch.initializationOptions?.settings as Record<string, unknown>) ?? {};
+      this.spawnLanguageServer(launch);
+      this.openJsonRpcConnection();
+      await this.performInitializeHandshake(workspacePath, launch);
+      await this.notifyInitialized();
+      await this.waitUntilWorkspaceReady(workspacePath);
+    } catch (error) {
+      await this.shutdown();
+      throw error;
+    }
   }
 
-  /** Cap on `initialize`. Absent/0 waits until the server answers. */
+  /** Cap on `initialize`; adapters may increase it for large compiler workspaces. */
   protected initializeTimeoutMs(_workspacePath: string): number | undefined {
-    return undefined;
+    return 60_000;
   }
 
   /** Override for compilers that publish ready after `initialized` (JDT.LS ServiceReady). */
@@ -104,6 +118,19 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   /** Cap on in-flight query RPCs so a stuck compiler cannot hang analyze. */
   protected queryTimeoutMs(): number {
     return 15_000;
+  }
+
+  /** Only subscribed notifications are retained; all others are streamed to the adapter hook. */
+  protected bufferedNotificationMethods(): readonly string[] {
+    return ['textDocument/publishDiagnostics'];
+  }
+
+  protected maxBufferedNotificationsPerMethod(): number {
+    return 256;
+  }
+
+  protected maxDocumentBytes(): number {
+    return 8 * 1024 * 1024;
   }
 
   protected onServerNotification(_method: string, _params: unknown): void {}
@@ -135,21 +162,22 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   public async openDocument(filePath: string): Promise<void> {
     const absPath = path.resolve(filePath);
     if (this.openedDocuments.has(absPath)) return;
-    if (!fs.existsSync(absPath)) return;
-
-    try {
-      await this.connection?.sendNotification('textDocument/didOpen', {
-        textDocument: {
-          uri: this.documentUri(absPath),
-          languageId: this.language,
-          version: 1,
-          text: fs.readFileSync(absPath, 'utf8'),
-        },
-      });
-      this.openedDocuments.add(absPath);
-    } catch {
-      // Dead pipe — caller treats this file as unenriched
+    if (!this.connection) throw new Error(`${this.id} has no JSON-RPC connection`);
+    const stat = await fs.promises.stat(absPath);
+    if (!stat.isFile()) throw new Error(`Cannot open non-file document: ${absPath}`);
+    if (stat.size > this.maxDocumentBytes()) {
+      throw new Error(`Document exceeds ${this.maxDocumentBytes()} byte LSP limit: ${absPath}`);
     }
+    const text = await fs.promises.readFile(absPath, 'utf8');
+    await this.connection.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri: this.documentUri(absPath),
+        languageId: this.language,
+        version: 1,
+        text,
+      },
+    });
+    this.openedDocuments.add(absPath);
   }
 
   public getServerCapabilities(): Record<string, unknown> {
@@ -171,7 +199,65 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   public async request<T>(method: string, params: unknown): Promise<T> {
-    if (!this.connection) throw new Error(`${this.id} has no JSON-RPC connection`);
+    const concurrency = this.maxConcurrentRequests;
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      throw new Error(`${this.id} maxConcurrentRequests must be a positive integer`);
+    }
+    this.requestLimiter ??= new AsyncSemaphore(concurrency);
+    if (!isCacheableLspRequest(method)) {
+      return this.requestLimiter.run(() => this.sendRequest<T>(method, params));
+    }
+    const key = `${method}\0${stableJson(params)}`;
+    const cached = this.requestCache.get(key);
+    if (cached) {
+      this.requestCacheHits += 1;
+      this.requestCache.delete(key);
+      this.requestCache.set(key, cached);
+      return cached as Promise<T>;
+    }
+    this.requestCacheMisses += 1;
+    const pending = this.requestLimiter.run(() => this.sendRequest<T>(method, params));
+    this.requestCache.set(key, pending);
+    this.evictRequestCache();
+    pending.catch(() => {
+      if (this.requestCache.get(key) === pending) this.requestCache.delete(key);
+    });
+    return pending;
+  }
+
+  public getRequestCacheStats(): { hits: number; misses: number; entries: number } {
+    return {
+      hits: this.requestCacheHits,
+      misses: this.requestCacheMisses,
+      entries: this.requestCache.size,
+    };
+  }
+
+  protected maxCachedRequests(): number {
+    return 2_048;
+  }
+
+  private evictRequestCache(): void {
+    const maximum = this.maxCachedRequests();
+    if (!Number.isInteger(maximum) || maximum < 1) {
+      throw new Error(`${this.id} maxCachedRequests must be a positive integer`);
+    }
+    while (this.requestCache.size > maximum) {
+      const oldest = this.requestCache.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.requestCache.delete(oldest);
+    }
+  }
+
+  private clearRequestCache(): void {
+    this.requestCache.clear();
+    this.requestCacheHits = 0;
+    this.requestCacheMisses = 0;
+  }
+
+  private async sendRequest<T>(method: string, params: unknown): Promise<T> {
+    const connection = this.connection;
+    if (!connection) throw new Error(`${this.id} has no JSON-RPC connection`);
     const timeoutMs = this.queryTimeoutMs();
     const source = new rpc.CancellationTokenSource();
     let timedOut = false;
@@ -180,7 +266,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       source.cancel();
     }, timeoutMs);
     try {
-      return (await this.connection.sendRequest(method, params, source.token)) as T;
+      return (await connection.sendRequest(method, params, source.token)) as T;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(timedOut
@@ -308,7 +394,8 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     const stdinAlive = Boolean(this.process?.stdin && !this.process.stdin.destroyed);
     if (connection && stdinAlive) {
       try {
-        await connection.sendRequest('shutdown', {});
+        const shutdownRequest = connection.sendRequest('shutdown', {}).catch(() => undefined);
+        await Promise.race([shutdownRequest, delay(5_000)]);
         // vscode-jsonrpc writes notifications asynchronously. Await the exit
         // write before disposing its stream, otherwise concurrent adapters can
         // surface ERR_STREAM_DESTROYED as an unhandled rejection.
@@ -334,6 +421,8 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
     }
     this.openedDocuments.clear();
     this.notificationBuffer.clear();
+    this.requestLimiter = undefined;
+    this.clearRequestCache();
   }
 
   private spawnLanguageServer(launch: StdioProcessLaunch): void {
@@ -376,9 +465,13 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
       this.connection = null;
     });
     this.connection.onNotification((method: string, params: unknown) => {
-      const buffered = this.notificationBuffer.get(method) ?? [];
-      buffered.push(params);
-      this.notificationBuffer.set(method, buffered);
+      if (this.bufferedNotificationMethods().includes(method)) {
+        const buffered = this.notificationBuffer.get(method) ?? [];
+        buffered.push(params);
+        const cap = this.maxBufferedNotificationsPerMethod();
+        if (buffered.length > cap) buffered.splice(0, buffered.length - cap);
+        this.notificationBuffer.set(method, buffered);
+      }
       this.onServerNotification(method, params);
     });
     this.connection.onRequest((method: string, params: unknown) => {
@@ -487,15 +580,7 @@ export abstract class BaseStdioLspAdapter implements ILspAdapter {
   }
 
   private async sendQuery<T>(method: string, params: unknown): Promise<T | undefined> {
-    try {
-      return await this.request<T>(method, params);
-    } catch (error) {
-      // Timeouts are evidence that a supported capability was attempted but
-      // did not complete. Preserve them for the crawler's coverage ledger and
-      // circuit breaker instead of misreporting an empty successful result.
-      if (error instanceof Error && /timeout|timed out/i.test(error.message)) throw error;
-      return undefined;
-    }
+    return this.request<T>(method, params);
   }
 
   private registerDynamicCapabilities(params: unknown): void {
@@ -599,4 +684,84 @@ function workspaceConfigurationResponse(
     }
     return current ?? {};
   });
+}
+
+const CACHEABLE_LSP_REQUESTS = new Set([
+  'textDocument/documentSymbol',
+  'textDocument/definition',
+  'textDocument/declaration',
+  'textDocument/typeDefinition',
+  'textDocument/references',
+  'textDocument/implementation',
+  'textDocument/hover',
+  'textDocument/prepareCallHierarchy',
+  'textDocument/prepareTypeHierarchy',
+  'textDocument/semanticTokens/full',
+  'textDocument/signatureHelp',
+  'textDocument/diagnostic',
+  'callHierarchy/outgoingCalls',
+  'callHierarchy/incomingCalls',
+  'typeHierarchy/supertypes',
+  'typeHierarchy/subtypes',
+]);
+
+function isCacheableLspRequest(method: string): boolean {
+  return CACHEABLE_LSP_REQUESTS.has(method);
+}
+
+function stableJson(value: unknown): string {
+  const encoded = JSON.stringify(canonicalJson(value));
+  return encoded === undefined ? 'undefined' : encoded;
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonicalJson(child)]),
+    );
+  }
+  return value;
+}
+
+/** FIFO semaphore shared by every RPC issued through one language-server session. */
+export class AsyncSemaphore {
+  private active = 0;
+  private readonly waiting: Array<() => void> = [];
+
+  constructor(private readonly capacity: number) {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new Error('Semaphore capacity must be a positive integer');
+    }
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await operation();
+    } finally {
+      this.release();
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.active < this.capacity) {
+      this.active += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiting.push(resolve));
+  }
+
+  private release(): void {
+    const next = this.waiting.shift();
+    if (next) next();
+    else this.active -= 1;
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

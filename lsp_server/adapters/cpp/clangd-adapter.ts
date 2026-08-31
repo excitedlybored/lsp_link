@@ -9,6 +9,7 @@ import { BaseStdioLspAdapter } from '../base-stdio-adapter.js';
 export class ClangdAdapter extends BaseStdioLspAdapter {
   public readonly id = 'clangd';
   public readonly language = 'cpp';
+  public readonly fileExtensions = ['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp'] as const;
   public readonly maxConcurrentRequests = 1;
 
   public async isAvailable(): Promise<boolean> {

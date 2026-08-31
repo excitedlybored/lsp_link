@@ -1,8 +1,9 @@
-/** Application-level orchestration for the Java knowledge-graph pipeline. */
+/** Application-level orchestration for structural, semantic, build, and artifact evidence. */
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import lbug from '@ladybugdb/core';
 import { globSync } from 'glob';
 import type {
@@ -13,7 +14,12 @@ import { crawlJavaWorkspace, type JavaCrawlCheckpoint } from './java-crawl-stage
 import { persistStreamingKnowledgeGraph } from '../artifact/streaming-persistence.js';
 import { normalizeLogicalCalls } from '../derived/call-normalization/normalize.js';
 import type { DerivedCallNormalizationBatch } from '../derived/call-normalization/model.js';
-import type { LspObservationBatch } from '../ingest/batch.js';
+import {
+  dedupeObservationBatch,
+  emptyObservationBatch,
+  mergeObservationBatches,
+  type LspObservationBatch,
+} from '../ingest/batch.js';
 import type { LadybugModuleLike } from '../lbug/repository.js';
 import {
   combineCheckpointFingerprint,
@@ -29,12 +35,26 @@ import type {
 import { ownerBuildRoot, type JavaBuildRoot } from '../../../lsp_server/adapters/java/jdtls-runtime.js';
 import { LspAdapterRegistry } from '../../../lsp_server/registry/lsp-adapter-registry.js';
 import { buildBazelBuildGraphBatch } from '../bazel/model.js';
+import { buildRepositoryInventory } from '../repository/inventory.js';
+import type { RepositoryInventoryBatch } from '../repository/model.js';
+import {
+  crawlRegisteredRepositoryLanguages,
+  discoverRegisteredSemanticSources,
+} from './polyglot-crawl-stage.js';
+import { startMemoryTelemetry } from '../telemetry/memory.js';
 
 export async function buildLspKnowledgeGraph(
   options: LspKnowledgeGraphBuildOptions,
   adapterRegistry = new LspAdapterRegistry(),
 ): Promise<LspKnowledgeGraphBuildResult> {
   const workspacePath = path.resolve(options.workspace);
+  const repositoryInventory = await buildRepositoryInventory(workspacePath, {
+    concurrency: options.concurrency,
+  });
+  console.log(
+    `[stage:repository-inventory] ${repositoryInventory.documents.length} documents, `
+    + `${repositoryInventory.declarations.length} lexical declarations`,
+  );
   const discoveredRoots = adapterRegistry.getJavaBuildRoots(workspacePath);
   const repositoryJavaFiles = findJavaSourceFiles(workspacePath);
   const preparation = await adapterRegistry.prepareJavaBuildRoots(
@@ -67,32 +87,39 @@ export async function buildLspKnowledgeGraph(
   const activeRoots = discoveredRoots.filter((root) =>
     (filesByRoot.get(root.id)?.length ?? 0) > 0 || preparationByRoot.get(root.id)?.status === 'failed'
   );
-  if (activeRoots.length === 0) {
-    throw new Error(`No repository or configured Java sources found under ${workspacePath}`);
-  }
+  if (activeRoots.length === 0) console.log('[stage:lsp-crawl] no Java semantic partitions');
   const javaFiles = [...new Set([...filesByRoot.values()].flat())].sort();
+  const registeredSemanticFiles = discoverRegisteredSemanticSources(workspacePath, adapterRegistry);
 
   const checkpointStore = new PipelineCheckpointStore(options.checkpointDirectory, options.resume);
   const crawlFingerprint = fingerprintPipelineInputs(
     workspacePath,
-    collectCrawlInputPaths(workspacePath, javaFiles, options.artifactManifestPaths),
+    collectCrawlInputPaths(
+      workspacePath, javaFiles, options.artifactManifestPaths, registeredSemanticFiles,
+    ),
     {
       // Increment whenever crawl semantics change so a checkpoint cannot hide
       // a newly fixed or newly collected LSP observation.
-      stageVersion: 5,
+      stageVersion: 7,
       buildRoots: activeRoots.map(({ id, relativePath, systems }) => ({ id, relativePath, systems })),
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
-      crawlPlanner: options.crawlPlanner,
       crawlProfile: options.crawlProfile,
       bazelBuildMode: options.bazelBuildMode,
       bazelTargetQuery: options.bazelTargetQuery ?? null,
       runConfigHash: options.runConfigHash ?? null,
+      repositoryInventoryFingerprint: hashRepositoryInventory(repositoryInventory),
+      semanticAdapterCatalog: adapterRegistry.getAdapterCatalog(),
     },
   );
   const normalizationFingerprint = combineCheckpointFingerprint(
     'call-normalization-v1', crawlFingerprint,
   );
-  const completedCrawl = checkpointStore.load<JavaCrawlCheckpoint>('lsp-crawl', crawlFingerprint);
+  console.log(`[stage:lsp-crawl] cache ID ${crawlFingerprint}`);
+  const cacheTelemetry = startMemoryTelemetry('crawl-cache-loading', {
+    cache: 'lsp-crawl', cacheId: crawlFingerprint,
+  });
+  const completedCrawl = checkpointStore.loadCached<JavaCrawlCheckpoint>('lsp-crawl', crawlFingerprint);
+  cacheTelemetry.end();
   let lspBatch: LspObservationBatch;
   let artifacts: NormalizedArtifactDescriptor[];
   let classpathAttempts: ArtifactClasspathProviderAttempt[];
@@ -101,31 +128,43 @@ export async function buildLspKnowledgeGraph(
     if (completedCrawl) {
       ({ lspBatch, artifacts, classpathAttempts } = completedCrawl);
     } else {
-      const crawl = await crawlJavaWorkspace({
-        options,
-        adapterRegistry,
+      const crawl = activeRoots.length > 0
+        ? await crawlJavaWorkspace({
+          options,
+          adapterRegistry,
+          workspacePath,
+          activeRoots,
+          filesByRoot,
+          preparations: preparation.roots,
+          checkpointStore,
+          crawlFingerprint,
+        })
+        : emptySemanticCrawl(workspacePath, crawlFingerprint);
+      const run = crawl.lspBatch.analysisRuns[0]!;
+      const polyglotBatch = await crawlRegisteredRepositoryLanguages({
         workspacePath,
-        activeRoots,
-        filesByRoot,
-        preparations: preparation.roots,
-        checkpointStore,
-        crawlFingerprint,
+        run,
+        repositoryInventory,
+        adapterRegistry,
+        profile: options.crawlProfile,
+        semanticSourcePaths: registeredSemanticFiles,
       });
+      crawl.lspBatch = dedupeObservationBatch(mergeObservationBatches(crawl.lspBatch, polyglotBatch));
       ({ lspBatch, artifacts, classpathAttempts } = crawl);
-      checkpointStore.save<JavaCrawlCheckpoint>('lsp-crawl', crawlFingerprint, crawl);
+      checkpointStore.saveCached<JavaCrawlCheckpoint>('lsp-crawl', crawlFingerprint, crawl);
     }
     if (options.failOnFailedBuildRoot && lspBatch.servers.some((server) => server.status === 'failed')) {
       throw new Error('Semantic crawl failed for one or more build roots');
     }
 
-    let callNormalizationBatch = checkpointStore.load<DerivedCallNormalizationBatch>(
+    let callNormalizationBatch = checkpointStore.loadCached<DerivedCallNormalizationBatch>(
       'call-normalization', normalizationFingerprint,
     );
     if (!callNormalizationBatch) {
       console.log('[stage:call-normalization] deriving logical invocations from LSP call observations');
       callNormalizationBatch = normalizeLogicalCalls(lspBatch);
       logCallNormalization(callNormalizationBatch);
-      checkpointStore.save('call-normalization', normalizationFingerprint, callNormalizationBatch);
+      checkpointStore.saveCached('call-normalization', normalizationFingerprint, callNormalizationBatch);
     }
 
     console.log('[stage:jvm-artifact-enrichment] streaming ASM artifact facts');
@@ -165,6 +204,7 @@ export async function buildLspKnowledgeGraph(
       lbug as unknown as LadybugModuleLike,
       options.resume,
       bazelBuildGraph,
+      repositoryInventory,
     );
     logArtifactEnrichment(persisted.artifactEnrichment);
     return {
@@ -173,10 +213,43 @@ export async function buildLspKnowledgeGraph(
       artifactEnrichment: persisted.artifactEnrichment,
       output: persisted.output,
       bazelBuildGraph,
+      repositoryInventory,
     };
   } finally {
     await adapterRegistry.shutdownAll();
   }
+}
+
+function emptySemanticCrawl(workspacePath: string, fingerprint: string): JavaCrawlCheckpoint {
+  const batch = emptyObservationBatch();
+  const startedAt = new Date().toISOString();
+  batch.analysisRuns.push({
+    id: `run:${fingerprint}`,
+    workspaceUri: pathToFileURL(workspacePath).href,
+    repositoryPath: workspacePath,
+    protocolVersion: '3.18',
+    positionEncoding: 'utf-16',
+    status: 'complete',
+    startedAt,
+    completedAt: startedAt,
+    requestedLanguages: [],
+    errorCount: 0,
+    timeoutCount: 0,
+  });
+  return { lspBatch: batch, artifacts: [], classpathAttempts: [] };
+}
+
+function hashRepositoryInventory(inventory: RepositoryInventoryBatch): string {
+  const hash = createHash('sha256');
+  for (const provider of inventory.providers) {
+    hash.update(provider.providerId).update('\0').update(provider.providerVersion).update('\0');
+    for (const pattern of provider.includeGlobs) hash.update(pattern).update('\0');
+  }
+  for (const document of inventory.documents) {
+    hash.update(document.relativePath).update('\0').update(document.contentHash).update('\0');
+    hash.update(document.providerId).update('\0').update(document.providerVersion).update('\0');
+  }
+  return hash.digest('hex');
 }
 
 function hashArtifactDescriptor(artifact: NormalizedArtifactDescriptor): string {
@@ -192,6 +265,7 @@ function collectCrawlInputPaths(
   workspacePath: string,
   javaFiles: string[],
   artifactManifestPaths: string[],
+  semanticSourcePaths: string[] = [],
 ): string[] {
   const buildFiles = globSync([
     '**/BUILD', '**/BUILD.bazel', '**/WORKSPACE', '**/WORKSPACE.bazel', '**/MODULE.bazel',
@@ -204,7 +278,12 @@ function collectCrawlInputPaths(
     nodir: true,
     ignore: ['**/.git/**', '**/node_modules/**', '**/target/**', '**/build/**', '**/bazel-*/**'],
   });
-  return [...javaFiles, ...buildFiles, ...artifactManifestPaths];
+  return [...new Set([
+    ...javaFiles,
+    ...semanticSourcePaths,
+    ...buildFiles,
+    ...artifactManifestPaths.map((value) => path.resolve(value)),
+  ])].sort();
 }
 
 function assignFilesToBuildRoots(

@@ -47,7 +47,6 @@ import {
   ReferenceCoverageIndex,
   planSemanticTokenPosition,
   type CrawlPlannerDecision,
-  type CrawlPlannerMode,
 } from './crawl-planner.js';
 import type { CrawlProfile } from './crawl-profile.js';
 
@@ -89,7 +88,6 @@ export interface CompleteCrawlInput {
   documents: LspDocument[];
   adapter: CompleteCrawlAdapter;
   repositoryPath: string;
-  plannerMode?: CrawlPlannerMode;
   profile?: CrawlProfile;
   onPlannerDecision?: (decision: CrawlPlannerDecision) => void;
   onProgress?: (progress: CrawlProgress) => void;
@@ -177,7 +175,6 @@ const CORE_CAPABILITIES = new Set(['textDocument/documentSymbol']);
  */
 export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspObservationBatch> {
   const { run, server, buildRoot, documents, adapter, repositoryPath } = input;
-  const plannerMode = input.plannerMode ?? 'legacy';
   const profile = input.profile ?? 'exhaustive';
   const plannerStats = { queried: 0, covered: 0 };
   const recordPlannerDecision = (decision: CrawlPlannerDecision): void => {
@@ -239,9 +236,8 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
   appendObservationBatch(batch, ingestRun(run, [server], documents, [buildRoot]));
 
   // Pass 2: every discovered symbol receives every eligible semantic request.
-  // In facts-first mode this phase completes across the root before token gap
-  // filling, so references from declarations in later documents can cover
-  // occurrences in earlier documents.
+  // This phase completes across the root before token gap filling, so
+  // references from later documents can cover earlier token positions.
   const symbolReferenceProgress = progressReporter(input, 'symbol-references', documents.length);
   for (const [documentIndex, document] of (profile === 'exhaustive' ? documents : []).entries()) {
     const filePath = requireFilePath(document);
@@ -277,20 +273,13 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
           await collectTypeHierarchy(adapter, registry, coverage, batch, run, server, document, symbol, filePath, 'subtypes');
         }
       }
-
-      if (profile === 'exhaustive' && plannerMode === 'legacy') {
-        await collectDocumentFacts(
-          adapter, registry, coverage, batch, run, server, document, filePath, symbols,
-          capabilities, plannerMode, new ReferenceCoverageIndex(batch.occurrences), recordPlannerDecision,
-        );
-      }
     } finally {
       await adapter.closeDocument(filePath);
     }
     symbolReferenceProgress(documentIndex + 1);
   }
 
-  if (profile === 'exhaustive' && plannerMode === 'facts-first') {
+  if (profile === 'exhaustive') {
     const referenceCoverage = new ReferenceCoverageIndex(batch.occurrences);
     const documentFactsProgress = progressReporter(input, 'document-facts', documents.length);
     for (const [documentIndex, document] of documents.entries()) {
@@ -300,7 +289,7 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
       try {
         await collectDocumentFacts(
           adapter, registry, coverage, batch, run, server, document, filePath, symbols,
-          capabilities, plannerMode, referenceCoverage, recordPlannerDecision,
+          capabilities, referenceCoverage, recordPlannerDecision,
         );
       } finally {
         await adapter.closeDocument(filePath);
@@ -311,9 +300,9 @@ export async function crawlLspBuildRoot(input: CompleteCrawlInput): Promise<LspO
 
   appendObservationBatch(batch, registry.takeMaterializedBatch());
   const coverageBatch = buildCoverageBatch(run, server, coverage);
-  if (profile === 'exhaustive' && plannerMode === 'facts-first') {
+  if (profile === 'exhaustive') {
     console.log(
-      `[${buildRoot.id}] facts-first token plan: ${plannerStats.covered} covered by references, `
+      `[${buildRoot.id}] efficient token plan: ${plannerStats.covered} covered by references, `
       + `${plannerStats.queried} unresolved positions queried`,
     );
   }
@@ -332,14 +321,13 @@ async function collectDocumentFacts(
   filePath: string,
   symbols: LspSymbol[],
   capabilities: Record<string, unknown>,
-  plannerMode: CrawlPlannerMode,
   referenceCoverage: ReferenceCoverageIndex,
   onPlannerDecision?: (decision: CrawlPlannerDecision) => void,
 ): Promise<void> {
   await collectDocumentSemanticTokens(adapter, registry, coverage, batch, run, server, document, capabilities);
   await collectSemanticTokenPositionRelations(
     adapter, registry, coverage, batch, run, server, document, filePath, symbols,
-    plannerMode, referenceCoverage, onPlannerDecision,
+    referenceCoverage, onPlannerDecision,
   );
   await collectSignatureHelp(adapter, coverage, batch, run, server, document, filePath);
   await collectDocumentDiagnostics(adapter, coverage, batch, run, server, document);
@@ -664,7 +652,6 @@ async function collectSemanticTokenPositionRelations(
   document: LspDocument,
   filePath: string,
   symbols: LspSymbol[],
-  plannerMode: CrawlPlannerMode,
   referenceCoverage: ReferenceCoverageIndex,
   onPlannerDecision?: (decision: CrawlPlannerDecision) => void,
 ): Promise<void> {
@@ -678,7 +665,7 @@ async function collectSemanticTokenPositionRelations(
     if (seen.has(key) || declarationPositions.has(key)) continue;
     seen.add(key);
     const decision = planSemanticTokenPosition({
-      mode: plannerMode, documentUri: document.uri, token, referenceCoverage,
+      documentUri: document.uri, token, referenceCoverage,
     });
     onPlannerDecision?.(decision);
     if (decision.action === 'covered') continue;
@@ -1299,11 +1286,12 @@ export function workspaceDocument(
   filePath: string,
   buildRootId: string,
   origin: LspDocument['origin'] = 'workspace',
+  languageId = 'java',
 ): LspDocument {
   const absolute = path.resolve(filePath);
   const uri = pathToFileURL(absolute).href;
   return {
-    id: stableId('document', uri), uri, filePath: absolute, languageId: 'java',
+    id: stableId('document', uri), uri, filePath: absolute, languageId,
     origin, codeOrigin: codeOriginForDocumentOrigin(origin), wasOpened: false, buildRootId,
   };
 }

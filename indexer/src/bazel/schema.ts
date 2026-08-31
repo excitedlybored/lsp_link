@@ -4,6 +4,7 @@ export const BAZEL_BUILD_GRAPH_SCHEMA_QUERIES = [
     status STRING, targetCount INT64, sourceCount INT64, artifactCount INT64,
     relationCount INT64, scopeConfigHash STRING, scopeSelectorsJson STRING,
     resolvedTargetCount INT64, excludedTargetCount INT64, excludedTargetsJson STRING,
+    scopeWarningsJson STRING,
     PRIMARY KEY (id))`,
   `CREATE NODE TABLE BazelTarget (
     id STRING, graphId STRING, buildRootId STRING, label STRING, ruleKind STRING,

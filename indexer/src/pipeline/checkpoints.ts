@@ -22,6 +22,21 @@ export class PipelineCheckpointStore {
   load<T>(stage: string, fingerprint: string): T | undefined {
     if (!this.resume) return undefined;
     const checkpointPath = this.pathFor(stage);
+    return this.loadPath(stage, fingerprint, checkpointPath, 'checkpoint');
+  }
+
+  /** Loads a content-addressed entry without evicting other crawl identities. */
+  loadCached<T>(stage: string, cacheId: string): T | undefined {
+    if (!this.resume) return undefined;
+    return this.loadPath(stage, cacheId, this.cachedPath(stage, cacheId), 'crawl-cache');
+  }
+
+  private loadPath<T>(
+    stage: string,
+    fingerprint: string,
+    checkpointPath: string,
+    logPrefix: string,
+  ): T | undefined {
     if (!fs.existsSync(checkpointPath)) return undefined;
     try {
       const envelope = deserialize(fs.readFileSync(checkpointPath)) as CheckpointEnvelope<T>;
@@ -30,20 +45,35 @@ export class PipelineCheckpointStore {
         || envelope.stage !== stage
         || envelope.fingerprint !== fingerprint
       ) {
-        console.log(`[checkpoint:${stage}] ignored incompatible checkpoint`);
+        console.log(`[${logPrefix}:${stage}] ignored incompatible entry`);
         return undefined;
       }
-      console.log(`[checkpoint:${stage}] resumed from ${checkpointPath}`);
+      console.log(`[${logPrefix}:${stage}] hit ${fingerprint}`);
       return envelope.payload;
     } catch (error) {
-      console.warn(`[checkpoint:${stage}] ignored unreadable checkpoint: ${errorMessage(error)}`);
+      console.warn(`[${logPrefix}:${stage}] ignored unreadable entry: ${errorMessage(error)}`);
       return undefined;
     }
   }
 
   save<T>(stage: string, fingerprint: string, payload: T, log = true): void {
-    fs.mkdirSync(this.directory, { recursive: true });
-    const checkpointPath = this.pathFor(stage);
+    this.savePath(stage, fingerprint, payload, this.pathFor(stage), 'checkpoint', log);
+  }
+
+  /** Atomically stores a crawl result under its immutable content identity. */
+  saveCached<T>(stage: string, cacheId: string, payload: T, log = true): void {
+    this.savePath(stage, cacheId, payload, this.cachedPath(stage, cacheId), 'crawl-cache', log);
+  }
+
+  private savePath<T>(
+    stage: string,
+    fingerprint: string,
+    payload: T,
+    checkpointPath: string,
+    logPrefix: string,
+    log: boolean,
+  ): void {
+    fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
     const temporaryPath = `${checkpointPath}.${process.pid}.tmp`;
     const envelope: CheckpointEnvelope<T> = {
       formatVersion: CHECKPOINT_FORMAT_VERSION,
@@ -58,7 +88,7 @@ export class PipelineCheckpointStore {
     } finally {
       if (fs.existsSync(temporaryPath)) fs.rmSync(temporaryPath);
     }
-    if (log) console.log(`[checkpoint:${stage}] saved ${checkpointPath}`);
+    if (log) console.log(`[${logPrefix}:${stage}] stored ${fingerprint}`);
   }
 
   rootStage(rootId: string): string {
@@ -66,8 +96,14 @@ export class PipelineCheckpointStore {
   }
 
   private pathFor(stage: string): string {
-    if (!/^[a-z0-9-]+$/.test(stage)) throw new Error(`Invalid checkpoint stage: ${stage}`);
+    validateStage(stage);
     return path.join(this.directory, `${stage}.checkpoint`);
+  }
+
+  private cachedPath(stage: string, cacheId: string): string {
+    validateStage(stage);
+    if (!/^[a-f0-9]{64}$/.test(cacheId)) throw new Error(`Invalid crawl cache ID: ${cacheId}`);
+    return path.join(this.directory, 'by-id', stage, `${cacheId}.checkpoint`);
   }
 }
 
@@ -100,4 +136,8 @@ export function combineCheckpointFingerprint(...parts: unknown[]): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function validateStage(stage: string): void {
+  if (!/^[a-z0-9-]+$/.test(stage)) throw new Error(`Invalid checkpoint stage: ${stage}`);
 }

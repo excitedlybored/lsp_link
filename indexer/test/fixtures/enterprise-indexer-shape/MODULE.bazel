@@ -1,0 +1,14 @@
+module(name = "indexer_enterprise_shape")
+
+bazel_dep(name = "rules_jvm_external", version = "6.8")
+
+maven = use_extension("@rules_jvm_external//:extensions.bzl", "maven")
+maven.install(
+    name = "mvn",
+    artifacts = ["org.jetbrains.kotlin:kotlin-stdlib:2.1.0"],
+    repositories = ["https://repo1.maven.org/maven2"],
+    lock_file = "//:maven_install.json",
+)
+use_repo(maven, "mvn")
+
+# Repin with: REPIN=1 bazel run @mvn//:pin

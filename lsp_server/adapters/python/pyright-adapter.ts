@@ -10,6 +10,7 @@ import { BaseStdioLspAdapter } from '../base-stdio-adapter.js';
 export class PyrightAdapter extends BaseStdioLspAdapter {
   public readonly id = 'pyright';
   public readonly language = 'python';
+  public readonly fileExtensions = ['.py', '.pyi'] as const;
 
   public async isAvailable(): Promise<boolean> {
     const bin = BaseStdioLspAdapter.findBinary('pyright-langserver');

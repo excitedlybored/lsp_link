@@ -24,6 +24,7 @@ export interface JavaJdtlsAdapterOptions {
   eclipseProjectPaths?: string[];
   workspaceFolderPaths?: string[];
   uriMappings?: Array<{ sourcePath: string; stagedPath: string }>;
+  sourceFileCount?: number;
 }
 
 /** Tracks `language/status` until ServiceReady and Maven/Gradle import go quiet. */
@@ -65,13 +66,18 @@ class JdtlsStatusTracker {
 export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
   public readonly id = 'jdtls';
   public readonly language = 'java';
+  public readonly fileExtensions = ['.java'] as const;
   public readonly maxConcurrentRequests = 1;
 
   private workspace: JdtlsWorkspace | null = null;
   private readonly status = new JdtlsStatusTracker();
+  private readonly sourceToStaged: Map<string, string>;
+  private readonly stagedToSource: Map<string, string>;
 
   constructor(private readonly options: JavaJdtlsAdapterOptions = {}) {
     super();
+    this.sourceToStaged = uriMappingIndex(options.uriMappings ?? [], 'toStaged');
+    this.stagedToSource = uriMappingIndex(options.uriMappings ?? [], 'toSource');
   }
 
   public override getSessionMetadata(): {
@@ -145,19 +151,15 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
   }
 
   private mapFilePath(filePath: string, direction: 'toStaged' | 'toSource'): string {
-    const mappings = this.options.uriMappings ?? [];
-    const ordered = [...mappings].sort((left, right) => {
-      const leftBase = direction === 'toStaged' ? left.sourcePath : left.stagedPath;
-      const rightBase = direction === 'toStaged' ? right.sourcePath : right.stagedPath;
-      return rightBase.length - leftBase.length;
-    });
-    for (const mapping of ordered) {
-      const from = path.resolve(direction === 'toStaged' ? mapping.sourcePath : mapping.stagedPath);
-      const relative = path.relative(from, path.resolve(filePath));
-      if (relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
-        const to = direction === 'toStaged' ? mapping.stagedPath : mapping.sourcePath;
-        return path.resolve(to, relative);
-      }
+    const mappings = direction === 'toStaged' ? this.sourceToStaged : this.stagedToSource;
+    const resolvedFile = path.resolve(filePath);
+    let candidate = resolvedFile;
+    while (true) {
+      const target = mappings.get(uriMappingKey(candidate));
+      if (target !== undefined) return path.resolve(target, path.relative(candidate, resolvedFile));
+      const parent = path.dirname(candidate);
+      if (parent === candidate) break;
+      candidate = parent;
     }
     return filePath;
   }
@@ -191,6 +193,7 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
       buildSystems: this.options.buildSystems,
       excludedRoots: this.options.excludedRoots,
       eclipseProjectImport: Boolean(this.options.eclipseProjectPaths?.length),
+      sourceFileCount: this.options.sourceFileCount,
     });
     if (this.workspace.usesBazel && this.workspace.buildImportEnabled('bazel') && !this.options.bazelModelPrepared) {
       const result = await ensureBazelProjectModel(workspacePath);
@@ -200,11 +203,17 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
           buildSystems: this.options.buildSystems,
           excludedRoots: this.options.excludedRoots,
           eclipseProjectImport: Boolean(this.options.eclipseProjectPaths?.length),
+          sourceFileCount: this.options.sourceFileCount,
         });
       }
     }
     const runtime = JdtlsRuntimeLocator.locate(this.workspace.requiredJavaMajor);
-    const launch = createJdtlsProcessLaunch(workspacePath, this.workspace, runtime);
+    const launch = createJdtlsProcessLaunch(
+      workspacePath,
+      this.workspace,
+      runtime,
+      path.join(workspacePath, '.jdtls-data'),
+    );
     // JDT LS builds Preferences.rootPaths from its own initialization option,
     // not from the standard InitializeParams.workspaceFolders field. Keep both
     // populated so every generated project is imported during initialisation.
@@ -218,6 +227,28 @@ export class JavaJdtlsAdapter extends BaseStdioLspAdapter {
       },
     };
   }
+}
+
+function uriMappingIndex(
+  mappings: NonNullable<JavaJdtlsAdapterOptions['uriMappings']>,
+  direction: 'toStaged' | 'toSource',
+): Map<string, string> {
+  const result = new Map<string, string>();
+  for (const mapping of mappings) {
+    const from = path.resolve(direction === 'toStaged' ? mapping.sourcePath : mapping.stagedPath);
+    // Preserve the first mapping, matching the stable-sort/first-match policy
+    // used before this lookup became an ancestor map.
+    const key = uriMappingKey(from);
+    if (!result.has(key)) {
+      result.set(key, path.resolve(direction === 'toStaged' ? mapping.stagedPath : mapping.sourcePath));
+    }
+  }
+  return result;
+}
+
+function uriMappingKey(value: string): string {
+  const normalized = path.normalize(value);
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 export function isJdtlsEmptyTypeDefinitionResponse(method: string, error: unknown): boolean {
