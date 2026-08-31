@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { BazelBuildMode, BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
+import type { BazelTargetScope } from '../../../lsp_server/adapters/java/bazel-project-model.js';
 import { CRAWL_PROFILES, type CrawlProfile } from '../ingest/crawl-profile.js';
 
 export interface LspLinkRunConfig {
@@ -10,7 +10,7 @@ export interface LspLinkRunConfig {
   path: string;
   semanticHash: string;
   bazel: {
-    buildMode: BazelBuildMode;
+    buildModelMode: 'integrated' | 'prepared';
     scope: BazelTargetScope;
     preparation: { concurrency: number; timeoutMs: number };
   };
@@ -43,7 +43,10 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   if (root.schemaVersion !== 1) throw new Error(`config.schemaVersion must be 1, got ${String(root.schemaVersion)}`);
   const directory = path.dirname(resolved);
   const bazel = object(root.bazel, 'config.bazel');
-  keys(bazel, ['buildMode', 'scope', 'preparation'], 'config.bazel');
+  keys(bazel, ['buildModelMode', 'buildMode', 'scope', 'preparation'], 'config.bazel');
+  if (bazel.buildModelMode !== undefined && bazel.buildMode !== undefined) {
+    throw new Error('config.bazel cannot contain both buildModelMode and legacy buildMode');
+  }
   const scope = parseScope(bazel.scope);
   const preparation = object(bazel.preparation === undefined ? {} : bazel.preparation, 'config.bazel.preparation');
   keys(preparation, ['concurrency', 'timeoutMs'], 'config.bazel.preparation');
@@ -55,11 +58,13 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   keys(quality, ['failOnFailedBuildRoot'], 'config.quality');
   const checkpoints = object(root.checkpoints === undefined ? {} : root.checkpoints, 'config.checkpoints');
   keys(checkpoints, ['directory'], 'config.checkpoints');
-  const buildMode = enumeration(bazel.buildMode === undefined ? 'managed' : bazel.buildMode, ['managed', 'prebuilt'], 'config.bazel.buildMode');
+  const buildModelMode = bazel.buildModelMode !== undefined
+    ? enumeration(bazel.buildModelMode, ['integrated', 'prepared'], 'config.bazel.buildModelMode')
+    : legacyBuildModelMode(bazel.buildMode);
   const profile = enumeration(crawl.profile === undefined ? 'exhaustive' : crawl.profile, CRAWL_PROFILES, 'config.crawl.profile');
   const semantic = {
     schemaVersion: 1, name: string(root.name === undefined ? 'default' : root.name, 'config.name'),
-    bazel: { buildMode, scope }, profile,
+    bazel: { buildModelMode, scope }, profile,
     artifacts: {
       maxClasses: optionalPositive(artifacts.maxClasses, 'config.artifacts.maxClasses'),
       fetchSources: boolean(artifacts.fetchSources === undefined ? true : artifacts.fetchSources, 'config.artifacts.fetchSources'),
@@ -71,7 +76,7 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
     schemaVersion: 1, name: semantic.name, path: resolved,
     semanticHash: createHash('sha256').update(JSON.stringify(semantic)).digest('hex'),
     bazel: {
-      buildMode,
+      buildModelMode,
       scope,
       preparation: {
         concurrency: positive(preparation.concurrency === undefined ? 4 : preparation.concurrency, 'config.bazel.preparation.concurrency'),
@@ -95,6 +100,11 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
         ? undefined : path.resolve(directory, string(checkpoints.directory, 'config.checkpoints.directory')),
     },
   };
+}
+
+function legacyBuildModelMode(value: unknown): 'integrated' | 'prepared' {
+  const mode = enumeration(value === undefined ? 'managed' : value, ['managed', 'prebuilt'], 'config.bazel.buildMode');
+  return mode === 'prebuilt' ? 'prepared' : 'integrated';
 }
 
 function parseScope(value: unknown): BazelTargetScope {

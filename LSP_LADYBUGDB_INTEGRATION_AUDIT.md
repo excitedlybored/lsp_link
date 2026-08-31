@@ -16,6 +16,12 @@ persistent JDT shards, and resumable stage checkpoints. Claims such as
 capabilities, mapping coverage, diagnostics, and extractor evidence must be
 reported for each run.
 
+The active end-to-end flow is `./lsp-link index /path/to/repository`. It
+automatically prepares any Bazel model (reusing prior build actions), restores
+or executes the content-addressed LSP crawl, normalizes and enriches evidence,
+bulk-loads the graph, and atomically publishes `.gitnexus/lsp-lbug`. The
+remainder of this document is intentionally historical.
+
 ## Historical Data Flow (removed)
 
 ```text

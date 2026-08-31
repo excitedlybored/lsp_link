@@ -103,6 +103,19 @@ Or run the bounded verifier used by this fixture (default concurrency: four):
 node tools/verify-builds.mjs 4
 ```
 
+These commands verify that the applications compile; they are not required as
+a separate indexing stage. From the `lsp_link` repository root, the complete
+indexing flow is:
+
+```bash
+./lsp-link index sample_projects/bazel-springboot-temporal-monorepo
+```
+
+The launcher discovers all nested Bazel roots, runs scoped preparation while
+reusing any compatible outputs from the verification build, performs or
+restores the LSP crawl, enriches artifacts, and publishes
+`.gitnexus/lsp-lbug` in this sample directory.
+
 ## Expected build-root discovery
 
 The scanner should report one root for every application:

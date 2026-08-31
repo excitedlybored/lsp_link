@@ -24,4 +24,6 @@ git clone --depth 1 https://github.com/temporalio/sdk-java.git temporal-sdk-java
 ```
 
 Indexing lives in `indexer/`, language-server integration in `lsp_server/`, and
-read-only queries in `analyzer/`.
+read-only queries in `analyzer/`. The public flow that orchestrates those
+components is always `./lsp-link index /path/to/repository`; these cloned
+reference repositories never participate in that runtime flow.

@@ -3,7 +3,7 @@
 This deterministic synthetic fixture models a large three-layer Java monorepo
 without containing organization-specific code, labels, dependencies, or names.
 It is intended to exercise Bazel scope resolution, the recursive source aspect,
-source-inventory scaling, JDT.LS crawling, artifact enrichment, and prebuilt
+source-inventory scaling, JDT.LS crawling, artifact enrichment, and prepared
 handoff validation.
 
 The generated `workspace/` contains exactly 5,000 Java documents in 500
@@ -89,19 +89,19 @@ actions.
 From the repository root, run these exact commands:
 
 ```bash
-npm run index -- bazel-prepare \
-  sample_projects/bazel-layered-java-monorepo-5000/workspace \
-  --config sample_projects/bazel-layered-java-monorepo-5000/index-config.json
-
-npm run index -- build \
+./lsp-link index \
   sample_projects/bazel-layered-java-monorepo-5000/workspace \
   --config sample_projects/bazel-layered-java-monorepo-5000/index-config.json \
   --output /tmp/layered-java-5000.lbug
 ```
 
-The sample config uses prebuilt indexing, a one-hour total preparation budget,
+The sample config uses prepared indexing, a one-hour total preparation budget,
 four-way bounded concurrency, resumable content-addressed crawling, unlimited class
 enrichment, source fetching, and strict build-root failure enforcement.
+The launcher automatically runs `prepare-build-model` and then `build-index`.
+If the optional Bazel build above has already completed, preparation reuses its
+action cache while still producing and validating the required indexer
+handoff; users do not omit or manually run either internal stage.
 It deliberately uses the scalable `core` crawl profile. The Temporal extractor
 can identify the standard workflow annotations, implementations, and SDK calls
 from the JVM graph produced by this profile. Use `exhaustive` only when precise

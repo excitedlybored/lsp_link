@@ -1,11 +1,18 @@
 {
   "schemaVersion": 1,
-  "name": "default-core-java",
+  "name": "default-index",
   "bazel": {
-    "buildMode": "prebuilt",
+    "buildModelMode": "prepared",
     "scope": {
       "includeTargetPatterns": ["//..."],
-      "includeRuleKinds": ["java_binary", "java_library", "java_test"],
+      "includeRuleKinds": [
+        "java_binary",
+        "java_library",
+        "java_test",
+        "kt_jvm_binary",
+        "kt_jvm_library",
+        "kt_jvm_test"
+      ],
       "explicitTargets": [],
       "excludeTargetNamePatterns": [
         ".*_deploy_bannedcheck$",

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "layered-java-5000",
   "bazel": {
-    "buildMode": "prebuilt",
+    "buildModelMode": "prepared",
     "scope": {
       "includeTargetPatterns": ["//..."],
       "includeRuleKinds": ["java_binary", "java_library", "java_test"],

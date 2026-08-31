@@ -17,12 +17,36 @@ test/        build import and routing tests
 capability coverage, performs the separate JVM artifact stage, and writes
 LadybugDB.
 
-The adapter registry supports Java, Python, C/C++, Rust, TypeScript/JavaScript,
-C#, and COBOL for direct dispatch and query use. The production `npm run index`
-pipeline is currently Java-only: it discovers Java files, schedules Java build
-roots, runs JDT LS, and enriches JVM artifacts. Supporting an adapter in the
-registry does not yet make that language part of the persisted repository
-crawl.
+The adapter registry supports Java, Kotlin, Python, C/C++, Rust,
+TypeScript/JavaScript, C#, and COBOL. The production runner uses this same
+catalog: Java follows the specialized build-root/JDT path, while other
+registered languages use generic semantic partitions. JVM artifact enrichment
+remains a separate stage and does not turn bytecode evidence into an LSP
+observation.
+
+## Overall production flow
+
+The component has no competing production crawler. The root launcher owns the
+workflow, while this package participates only in the semantic-crawl step:
+
+```text
+./lsp-link index REPOSITORY
+  -> verify tools and configuration
+  -> prepare-build-model
+       discover/filter Bazel targets
+       run the scoped aspect build (reusing Bazel's action cache)
+       validate and write the handoff
+  -> build-index
+       inventory files and compute crawlCacheId
+       exact cache hit: restore observations without LSP startup
+       cache miss: route semantic partitions through this adapter registry
+       normalize calls and enrich artifacts
+       bulk-load and atomically publish the graph
+```
+
+An ordinary earlier `bazel build` is optional cache warm-up. It neither needs
+to be repeated manually nor replaces `prepare-build-model`, because the normal
+build does not produce the indexer-specific handoff and source inventory.
 
 ## Java build roots and process topology
 
@@ -69,22 +93,22 @@ project catalog and classpaths before source crawling begins.
 
 ```text
 initialize -> initialized -> wait for project import
-  -> pass 1: for each document
-       didOpen -> documentSymbol -> didClose
-  -> pass 2: for each document
-       didOpen
-         -> per-symbol navigation, hierarchy, call, and hover requests
-         -> document semantic tokens, token-position navigation,
-            signature help, and diagnostics
-       didClose
+  -> declaration inventory: documentSymbol once per document
+  -> declaration-scoped references and eligible hierarchy/call requests
+  -> semantic tokens once per document
+  -> navigation/hover only for token positions not already covered by
+     declaration-reference evidence
+  -> signature help and diagnostics at eligible document positions
   -> persist root checkpoint
   -> next root on the shard
   -> shutdown -> exit
 ```
 
-Pass 1 establishes the workspace symbol registry before pass 2 resolves
-cross-document results. This requires opening each owned document twice but
-allows later observations to map to symbols discovered anywhere in the root.
+This is one facts-first crawl algorithm. `core` and `exhaustive` select coverage
+depth, not competing crawlers. The declaration inventory establishes the
+workspace symbol registry before cross-document results are mapped. Repeated
+read-only requests with identical method and parameters are coalesced and
+memoized within the server session.
 
 Negotiated capabilities determine which requests are eligible. Unsupported,
 excluded, failed, timed-out, empty, mapped, and unmapped outcomes remain
@@ -98,8 +122,8 @@ requests on Java primitives and synthetic array `length`. Since the LSP result
 is nullable and no declaration exists for these constructs, the JDT adapter
 normalizes that exact response to `null`. Other malformed responses still fail.
 
-Use `npm run query` for direct interactive requests and `npm run index` for a
-Java repository crawl.
+Use `npm run query` for direct interactive requests. Use
+`./lsp-link index /path/to/repository` for every production repository crawl.
 
 ## Persistence and restart behavior
 
@@ -110,26 +134,29 @@ incompatible checkpoint is ignored instead of hiding a changed observation.
 
 Root-level checkpoints avoid repeating completed roots in a multi-root
 repository. They do not preserve progress within one root: interrupting a long
-single-root crawl repeats that root on the next run. Graph persistence happens
-after the collected root batches are assembled, so the current design also
-retains the full observation batch in memory until the persistence stage.
+single-root crawl repeats that root on the next run. A repository-wide
+content-addressed crawl identity can restore a compatible completed crawl
+without starting a language server. Graph publication bulk-loads staged CSV
+data and atomically publishes only after required stages succeed.
 
 ## Performance characteristics
 
 The dominant cost is protocol request count, not filesystem discovery. For a
-root with `D` documents, `S` discovered symbols, `T` eligible identifier-like
-semantic tokens, and `H` signature-help positions, the current crawl performs:
+root with `D` documents, `S` discovered declarations, `R` declaration-scoped
+reference requests, `G` uncovered semantic-token positions, and `H`
+signature-help positions, the crawl performs:
 
 - one document-symbol request per document;
-- several serialized navigation and hover requests per symbol, plus hierarchy
-  and call requests for eligible symbol kinds;
-- definition, declaration, hover, and sometimes type-definition or
-  implementation requests for eligible semantic-token positions;
+- one reference request per eligible declaration, plus hierarchy and call
+  requests for eligible symbol kinds and the chosen coverage profile;
+- definition, declaration, hover, and eligible type/implementation requests
+  only for semantic-token positions not covered by mapped reference evidence;
 - one full semantic-token request and diagnostic requests per document; and
 - one signature-help request per heuristically discovered call position.
 
-The practical cost is therefore closer to `O(D + S * capabilities + T *
-token-capabilities + H)` than `O(D)`. Large implementation/reference responses
+The practical cost is therefore closer to `O(D + R + G * gap-capabilities +
+H)` than the former Cartesian `O(D + S * capabilities + T * capabilities)`
+shape. Large implementation/reference responses
 may also enumerate standard-library or dependency locations, increasing
 normalization and graph-materialization work. Increasing root concurrency does
 not shorten a repository that contains only one large build root.

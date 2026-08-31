@@ -41,6 +41,31 @@ The Kotlin LSP currently supports JVM projects modeled by Gradle or Maven. A
 loose `.kt` file can still return useful semantics, but a production repository
 should retain its real build files so dependency resolution is authoritative.
 
+## Production indexing flow
+
+The standalone commands below are diagnostic clients. Production indexing is
+started only through the repository-level launcher:
+
+```bash
+./lsp-link index /path/to/repository
+```
+
+The launcher installs missing bundled tools, prepares and validates Bazel build
+models, computes the content-addressed crawl identity, and then asks this
+package's adapter registry to serve only cache-miss semantic partitions. The
+indexer owns normalization, artifact enrichment, bulk graph loading, and final
+publication; `lsp_server` owns adapter selection, process lifecycle, protocol
+backpressure, and shutdown.
+
+```text
+index -> prepare-build-model -> crawl cache lookup
+      -> LSP adapters on cache misses -> normalize/enrich -> publish graph
+```
+
+An existing Bazel build is automatically useful as an action-cache warm-up.
+It is not a separate indexer stage and does not replace the scoped aspect build
+that produces the indexer handoff.
+
 ---
 
 ## 1. Start via Shell Script
@@ -168,11 +193,14 @@ labels are safely joined with `//` query labels without altering external reposi
 The source aspect accepts both public compatibility and private `rules_java` `JavaInfo` provider identities,
 which supports repositories that mix standard Java rules with custom Java-producing rules.
 
-Enterprise builds may isolate Bazel access from indexing. `npm run index -- bazel-prepare <workspace>` runs
-the user-owned Bazel analysis/build phase and emits `.gitnexus/jdtls/bazel-handoff.json` last. A later
-`npm run index -- build <workspace> --bazel-build-mode prebuilt` performs no Bazel command. It accepts the
-handoff only when the build configuration, model, inventory, classpath/source JAR hashes, and all crawl
-source hashes still match. Set `GITNEXUS_JDT_BAZEL_HANDOFF` for a non-default same-workspace handoff path.
+The public `./lsp-link index <workspace>` command runs the required Bazel
+preparation before indexing and emits `.gitnexus/jdtls/bazel-handoff.json`
+last. Its subsequent `build-index` stage performs no Bazel command in prepared
+mode. The handoff is accepted only when the build configuration, model,
+inventory, classpath/source JAR hashes, and all crawl source hashes still
+match. Advanced operators can invoke `prepare-build-model` and `build-index`
+directly when diagnosing stage boundaries. Set `GITNEXUS_JDT_BAZEL_HANDOFF`
+for a non-default same-workspace handoff path.
 
 Imports are enabled by default. Use `GITNEXUS_JDT_IMPORT=0` globally, or
 `GITNEXUS_JDT_GRADLE_IMPORT`, `GITNEXUS_JDT_MAVEN_IMPORT`, and `GITNEXUS_JDT_BAZEL_IMPORT`

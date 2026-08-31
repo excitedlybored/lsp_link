@@ -19,7 +19,17 @@ interface BazelPreparationCommandOptions {
 export async function runBazelPreparationCommand(argv: string[]): Promise<BazelPreparationReport> {
   const options = parseBazelPreparationCommandOptions(argv);
   const roots = discoverJavaBuildRoots(options.workspace).filter((root) => root.systems.includes('bazel'));
-  if (roots.length === 0) throw new Error(`No Bazel roots found under ${options.workspace}`);
+  if (roots.length === 0) {
+    const report = {
+      startedAt: new Date().toISOString(), durationMs: 0,
+      concurrency: options.concurrency ?? 4, timedOut: false, roots: [],
+    };
+    console.log(JSON.stringify({
+      workspace: options.workspace, durationMs: 0, roots: [],
+      status: 'skipped', reason: 'No Bazel build roots discovered',
+    }, null, 2));
+    return report;
+  }
   const report = await prepareBazelProjectModels(roots, {
     buildMode: 'managed',
     concurrency: options.concurrency,
@@ -54,7 +64,7 @@ export function parseBazelPreparationCommandOptions(argv: string[]): BazelPrepar
   const extracted = extractRunConfig(argv);
   const args = extracted.args;
   const config = extracted.config;
-  if (args[0] === 'bazel-prepare') args.shift();
+  if (args[0] === 'bazel-prepare' || args[0] === 'prepare-build-model') args.shift();
   const workspace = path.resolve(args.shift() ?? '.');
   let concurrency: number | undefined = config?.bazel.preparation.concurrency;
   let timeoutMs: number | undefined = config?.bazel.preparation.timeoutMs;

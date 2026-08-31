@@ -31,15 +31,18 @@ only the canonical fixture is retained.
 ## Index a fixture
 
 ```bash
-npm run index -- build sample_projects/spring-boot-demo \
-  --output /tmp/spring-boot-demo.lbug
+./lsp-link index sample_projects/spring-boot-demo
 
-npm run index -- build sample_projects/02_python_fastapi_quant \
-  --output /tmp/python-fastapi-quant.lbug
+./lsp-link index sample_projects/02_python_fastapi_quant
 
-npm run index -- build sample_projects/03_typescript_express_gateway \
-  --output /tmp/typescript-express-gateway.lbug
+./lsp-link index sample_projects/03_typescript_express_gateway
 ```
+
+Each invocation runs the complete workflow: tool/configuration verification,
+build-model preparation when Bazel roots exist, exact crawl-cache reuse or LSP
+collection, normalization/enrichment, bulk graph loading, and atomic
+publication under the fixture's `.gitnexus/lsp-lbug`. No separate build or
+preparation command is required.
 
 ## Test every sample
 

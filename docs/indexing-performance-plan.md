@@ -1,5 +1,12 @@
 # Complete-Crawl Performance Plan
 
+> Status: implementation history. The production entrypoint is now
+> `./lsp-link index /path/to/repository`, which automates build-model
+> preparation, content-addressed crawl reuse, the facts-first LSP crawl,
+> normalization, streamed artifact enrichment, bulk graph loading, and atomic
+> publication. See [Indexer instructions](instructions.md) for the current
+> operational flow.
+
 The solution is to preserve complete coverage without treating every LSP
 capability as valid at every source position.
 

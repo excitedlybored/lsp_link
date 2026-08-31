@@ -8,7 +8,7 @@ import { parseBazelPreparationCommandOptions } from '../src/cli/bazel-prepare.js
 import { parseLspKnowledgeGraphBuildOptions } from '../src/pipeline/cli-options.js';
 import { extractRunConfig, loadRunConfig } from '../src/pipeline/run-config.js';
 
-const TRACKED_DEFAULT_CONFIG = fileURLToPath(new URL('../../config/core-java.json', import.meta.url));
+const TRACKED_DEFAULT_CONFIG = fileURLToPath(new URL('../../config/default.json', import.meta.url));
 const SCALE_SAMPLE_CONFIG = fileURLToPath(new URL(
   '../../sample_projects/bazel-layered-java-monorepo-5000/index-config.json',
   import.meta.url,
@@ -21,7 +21,7 @@ function completeConfig(): JsonObject {
     schemaVersion: 1,
     name: 'core-java',
     bazel: {
-      buildMode: 'prebuilt',
+      buildModelMode: 'prepared',
       scope: {
         includeTargetPatterns: ['//service/...', '//...'],
         includeRuleKinds: ['java_test', 'java_library', 'java_binary'],
@@ -71,13 +71,20 @@ function mutated(change: (value: JsonObject) => void): string {
   return configFile(value);
 }
 
-test('loads the tracked core-Java default without repository-specific labels', () => {
+test('loads the tracked polyglot default without repository-specific labels', () => {
   const config = loadRunConfig(TRACKED_DEFAULT_CONFIG);
-  assert.equal(config.name, 'default-core-java');
-  assert.equal(config.bazel.buildMode, 'prebuilt');
+  assert.equal(config.name, 'default-index');
+  assert.equal(config.bazel.buildModelMode, 'prepared');
   assert.equal(config.crawl.profile, 'core');
   assert.deepEqual(config.bazel.scope.includeTargetPatterns, ['//...']);
-  assert.deepEqual(config.bazel.scope.includeRuleKinds, ['java_binary', 'java_library', 'java_test']);
+  assert.deepEqual(config.bazel.scope.includeRuleKinds, [
+    'java_binary',
+    'java_library',
+    'java_test',
+    'kt_jvm_binary',
+    'kt_jvm_library',
+    'kt_jvm_test',
+  ]);
   assert.deepEqual(config.bazel.scope.excludeLabels, []);
   assert.equal(config.quality.failOnFailedBuildRoot, true);
 });
@@ -91,7 +98,7 @@ test('loads every explicit version-1 config field', () => {
   assert.equal(config.name, 'core-java');
   assert.equal(config.path, filename);
   assert.match(config.semanticHash, /^[a-f0-9]{64}$/);
-  assert.equal(config.bazel.buildMode, 'prebuilt');
+  assert.equal(config.bazel.buildModelMode, 'prepared');
   assert.deepEqual(config.bazel.scope, {
     includeTargetPatterns: ['//...', '//service/...'],
     includeRuleKinds: ['java_binary', 'java_library', 'java_test'],
@@ -116,7 +123,7 @@ test('applies every omitted-field default', () => {
   const config = loadRunConfig(configFile(minimalConfig()));
 
   assert.equal(config.name, 'default');
-  assert.equal(config.bazel.buildMode, 'managed');
+  assert.equal(config.bazel.buildModelMode, 'integrated');
   assert.deepEqual(config.bazel.scope, {
     includeTargetPatterns: ['//...'],
     includeRuleKinds: ['java_library'],
@@ -137,9 +144,21 @@ test('applies every omitted-field default', () => {
   assert.deepEqual(config.checkpoints, { directory: undefined });
 });
 
+test('maps legacy build-mode names and rejects mixing legacy and indicative fields', () => {
+  const legacy = completeConfig();
+  delete legacy.bazel.buildModelMode;
+  legacy.bazel.buildMode = 'prebuilt';
+  assert.equal(loadRunConfig(configFile(legacy)).bazel.buildModelMode, 'prepared');
+  legacy.bazel.buildModelMode = 'prepared';
+  assert.throws(
+    () => loadRunConfig(configFile(legacy)),
+    /cannot contain both buildModelMode and legacy buildMode/,
+  );
+});
+
 test('accepts all enum values, nullable fields, and numeric boundaries', () => {
   const value = completeConfig();
-  value.bazel.buildMode = 'managed';
+  value.bazel.buildModelMode = 'integrated';
   value.bazel.preparation.concurrency = 1;
   value.bazel.preparation.timeoutMs = 1;
   value.crawl.profile = 'exhaustive';
@@ -149,7 +168,7 @@ test('accepts all enum values, nullable fields, and numeric boundaries', () => {
   value.checkpoints.directory = null;
   const config = loadRunConfig(configFile(value));
 
-  assert.equal(config.bazel.buildMode, 'managed');
+  assert.equal(config.bazel.buildModelMode, 'integrated');
   assert.equal(config.bazel.preparation.concurrency, 1);
   assert.equal(config.bazel.preparation.timeoutMs, 1);
   assert.equal(config.crawl.profile, 'exhaustive');
@@ -215,7 +234,7 @@ test('each semantic field changes the semantic hash', () => {
   const baseline = loadRunConfig(configFile(completeConfig(), directory)).semanticHash;
   const changes: Array<[string, (value: JsonObject) => void]> = [
     ['name', (value) => { value.name = 'another-run'; }],
-    ['bazel.buildMode', (value) => { value.bazel.buildMode = 'managed'; }],
+    ['bazel.buildModelMode', (value) => { value.bazel.buildModelMode = 'integrated'; }],
     ['scope.includeTargetPatterns', (value) => { value.bazel.scope.includeTargetPatterns = ['//app/...']; }],
     ['scope.includeRuleKinds', (value) => { value.bazel.scope.includeRuleKinds = ['java_library']; }],
     ['scope.explicitTargets', (value) => { value.bazel.scope.explicitTargets = ['//app:custom']; }],
@@ -247,7 +266,7 @@ test('rejects unsupported schema, missing required objects, and malformed JSON',
 test('rejects invalid name, enums, booleans, regexes, and paths', () => {
   const cases: Array<[string, (value: JsonObject) => void, RegExp]> = [
     ['name', (value) => { value.name = ''; }, /config\.name must be a non-empty string/],
-    ['buildMode', (value) => { value.bazel.buildMode = 'automatic'; }, /config\.bazel\.buildMode must be one of/],
+    ['buildModelMode', (value) => { value.bazel.buildModelMode = 'automatic'; }, /config\.bazel\.buildModelMode must be one of/],
     ['profile', (value) => { value.crawl.profile = 'fast'; }, /config\.crawl\.profile must be one of/],
     ['resume', (value) => { value.crawl.resume = 'yes'; }, /config\.crawl\.resume must be boolean/],
     ['fetchSources', (value) => { value.artifacts.fetchSources = 1; }, /config\.artifacts\.fetchSources must be boolean/],
@@ -263,7 +282,7 @@ test('rejects invalid name, enums, booleans, regexes, and paths', () => {
 test('rejects null for every non-nullable optional field', () => {
   const cases: Array<[string, (value: JsonObject) => void]> = [
     ['name', (value) => { value.name = null; }],
-    ['bazel.buildMode', (value) => { value.bazel.buildMode = null; }],
+    ['bazel.buildModelMode', (value) => { value.bazel.buildModelMode = null; }],
     ['bazel.preparation', (value) => { value.bazel.preparation = null; }],
     ['bazel.preparation.concurrency', (value) => { value.bazel.preparation.concurrency = null; }],
     ['bazel.preparation.timeoutMs', (value) => { value.bazel.preparation.timeoutMs = null; }],
@@ -337,8 +356,8 @@ test('rejects unknown keys at every object level', () => {
 
 test('extracts one config argument in any position and rejects malformed uses', () => {
   const filename = configFile();
-  const extracted = extractRunConfig(['build', '--config', filename, '/workspace', '--output', '/tmp/run.lbug']);
-  assert.deepEqual(extracted.args, ['build', '/workspace', '--output', '/tmp/run.lbug']);
+  const extracted = extractRunConfig(['build-index', '--config', filename, '/workspace', '--output', '/tmp/run.lbug']);
+  assert.deepEqual(extracted.args, ['build-index', '/workspace', '--output', '/tmp/run.lbug']);
   assert.equal(extracted.config?.path, filename);
   assert.deepEqual(extractRunConfig(['build', '/workspace']), { args: ['build', '/workspace'] });
   assert.throws(() => extractRunConfig(['build', '--config']), /--config requires a value/);
@@ -348,9 +367,9 @@ test('extracts one config argument in any position and rejects malformed uses', 
 test('maps every config field used by the build command', () => {
   const filename = configFile();
   const config = loadRunConfig(filename);
-  const options = parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--config', filename]);
+  const options = parseLspKnowledgeGraphBuildOptions(['build-index', '/workspace', '--config', filename]);
 
-  assert.equal(options.bazelBuildMode, config.bazel.buildMode);
+  assert.equal(options.bazelBuildMode, config.bazel.buildModelMode === 'prepared' ? 'prebuilt' : 'managed');
   assert.deepEqual(options.bazelTargetScope, config.bazel.scope);
   assert.equal(options.runConfigPath, config.path);
   assert.equal(options.runConfigHash, config.semanticHash);
@@ -370,7 +389,7 @@ test('maps every config field used by the build command', () => {
 test('allows every operational build override with config', () => {
   const filename = configFile();
   const options = parseLspKnowledgeGraphBuildOptions([
-    'build', '/workspace', '--config', filename,
+    'build-index', '/workspace', '--config', filename,
     '--output', '/tmp/result.lbug', '--concurrency', '7', '--artifact-concurrency', '8',
     '--checkpoint-directory', '/tmp/checkpoints', '--no-resume',
   ]);
@@ -385,22 +404,22 @@ test('rejects every semantic build override with config', () => {
   const filename = configFile();
   const cases: string[][] = [
     ['--artifact-max-classes', '2'],
-    ['--bazel-build-mode', 'managed'],
+    ['--build-model-mode', 'integrated'],
     ['--bazel-target-query', '//app:lib'],
     ['--no-artifact-source-fetch'],
     ['--artifact-classpath-manifest', '/tmp/classes.json'],
   ];
   for (const cli of cases) {
     assert.throws(() => parseLspKnowledgeGraphBuildOptions([
-      'build', '/workspace', '--config', filename, ...cli,
+      'build-index', '/workspace', '--config', filename, ...cli,
     ]), /cannot override semantic settings/, cli[0]);
   }
 });
 
-test('maps config into managed preparation and allows only its operational overrides', () => {
+test('maps config into build-model preparation and allows only its operational overrides', () => {
   const filename = configFile();
   const config = loadRunConfig(filename);
-  const configured = parseBazelPreparationCommandOptions(['bazel-prepare', '/workspace', '--config', filename]);
+  const configured = parseBazelPreparationCommandOptions(['prepare-build-model', '/workspace', '--config', filename]);
   assert.equal(configured.concurrency, 3);
   assert.equal(configured.timeoutMs, 9000);
   assert.deepEqual(configured.targetScope, config.bazel.scope);
@@ -408,19 +427,19 @@ test('maps config into managed preparation and allows only its operational overr
   assert.equal(configured.targetQuery, undefined);
 
   const overridden = parseBazelPreparationCommandOptions([
-    'bazel-prepare', '/workspace', '--config', filename, '--concurrency', '7', '--timeout-ms', '12000',
+    'prepare-build-model', '/workspace', '--config', filename, '--concurrency', '7', '--timeout-ms', '12000',
   ]);
   assert.equal(overridden.concurrency, 7);
   assert.equal(overridden.timeoutMs, 12000);
   assert.throws(() => parseBazelPreparationCommandOptions([
-    'bazel-prepare', '/workspace', '--config', filename, '--bazel-target-query', '//app:lib',
+    'prepare-build-model', '/workspace', '--config', filename, '--bazel-target-query', '//app:lib',
   ]), /cannot override semantic settings/);
 });
 
 test('loads the 5,000-document layered Bazel sample policy', () => {
   const config = loadRunConfig(SCALE_SAMPLE_CONFIG);
   assert.equal(config.name, 'layered-java-5000');
-  assert.equal(config.bazel.buildMode, 'prebuilt');
+  assert.equal(config.bazel.buildModelMode, 'prepared');
   assert.equal(config.bazel.preparation.timeoutMs, 3_600_000);
   assert.equal(config.crawl.profile, 'core');
   assert.deepEqual(config.bazel.scope.includeRuleKinds, ['java_binary', 'java_library', 'java_test']);

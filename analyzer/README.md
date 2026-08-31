@@ -3,11 +3,22 @@
 `analyzer` is the read-only consumer of LSP-native LadybugDB databases. It does
 not crawl source, start language servers, or mutate graph data.
 
+Create its input through the single automated indexing command:
+
+```bash
+./lsp-link index /path/to/repository
+```
+
+That command prepares any build model, reuses or executes the LSP crawl,
+enriches and bulk-loads the graph, and publishes
+`/path/to/repository/.gitnexus/lsp-lbug`. The analyzer starts only after that
+workflow has completed.
+
 ## OpenCypher MCP server
 
 ```bash
 uv pip install -r analyzer/requirements.txt
-LBUG_REPO=/tmp/repository.lbug npm run mcp:analyzer
+LBUG_REPO=/path/to/repository/.gitnexus/lsp-lbug npm run mcp:analyzer
 ```
 
 Available tools:
@@ -23,9 +34,9 @@ rejected, and LadybugDB is opened in read-only mode.
 ## CLI
 
 ```bash
-npm run graph:summary -- /tmp/repository.lbug
-npm run lbug:read -- /tmp/repository.lbug
-npm run extract -- /tmp/repository.lbug --extractor temporal
+npm run graph:summary -- /path/to/repository/.gitnexus/lsp-lbug
+npm run lbug:read -- /path/to/repository/.gitnexus/lsp-lbug
+npm run extract -- /path/to/repository/.gitnexus/lsp-lbug --extractor temporal
 ```
 
 The typed client exposes exact symbol kinds and ranges, individual

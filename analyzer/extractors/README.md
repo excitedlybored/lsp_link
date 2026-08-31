@@ -52,10 +52,14 @@ confidence model, and assembler.
 
 ## Temporal
 
+First produce the database with `./lsp-link index /path/to/repository`; the
+launcher owns build preparation, crawl-cache reuse, LSP collection, enrichment,
+bulk loading, and publication. Then run the read-only extractor:
+
 ```bash
 uv run --with-requirements analyzer/requirements.txt \
   python -m analyzer.extractors.run \
-  /tmp/bazel-springboot-temporal-kafka-40-final.lbug \
+  /path/to/repository/.gitnexus/lsp-lbug \
   --extractor temporal \
   --output /tmp/temporal-workflows.json
 ```

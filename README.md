@@ -12,29 +12,68 @@ Requirements:
 - A JDK: Java 21 or Java 25. Eclipse JDT.LS 1.57.0 is bundled; no editor installation is required.
 - `uv` and `python3.12` only when using the Python analyzer
 
-Clone and install. npm dependencies are bundled in this repository; the
-installer runs without contacting npm or a configured Artifactory registry.
+Clone the repository. npm dependencies and the Kotlin language server are
+bundled, so the public launcher can install missing tools without contacting
+npm or a configured Artifactory registry.
 
 ```bash
 git clone <repository-url>
-cd ide_link
-./install.sh
+cd lsp_link
 ```
 
-Index a repository. The output path must not already exist.
+Index a repository with one command:
 
 ```bash
-npm run index -- build /path/to/repository \
-  --output /tmp/repository.lbug \
-  --concurrency 4 \
-  --artifact-concurrency 4
+./lsp-link index /path/to/repository
 ```
+
+Run it independently of the terminal with:
+
+```bash
+./lsp-link index /path/to/repository --background
+tail -f /path/to/repository/.gitnexus/index.log
+```
+
+The default graph is `/path/to/repository/.gitnexus/lsp-lbug`. The launcher
+loads `config/default.json`, installs missing local tools, runs the
+`prepare-build-model` stage when configured, and then runs `build-index`.
+Advanced CLI options can be appended to the same command.
+
+## Automated indexing flow
+
+The launcher owns the complete sequence; users do not run a separate Bazel
+build or either internal stage:
+
+```text
+./lsp-link index REPOSITORY
+  -> verify/install bundled tools and load configuration
+  -> prepare-build-model
+       -> detect Bazel roots (skip cleanly when there are none)
+       -> discover and filter the configured target scope
+       -> run the scoped Bazel aspect build
+       -> validate and write the reusable indexer handoff
+  -> build-index
+       -> inventory repository documents and calculate the crawl-cache ID
+       -> reuse exact cached crawl results or run the required language servers
+       -> normalize logical calls and enrich JVM artifact evidence
+       -> bulk-load nodes and relationships into a staging database
+       -> atomically publish .gitnexus/lsp-lbug
+```
+
+If the repository was already built, Bazel automatically reuses compatible
+action-cache entries during `prepare-build-model`. That existing build is a
+useful cache warm-up, but it does not contain the indexer-specific aspect
+metadata and therefore does not replace preparation. On a repeated identical
+index run, the content-addressed crawl cache also avoids repeating LSP work.
+The default `prepared` policy exposes preparation as its own logged process;
+an advanced `integrated` policy executes the same preparation logic inside
+`build-index` without changing the public command.
 
 Inspect the resulting graph or run a semantic extractor:
 
 ```bash
-npm run graph:summary -- /tmp/repository.lbug
-npm run extract -- /tmp/repository.lbug --extractor temporal
+npm run graph:summary -- /path/to/repository/.gitnexus/lsp-lbug
+npm run extract -- /path/to/repository/.gitnexus/lsp-lbug --extractor temporal
 ```
 
 The indexer saves resumable checkpoints beside the output. Re-run the same

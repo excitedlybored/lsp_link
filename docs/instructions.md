@@ -5,28 +5,58 @@ the workspace and output paths with locations on your machine.
 
 ## Run it
 
-From the `lsp_link` repository root, copy this block and change only
-`INDEX_WORKSPACE` and `INDEX_OUTPUT`:
+From the `lsp_link` repository root:
 
 ```bash
-INDEX_WORKSPACE="/absolute/path/to/enterprise-bazel-repository"
-INDEX_OUTPUT="/absolute/path/to/core-java.lbug"
-
-# Required first phase: prepare a complete, validated Bazel handoff.
-npm run index -- bazel-prepare "$INDEX_WORKSPACE" \
-  --config config/core-java.json
-
-# Required second phase: index the prepared handoff without running Bazel.
-npm run index -- build "$INDEX_WORKSPACE" \
-  --config config/core-java.json \
-  --output "$INDEX_OUTPUT"
+./lsp-link index /absolute/path/to/repository
 ```
 
-The first command must finish successfully before running the second. The
-output path must not already exist. Even when the enterprise Bazel build has
-already completed, run `bazel-prepare`; it reuses Bazel's cache while producing
-the indexer-specific metadata and handoff. A successful second command writes
-the LadybugDB graph to `INDEX_OUTPUT`.
+Add `--background` to detach it from the terminal. The log and PID are written
+to `.gitnexus/index.log` and `.gitnexus/index.pid` in the target repository.
+The launcher installs missing local tools, loads `config/default.json`, runs
+`prepare-build-model`, and starts `build-index` only after preparation succeeds.
+The default graph is `<repository>/.gitnexus/lsp-lbug`.
+
+## Overall automated flow
+
+`./lsp-link index` is the only public workflow. It orchestrates these stages in
+order and stops before publication if a required stage fails:
+
+```text
+index REPOSITORY
+  |
+  +-- launcher setup
+  |     verify/install bundled tools
+  |     load and validate config/default.json (or --config)
+  |
+  +-- prepare-build-model
+  |     discover Bazel build roots; skip when none exist
+  |     query each configured scope and exclude non-index targets
+  |     run the scoped Bazel aspect build
+  |     validate classpaths, sources, artifacts, and configuration identity
+  |     publish the indexer-specific handoff
+  |
+  +-- build-index
+        inventory repository and structural documents
+        compute the content-addressed crawl-cache ID
+        exact cache hit -> load completed semantic observations
+        cache miss      -> start adapters and perform the LSP crawl
+        normalize calls and stream JVM artifact enrichment
+        generate CSV and bulk-copy graph nodes/relationships
+        atomically publish <repository>/.gitnexus/lsp-lbug
+```
+
+An earlier `bazel build` is detected indirectly through Bazel's normal action
+cache: compatible compilation actions are reused by the scoped aspect build.
+No separate build command or flag is needed. The ordinary build cannot replace
+`prepare-build-model`, because it does not emit the indexer handoff, source
+inventory, configured graph, or artifact associations. An unchanged rerun can
+then reuse both Bazel actions and the exact LSP crawl cache.
+
+The tracked default uses `prepared`, so preparation is visible as a separate
+logged process before `build-index`. If an advanced configuration selects
+`integrated`, `build-index` executes the same build-model preparation internally;
+the public command and resulting evidence flow remain unchanged.
 
 Code-bearing database nodes include `codeOrigin`, which separates editable
 repository code, generated first-party source, first-party compiled artifacts,
@@ -35,7 +65,7 @@ See [Code-origin classification](code-origin.md) for definitions, persistence
 coverage, filtering guidance, and query examples.
 
 Preparation prints a start and completion line for target discovery, tag
-filtering, execution-root lookup, and the recursive Java aspect build. A Bazel
+filtering, execution-root lookup, and the recursive JVM/`JavaInfo` aspect build. A Bazel
 stage that runs longer than 15 seconds emits a heartbeat with elapsed time,
 captured output size, and Bazel's latest status line. A quiet interval between
 heartbeats is therefore expected and does not indicate a hang.
@@ -84,63 +114,58 @@ not discoverable, set `GITNEXUS_OPENSSL3_LIB` to the directory containing both
 requires the standard macOS `otool`, `install_name_tool`, and `codesign`
 utilities.
 
-## Recommended Bazel Java run
+## Bazel preparation and reuse
 
-In this project, `prebuilt` means **prepared for the indexer with a successful
-`bazel-prepare` run**. It does not mean that an ordinary enterprise
+In this project, `prepared` means **prepared for the indexer with a successful
+`prepare-build-model` run**. It does not mean that an ordinary enterprise
 `bazel build` is sufficient by itself. An existing successful enterprise build
 is still valuable because Bazel can reuse its action cache during preparation.
 
-The required prebuilt sequence is always:
+The automated sequence is always:
 
 ```text
-successful enterprise build (optional cache warm-up)
-    -> bazel-prepare (required indexer handoff)
-    -> build with prebuilt mode (no Bazel commands)
-    -> .lbug
+optional earlier Bazel build (action-cache warm-up only)
+    -> ./lsp-link index
+         -> prepare-build-model (required indexer handoff)
+         -> build-index with prepared mode (no later Bazel commands)
+         -> .gitnexus/lsp-lbug
 ```
 
-The tracked default configuration for the core-Java use case is
-`config/core-java.json`. It selects Java libraries, Java applications, and Java
-tests across the workspace. This naturally retains production, QA/simulator,
-and relevant test code while filtering validation and reporting targets by
-generic target-name patterns and tags before configured Bazel analysis.
+The tracked polyglot configuration is `config/default.json`. Its Bazel scope
+selects standard Java and Kotlin/JVM libraries, applications, and tests across
+the workspace. This naturally retains production, QA/simulator, and relevant
+test code while filtering validation and reporting targets by generic
+target-name patterns and tags before configured Bazel analysis.
 
-Run the indexer workflow in two required phases against the same workspace and
-Bazel output cache:
+The public launcher owns both phases and their ordering:
 
 ```bash
-# 1. Required even after a successful enterprise Bazel build. Resolve the
-#    indexer scope, reuse/build artifacts, and write the validated handoff.
-npm run index -- bazel-prepare /path/to/repository \
-  --config config/core-java.json
-
-# 2. Prebuilt indexing: consume that exact handoff without invoking Bazel.
-npm run index -- build /path/to/repository \
-  --config config/core-java.json \
-  --output /tmp/repository.lbug
+./lsp-link index /path/to/repository --background
 ```
 
-Run `bazel-prepare` again after changing the semantic configuration, selected
+The internal `prepare-build-model` and `build-index` commands remain available
+for diagnostics and controlled recovery.
+
+Run `prepare-build-model` again after changing the semantic configuration, selected
 targets, BUILD files, source inputs, generated sources, or relevant Bazel
 outputs. Cleaning or relocating the workspace/output cache also invalidates the
 handoff. A normal `bazel build` can warm Bazel's cache, but it does not replace
-`bazel-prepare`, which generates the target/source inventory required here.
+`prepare-build-model`, which generates the target/source inventory required here.
 
-The name `prebuilt` describes the second command only. `bazel-prepare` still
+The name `prepared` describes the second command only. `prepare-build-model` still
 runs unconfigured scope queries and the recursive aspect build needed to create
 indexer-specific metadata. A configured run does not perform a separate large
 `cquery`: the successful aspect build is authoritative for the Java graph and
-artifacts. Once preparation succeeds, `build` in prebuilt mode performs no
+artifacts. Once preparation succeeds, `build-index` in prepared mode performs no
 `query`, `cquery`, or `bazel build` operation.
 
 Preparation does not use Bazel's `--keep_going` mode. The complete retained
 scope must finish configured analysis and the aspect build successfully before
 a new handoff is written. Starting a new preparation invalidates the previous
-handoff, so a failed attempt cannot be followed by prebuilt indexing of stale
+handoff, so a failed attempt cannot be followed by prepared indexing of stale
 artifacts from an older successful run.
 
-The default policy uses `prebuilt` indexing, the `core` crawl profile, the
+The default policy uses `prepared` indexing, the `core` crawl profile, the
 canonical efficient crawler,
 resumable checkpoints, four-way preparation/crawl/artifact concurrency, source
 JAR fetching, and strict failed-root enforcement. It has no artifact-class
@@ -158,12 +183,19 @@ This is the generic shape of a complete version-1 configuration:
 ```json
 {
   "schemaVersion": 1,
-  "name": "core-java",
+  "name": "default-index",
   "bazel": {
-    "buildMode": "prebuilt",
+    "buildModelMode": "prepared",
     "scope": {
       "includeTargetPatterns": ["//..."],
-      "includeRuleKinds": ["java_library", "java_binary", "java_test"],
+      "includeRuleKinds": [
+        "java_binary",
+        "java_library",
+        "java_test",
+        "kt_jvm_binary",
+        "kt_jvm_library",
+        "kt_jvm_test"
+      ],
       "explicitTargets": [],
       "excludeTargetNamePatterns": [
         ".*_deploy_bannedcheck$",
@@ -214,7 +246,7 @@ This is the generic shape of a complete version-1 configuration:
 
 | Field | Required | Values and behavior |
 | --- | --- | --- |
-| `buildMode` | No | `"managed"` or `"prebuilt"`; default `"managed"`. `managed` lets `build` run Bazel preparation itself. `prebuilt` makes `build` invoke no Bazel command and requires a valid handoff from `bazel-prepare`. The `bazel-prepare` command itself always performs managed preparation regardless of this value. |
+| `buildModelMode` | No | `"integrated"` or `"prepared"`; default `"integrated"`. `integrated` lets `build-index` prepare Bazel internally. `prepared` makes `build-index` consume the validated handoff produced by `prepare-build-model`. |
 | `scope` | Yes | Structured discovery and exclusion policy described below. |
 | `preparation` | No | Concurrency and timeout used while preparing Bazel roots. |
 
@@ -235,7 +267,7 @@ and deduplicated. An empty resolved scope is an error.
 | Field | Required | Values and behavior |
 | --- | --- | --- |
 | `includeTargetPatterns` | Yes | Array of Bazel target patterns, for example `["//..."]` or `["//app/...", "//qa/..."]`. May be empty only when `explicitTargets` is non-empty. Each pattern is queried independently. |
-| `includeRuleKinds` | Yes | Array of exact Bazel rule-kind names. The core-Java policy uses `java_library`, `java_binary`, and `java_test`. Custom/Starlark kinds can be listed when their names are stable. May be empty when all desired roots are explicit. |
+| `includeRuleKinds` | Yes | Array of exact Bazel rule-kind names. The default policy includes standard Java and Kotlin/JVM library, binary, and test rules. Custom/Starlark kinds can be listed when their names are stable. May be empty when all desired roots are explicit. |
 | `explicitTargets` | No | Array of exact Bazel labels; default `[]`. Explicit targets bypass the rule-kind allowlist, but they must resolve to rules and remain subject to target-name and exact-label exclusions. Tag exclusions discovered through an include pattern also apply. An explicitly included label cannot also appear in `excludeLabels`. Use this for a custom Java-producing target that has a nonstandard rule kind. |
 | `excludeTargetNamePatterns` | No | Array of JavaScript regular-expression strings matched against only the target-name portion of each label; default `[]`. Invalid regexes are rejected while loading the config. Anchor patterns with `^` or `$` when exact positioning matters. |
 | `excludeLabels` | No | Array of exact Bazel labels; default `[]`. Use for known coverage, reporting, validation, or other roots that should never enter configured analysis. |
@@ -314,7 +346,7 @@ manifests, and adapter routing metadata. An exact hit skips LSP startup and RPC
 collection; changed inputs create a separate entry instead of replacing the
 previous crawl.
 
-## Configuration identity and prebuilt validation
+## Configuration identity and prepared validation
 
 The semantic configuration hash covers the config name, Bazel build mode and
 scope, crawl profile, artifact class limit, source-fetch policy, and resolved
@@ -324,7 +356,7 @@ checkpoint fingerprints, CLI run, and graph provenance.
 Preparation/crawl/artifact concurrency, timeouts, resume choice, checkpoint
 location, output path, and failed-root publication policy are operational
 controls and do not alter the semantic scope hash. The resolved Bazel labels
-and deterministic query are stored separately and validated during a prebuilt
+and deterministic query are stored separately and validated during a prepared
 run. A semantic mismatch requires preparation again.
 
 ## CLI overrides with `--config`
@@ -333,14 +365,14 @@ Operational overrides are allowed:
 
 ```bash
 # Preparation-only operational overrides.
-npm run index -- bazel-prepare /path/to/repository \
-  --config config/core-java.json \
+npm run index -- prepare-build-model /path/to/repository \
+  --config config/default.json \
   --concurrency 2 \
   --timeout-ms 1200000
 
 # Build/crawl operational overrides.
-npm run index -- build /path/to/repository \
-  --config config/core-java.json \
+npm run index -- build-index /path/to/repository \
+  --config config/default.json \
   --output /tmp/repository.lbug \
   --concurrency 6 \
   --artifact-concurrency 6 \
@@ -351,7 +383,7 @@ npm run index -- build /path/to/repository \
 With `--config`, semantic CLI flags are rejected rather than silently changing
 the requested graph:
 
-- `--bazel-build-mode`
+- `--build-model-mode`
 - `--bazel-target-query`
 - `--artifact-max-classes`
 - `--no-artifact-source-fetch`
@@ -360,8 +392,8 @@ the requested graph:
 Without `--config`, the CLI flags remain available. For example:
 
 ```bash
-npm run index -- build /path/to/repository \
-  --bazel-build-mode managed \
+npm run index -- build-index /path/to/repository \
+  --build-model-mode integrated \
   --bazel-target-query 'set(//application:lib //application:test)' \
   --output /tmp/repository.lbug
 ```
@@ -411,7 +443,7 @@ not installed.
 The stage also reports its effective main/external target counts, inventory
 finalization, and persistence, so work after archive extraction is visible.
 This scope correction uses source-inventory schema version 3. Run
-`bazel-prepare` once after upgrading; later `prebuilt` runs can reuse the new
+`prepare-build-model` once after upgrading; later `prepared` runs can reuse the new
 handoff and inventory.
 
 For large inventories, the JDT project preparation consolidates otherwise

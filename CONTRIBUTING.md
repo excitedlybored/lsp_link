@@ -26,13 +26,17 @@ cd lsp_link
 
 ### Indexer
 ```bash
-npm run index -- build sample_projects/spring-boot-demo --output /tmp/spring-demo.lbug
-npm run graph:summary -- /tmp/spring-demo.lbug
+./lsp-link index sample_projects/spring-boot-demo
+npm run graph:summary -- sample_projects/spring-boot-demo/.gitnexus/lsp-lbug
 ```
 
-Long crawls write resumable checkpoints beside the requested output. Keep
-these files while diagnosing or retrying a failed run; deleting them forces the
-corresponding LSP or artifact stage to execute again.
+This one public command installs missing bundled tools, prepares any Bazel
+build models, reuses exact crawl-cache entries where possible, runs semantic
+and artifact stages, and publishes the graph. Long crawls write resumable
+checkpoints beside the output. Keep these files while diagnosing or retrying a
+failed run; deleting them forces the corresponding LSP or artifact stage to
+execute again. The internal `prepare-build-model` and `build-index` commands
+are for diagnostics and focused development only.
 
 ### LSP query CLI (`lsp_server/`)
 ```bash

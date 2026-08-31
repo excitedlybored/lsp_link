@@ -3,6 +3,23 @@
 The writer in `indexer/` persists four evidence families in one LadybugDB
 database while keeping their provenance and relation tables separate.
 
+## How the database is produced
+
+The graph is the final publication of the single automated indexing workflow:
+
+```text
+./lsp-link index REPOSITORY
+  -> prepare and validate the scoped build model
+  -> inventory documents and reuse/run the content-addressed LSP crawl
+  -> normalize logical calls and stream JVM artifact facts
+  -> bulk-copy repository, Bazel, LSP, derived, and JVM evidence
+  -> atomically publish REPOSITORY/.gitnexus/lsp-lbug
+```
+
+An earlier Bazel build may warm Bazel's action cache, but it is not a separate
+required stage and does not produce the indexer handoff. Cache hits preserve
+the same evidence families and provenance as a freshly executed crawl.
+
 ## Bazel configured build model
 
 Successful Bazel preparation writes `BazelBuildGraphRun`, `BazelTarget`,

@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+default_config="${repository_root}/config/default.json"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./lsp-link index REPOSITORY [--background] [advanced index options]
+
+The index command automatically installs missing bundled tools, loads
+config/default.json, prepares the build model, and builds the graph index.
+
+Background files are written inside the target repository:
+  .gitnexus/index.log
+  .gitnexus/index.pid
+EOF
+}
+
+resolve_file() {
+  node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$1"
+}
+
+run_index() {
+  local workspace=$1
+  local config=$2
+  shift 2
+
+  cd "$repository_root"
+  local kotlin_launcher="${repository_root}/.gitnexus/tools/kotlin-lsp/262.9593.0/bin/intellij-server"
+  if [ ! -x "${repository_root}/node_modules/.bin/tsx" ] \
+    || [ ! -f "${repository_root}/dist/jvm-artifact-worker/gitnexus-artifact-worker.jar" ] \
+    || { [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ] \
+      && [ -z "${GITNEXUS_KOTLIN_LSP_BIN:-}" ] && [ ! -x "$kotlin_launcher" ]; }; then
+    echo "[pipeline:install] required tools are missing; running the offline installer"
+    ./install.sh
+  fi
+
+  local build_model_mode
+  build_model_mode=$(node -e '
+    const config = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+    const value = config?.bazel?.buildModelMode
+      ?? ({ managed: "integrated", prebuilt: "prepared" })[config?.bazel?.buildMode]
+      ?? "integrated";
+    if (value !== "integrated" && value !== "prepared") {
+      throw new Error(`Unsupported bazel.buildModelMode: ${value}`);
+    }
+    process.stdout.write(value);
+  ' "$config")
+
+  if [ "$build_model_mode" = "prepared" ]; then
+    echo "[pipeline:prepare-build-model] resolving the reusable Bazel indexing model"
+    npm run index -- prepare-build-model "$workspace" --config "$config"
+  fi
+  echo "[pipeline:build-index] crawling semantics and publishing the knowledge graph"
+  npm run index -- build-index "$workspace" --config "$config" "$@"
+}
+
+if [ "${1:-}" = "__run-background" ]; then
+  workspace=$2
+  config=$3
+  pid_file=$4
+  shift 4
+  cleanup_pid() {
+    if [ -f "$pid_file" ] && [ "$(tr -d '[:space:]' < "$pid_file")" = "$$" ]; then
+      rm -f "$pid_file"
+    fi
+  }
+  trap cleanup_pid EXIT
+  _attempt=0
+  while [ "$_attempt" -lt 100 ]; do
+    if [ -f "$pid_file" ] && [ "$(tr -d '[:space:]' < "$pid_file")" = "$$" ]; then break; fi
+    sleep 0.01
+    _attempt=$((_attempt + 1))
+  done
+  if [ ! -f "$pid_file" ] || [ "$(tr -d '[:space:]' < "$pid_file")" != "$$" ]; then
+    echo "Background PID ownership could not be established." >&2
+    exit 1
+  fi
+  run_index "$workspace" "$config" "$@"
+  exit 0
+fi
+
+if [ "${1:-}" != "index" ]; then
+  usage
+  if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] || [ -z "${1:-}" ]; then exit 0; fi
+  exit 2
+fi
+shift
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
+
+if [ -z "${1:-}" ] || [[ "${1:-}" == --* ]]; then
+  echo "A repository path is required." >&2
+  usage >&2
+  exit 2
+fi
+workspace=$(cd "$1" && pwd -P)
+shift
+
+background=false
+config=$default_config
+forwarded=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --background)
+      background=true
+      shift
+      ;;
+    --config)
+      if [ -z "${2:-}" ]; then echo "--config requires a path" >&2; exit 2; fi
+      config=$(resolve_file "$2")
+      shift 2
+      ;;
+    *)
+      forwarded+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ ! -f "$config" ]; then
+  echo "Index configuration does not exist: $config" >&2
+  exit 2
+fi
+
+if [ "$background" = false ]; then
+  run_index "$workspace" "$config" "${forwarded[@]}"
+  exit 0
+fi
+
+runtime_directory="${workspace}/.gitnexus"
+log_file="${runtime_directory}/index.log"
+pid_file="${runtime_directory}/index.pid"
+mkdir -p "$runtime_directory"
+if [ -f "$pid_file" ]; then
+  existing_pid=$(tr -d '[:space:]' < "$pid_file")
+  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    echo "An index job is already running for this repository (PID $existing_pid)." >&2
+    exit 1
+  fi
+  rm -f "$pid_file"
+fi
+
+nohup "$0" __run-background "$workspace" "$config" "$pid_file" "${forwarded[@]}" \
+  > "$log_file" 2>&1 < /dev/null &
+background_pid=$!
+printf '%s\n' "$background_pid" > "$pid_file"
+echo "Indexing started in the background."
+echo "  PID: $background_pid"
+echo "  Log: $log_file"
+echo "  Graph: ${workspace}/.gitnexus/lsp-lbug"

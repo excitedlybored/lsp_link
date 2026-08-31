@@ -45,7 +45,7 @@ test('bounds the default LadybugDB buffer pool at one GiB and accepts an overrid
 
 test('parses knowledge-graph build options with explicit artifact manifests', () => {
   const options = parseLspKnowledgeGraphBuildOptions([
-    'build',
+    'build-index',
     '/workspace',
     '--concurrency',
     '3',
@@ -58,8 +58,8 @@ test('parses knowledge-graph build options with explicit artifact manifests', ()
     '--no-artifact-source-fetch',
     '--checkpoint-directory',
     '/checkpoints/run-1',
-    '--bazel-build-mode',
-    'prebuilt',
+    '--build-model-mode',
+    'prepared',
     '--bazel-target-query',
     'set(//service:lib //shared:api)',
   ]);
@@ -130,10 +130,10 @@ test('rejects the removed crawl-planner option', () => {
   );
 });
 
-test('rejects unknown Bazel build modes', () => {
+test('rejects unknown build-model modes', () => {
   assert.throws(
-    () => parseLspKnowledgeGraphBuildOptions(['build', '/workspace', '--bazel-build-mode', 'scan-output']),
-    /--bazel-build-mode must be one of managed, prebuilt/,
+    () => parseLspKnowledgeGraphBuildOptions(['build-index', '/workspace', '--build-model-mode', 'scan-output']),
+    /--build-model-mode must be one of integrated, prepared/,
   );
 });
 

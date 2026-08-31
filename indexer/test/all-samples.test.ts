@@ -216,7 +216,7 @@ function endToEndConfig(prebuilt: boolean): object {
     schemaVersion: 1,
     name: 'all-samples-e2e',
     bazel: {
-      buildMode: prebuilt ? 'prebuilt' : 'managed',
+      buildModelMode: prebuilt ? 'prepared' : 'integrated',
       scope: {
         includeTargetPatterns: ['//...'],
         includeRuleKinds: ['java_library', 'java_binary', 'java_test'],

@@ -3,6 +3,34 @@
 This package owns repository crawling, the LSP-native LadybugDB schema,
 artifact enrichment, and persistence.
 
+## Overall automated flow
+
+Production users start the complete workflow from the repository root:
+
+```bash
+./lsp-link index /path/to/repository
+```
+
+```text
+launcher setup
+  -> prepare-build-model
+       detect Bazel roots, filter targets, run the scoped aspect build,
+       validate the indexer handoff
+  -> build-index
+       repository inventory -> crawl-cache lookup -> LSP cache misses
+       -> call normalization -> JVM artifact enrichment
+       -> CSV generation -> bulk node/relationship copy
+       -> atomic LadybugDB publication
+```
+
+A previous ordinary Bazel build is reused through Bazel's action cache; it is
+not another required command and cannot replace preparation metadata. An exact
+content-addressed crawl-cache hit skips language-server startup and RPC
+collection. The internal stage commands remain available for diagnostics, but
+the launcher owns their ordering and failure propagation. With the default
+`prepared` policy, preparation is a separately logged process; `integrated`
+configurations run the same preparation logic inside `build-index`.
+
 ## Boundary
 
 ```text
@@ -222,7 +250,7 @@ npm run build
 npm test
 ```
 
-## Complete JDT LS crawl
+## Specialized Java/JDT LS crawl
 
 The production crawler uses language-server protocol responses directly. It
 discovers Java build roots, prepares Bazel project models concurrently, and
@@ -241,11 +269,13 @@ positions, the Java adapter converts only that exact response to a nullable
 empty result. It is counted as successful/empty, not as a capability failure.
 
 ```bash
-npm run index -- build /path/to/repository \
-  --output /path/to/new/lsp-lbug \
-  --concurrency 4 \
-  --artifact-concurrency 4
+./lsp-link index /path/to/repository
 ```
+
+The public launcher uses the tracked configuration, prepares the build model,
+and writes the default graph to `<repository>/.gitnexus/lsp-lbug`. Add
+`--background` to detach it. `npm run index -- build-index ...` remains the
+advanced internal entrypoint for explicit output and operational overrides.
 
 `--concurrency` controls persistent JDT LS shards. The separate
 `--artifact-concurrency` sets parsing threads in the single persistent ASM
@@ -319,7 +349,7 @@ services, and Kafka consumers without relying on application naming or layout.
 
 ```mermaid
 flowchart LR
-  S["Repository source"] --> BZ["Successful Bazel build\napplication and dependency JARs"]
+  S["Repository source"] --> BZ["Prepared build model\napplication and dependency JARs"]
   S --> L["JDT / LSP crawl\nsymbols and optional exhaustive evidence"]
   L --> B["LspJvmBinding\ncanonical cross-boundary link"]
   BZ --> V["persistent ASM worker"]

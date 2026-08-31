@@ -5,12 +5,13 @@ import { extractRunConfig } from './run-config.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
 
 const BAZEL_BUILD_MODES: BazelBuildMode[] = ['managed', 'prebuilt'];
+const BUILD_MODEL_MODES = ['integrated', 'prepared'] as const;
 
 export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledgeGraphBuildOptions {
   const extracted = extractRunConfig(argv);
   const args = extracted.args;
   const config = extracted.config;
-  if (args[0] === 'build') args.shift();
+  if (args[0] === 'build' || args[0] === 'build-index' || args[0] === 'index') args.shift();
   const workspace = path.resolve(args.shift() ?? '.');
   let output = path.join(workspace, '.gitnexus', 'lsp-lbug');
   let concurrency = config?.crawl.concurrency ?? 4;
@@ -20,7 +21,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   let checkpointDirectory: string | undefined = config?.checkpoints.directory;
   let resume = config?.crawl.resume ?? true;
   const crawlProfile: CrawlProfile = config?.crawl.profile ?? 'exhaustive';
-  let bazelBuildMode: BazelBuildMode = config?.bazel.buildMode ?? 'managed';
+  let bazelBuildMode: BazelBuildMode = config?.bazel.buildModelMode === 'prepared' ? 'prebuilt' : 'managed';
   let bazelTargetQuery: string | undefined;
   const artifactManifestPaths: string[] = [...(config?.artifacts.classpathManifests ?? [])];
   while (args.length > 0) {
@@ -38,6 +39,14 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
         throw new Error(`${flag} must be one of ${BAZEL_BUILD_MODES.join(', ')}, got ${value}`);
       }
       bazelBuildMode = value as BazelBuildMode;
+    }
+    else if (flag === '--build-model-mode') {
+      semanticConflict(config, flag);
+      const value = requireFlagValue(args, flag);
+      if (!BUILD_MODEL_MODES.includes(value as typeof BUILD_MODEL_MODES[number])) {
+        throw new Error(`${flag} must be one of ${BUILD_MODEL_MODES.join(', ')}, got ${value}`);
+      }
+      bazelBuildMode = value === 'prepared' ? 'prebuilt' : 'managed';
     }
     else if (flag === '--bazel-target-query') { semanticConflict(config, flag); bazelTargetQuery = requireFlagValue(args, flag); }
     else if (flag === '--no-artifact-source-fetch') { semanticConflict(config, flag); fetchArtifactSources = false; }

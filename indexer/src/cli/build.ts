@@ -7,7 +7,12 @@ import { runBazelPreparationCommand } from './bazel-prepare.js';
 export { buildLspKnowledgeGraph } from '../application/index-runner.js';
 
 async function main(): Promise<void> {
-  if (process.argv[2] === 'bazel-prepare') {
+  const command = process.argv[2];
+  if (command === '--help' || command === '-h') {
+    console.log('Usage: npm run index -- <prepare-build-model|build-index> REPOSITORY [options]');
+    return;
+  }
+  if (command === 'prepare-build-model' || command === 'bazel-prepare') {
     await runBazelPreparationCommand(process.argv.slice(3));
     return;
   }
@@ -19,7 +24,7 @@ async function main(): Promise<void> {
     crawlProfile: options.crawlProfile,
     crawlStrategy: 'efficient-facts-first',
     crawlCacheId: batch.analysisRuns[0]?.id.replace(/^run:/, ''),
-    bazelBuildMode: options.bazelBuildMode,
+    buildModelMode: options.bazelBuildMode === 'prebuilt' ? 'prepared' : 'integrated',
     bazelTargetQuery: options.bazelTargetQuery,
     runConfigPath: options.runConfigPath,
     runConfigHash: options.runConfigHash,
