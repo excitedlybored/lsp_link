@@ -26,7 +26,8 @@ import {
   JdtlsStartupTelemetry,
   jdtlsStartupTimeoutMs,
 } from '../adapters/java/jdtls-startup-telemetry.js';
-import { waitForImportedJavaProjects } from '../adapters/java/jdtls-classpath-readiness.js';
+import { awaitJdtIndex } from '../adapters/java/jdtls-index-readiness.js';
+import { validateImportedJavaProjectClasspaths } from '../adapters/java/jdtls-classpath-validation.js';
 import { formatJdtlsProcessFailure } from '../adapters/java/jdtls-process-diagnostics.js';
 import { buildJdtlsShardUriMappings } from '../adapters/java/jdtls-uri-mapping.js';
 import { SpringCompanionManager } from '../adapters/java/spring-companion-manager.js';
@@ -248,6 +249,7 @@ export class LspAdapterRegistry {
       bazelModelPrepared: true,
       startupDeadlineAt: telemetry.deadlineAt,
       startupProgress: (phase) => telemetry.setPhase(phase),
+      serverProgress: (progress) => telemetry.noteServerProgress(progress),
     });
     telemetry.start();
     try {
@@ -256,8 +258,16 @@ export class LspAdapterRegistry {
         return null;
       }
       await adapter.start(shard.workspacePath);
-      telemetry.setPhase('classpath-readiness');
-      await waitForImportedJavaProjects(
+      telemetry.setPhase('jdt-index-readiness');
+      const indexStartedAt = Date.now();
+      await awaitJdtIndex(adapter, shard.id);
+      console.log(`[jdtls-stage] ${JSON.stringify({
+        shardId: shard.id, phase: 'jdt-index-readiness', status: 'complete',
+        elapsedMs: Date.now() - indexStartedAt,
+      })}`);
+      telemetry.setPhase('classpath-validation');
+      const validationStartedAt = Date.now();
+      await validateImportedJavaProjectClasspaths(
         adapter,
         shard.projectModels,
         shard.id,
@@ -265,6 +275,10 @@ export class LspAdapterRegistry {
         (pending) => telemetry.setPendingRoots(pending),
         (progress) => telemetry.setClasspathReadiness(progress),
       );
+      console.log(`[jdtls-stage] ${JSON.stringify({
+        shardId: shard.id, phase: 'classpath-validation', status: 'complete',
+        elapsedMs: Date.now() - validationStartedAt,
+      })}`);
       telemetry.setPendingRoots(0);
       telemetry.finish('complete');
       this.activeAdapters.set(sessionKey, adapter);

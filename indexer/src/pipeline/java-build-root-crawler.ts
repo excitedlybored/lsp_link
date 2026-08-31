@@ -15,6 +15,7 @@ import { LspAdapterRegistry } from '../../../lsp_server/public-api.js';
 import type { JavaBuildRootCrawlResult, JavaBuildRootPreparation } from './types.js';
 import type { ILspAdapter } from '../../../lsp_server/public-api.js';
 import type { CrawlProfile } from '../ingest/crawl-profile.js';
+import { crawlJdtBatchRoot } from '../ingest/jdt-batch-crawler.js';
 
 export interface CrawlJavaBuildRootRequest {
   adapterRegistry: LspAdapterRegistry;
@@ -29,6 +30,7 @@ export interface CrawlJavaBuildRootRequest {
   processShardId?: string;
   requireSharedAdapter?: boolean;
   crawlProfile?: CrawlProfile;
+  javaSemantics?: 'batch' | 'lsp';
 }
 
 export async function crawlJavaBuildRoot(
@@ -47,6 +49,7 @@ export async function crawlJavaBuildRoot(
     processShardId,
     requireSharedAdapter = false,
     crawlProfile = 'exhaustive',
+    javaSemantics = 'batch',
   } = request;
   const buildRoot = createBuildRoot(run, root, preparation);
   const server = createLspServer(run, root, processShardId);
@@ -90,15 +93,11 @@ export async function crawlJavaBuildRoot(
 
   applyServerMetadata(server, adapter.getServerCapabilities());
   try {
-    const batch = await crawlLspBuildRoot({
-      run,
-      server,
-      buildRoot,
-      documents,
-      adapter,
-      repositoryPath,
-      profile: crawlProfile,
-    });
+    const batch = javaSemantics === 'batch'
+      ? await crawlJdtBatchRoot({ run, server, buildRoot, documents, files, adapter, repositoryPath })
+      : await crawlLspBuildRoot({
+          run, server, buildRoot, documents, adapter, repositoryPath, profile: crawlProfile,
+        });
     await appendSpringObservations(adapterRegistry, adapter, root, run, batch);
     const artifactResolution = await artifactClasspathResolver.resolveArtifacts({
       root,

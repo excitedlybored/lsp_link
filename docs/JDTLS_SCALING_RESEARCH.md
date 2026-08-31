@@ -31,6 +31,40 @@ Target-aware multi-process partitioning remains a later option when one
 batch-enabled process is still insufficient. It must preserve Bazel ownership,
 dependency closure, URI identity, and cross-partition evidence.
 
+## Implementation status
+
+Implemented after this research:
+
+- Startup telemetry separates `jdt-index-readiness` from
+  `classpath-validation` and consumes both JDT progress protocols.
+- JDT external-JAR indexes use a versioned clone-local shared location.
+- The offline-built `io.gitnexus.jdt.batch` bundle provides
+  `gitnexus.java.collectBatch` and streams atomic, checksummed NDJSON.
+- Java batch ingestion is the default, resolves portable identities globally,
+  derives reverse references/calls, and publishes explicit partial coverage on
+  failures. `crawl.javaSemantics = "lsp"` retains the old query path.
+- `npm run benchmark:jdt -- REPOSITORY` performs isolated cold/warm JVM-policy
+  comparisons, and `compare:crawls --required-java-batch` enforces the
+  no-missing required-facts release gate.
+
+Measured acceptance evidence on 2026-09-01:
+
+- A 19-file Maven/Spring project completed the batch crawl in 10.2 seconds at
+  155 MiB peak Node RSS. The equivalent exhaustive LSP crawl took 240.0 seconds
+  at 390 MiB peak Node RSS, a 23.6x elapsed-time improvement.
+- The normalized strict source gate passed with zero missing declarations,
+  references, calls, hierarchy edges, or override edges. Its scope is
+  authoritative source semantics; external `jdt:` documents remain the ASM
+  artifact layer's responsibility.
+- A 556-file Gradle/Spring collection completed in 42.7 seconds at 570 MiB peak
+  Node RSS. JDT index readiness took 13.2 seconds, classpath validation took 47
+  milliseconds, batch AST collection took 2.1 seconds with zero failed
+  documents, and Spring Tools returned 158 structure nodes across six projects.
+
+The target-hardware gate for the 8,741-document corpus remains to be run on the
+deployment machine; the repeatable crawl-only benchmark and comparison command
+now exist for that acceptance run.
+
 ## Verified behavior in JDT.LS 1.57.0
 
 ### `java.project.getClasspaths` implicitly waits for the global index
@@ -50,8 +84,10 @@ that implementation is reached.
 
 Consequences for this repository:
 
-- The telemetry phase named `classpath-readiness` includes JDT source and JAR
-  indexing time. It is not primarily the cost of comparing path strings.
+- In the historical pre-split telemetry, the umbrella phase then named
+  `classpath-readiness` included JDT source and JAR indexing time. Current logs
+  report that work as `jdt-index-readiness` and reserve
+  `classpath-validation` for the path-set comparison.
 - A long `workspace/executeCommand` request for `java.project.getClasspaths`
   is also acting as an index-readiness barrier.
 - Client cancellation cannot interrupt this particular wait because JDT.LS
@@ -293,27 +329,26 @@ JDT search requests remain useful for validation and genuinely search-specific
 features, but they should no longer be the primary mechanism for enumerating
 every repository occurrence.
 
-## Staged implementation priorities
+## Staged implementation status
 
-1. Correct telemetry terminology: separate `jdt-index-readiness` from
-   `classpath-validation`.
-2. Capture and report `$/progress` and `language/progressReport`.
-3. Add an isolated persistent external-JAR shared-index location and measure
-   cold/warm behavior.
-4. Benchmark the current `-XX:TieredStopAtLevel=1` against normal tiered JIT;
-   it favors JVM startup and may hurt a long compiler/indexing workload.
-5. Prototype the batch extension for declarations, binding identities, method
-   calls, and type references.
-6. Compare batch output with the current exhaustive LSP crawl on samples and a
-   larger synthetic repository.
-7. Replace per-symbol reference enumeration with occurrence-derived reverse
-   relationships once completeness is demonstrated.
-8. Re-evaluate persistent JDT state using stable Eclipse-project and `-data`
-   paths keyed by source inventory, classpath, JDT version, and configuration.
-9. Add capability-specific request scheduling only after correctness and
-   memory benchmarks.
-10. Add target-aware multi-process partitions only if a batch-enabled single
-    process remains insufficient.
+1. Complete: separate `jdt-index-readiness` from `classpath-validation`.
+2. Complete: capture `$/progress` and `language/progressReport`.
+3. Complete: add a versioned clone-local external-JAR shared-index location.
+4. Complete tooling: the crawl-only JIT benchmark compares
+   `-XX:TieredStopAtLevel=1` with normal tiered JIT; deployment measurements
+   remain machine-specific.
+5. Complete: batch declarations, binding identities, occurrences, calls, type
+   hierarchy, method overrides, packages, and implicit constructors.
+6. Complete on representative and 556-file samples: the strict normalized
+   exhaustive-versus-batch gate passes on the representative Spring project.
+7. Complete: Java defaults to globally derived batch occurrences and calls.
+8. Complete: immutable source and external-index caches are shared; mutable
+   Eclipse `-data` state remains run-scoped because restored state benchmarked
+   worse end to end.
+9. Deferred: capability-specific scheduling is unnecessary for the batch Java
+   path and remains relevant only to other LSP adapters.
+10. Deferred by policy: one JDT batch process is the default; multiple processes
+    require an explicit `jdtProcesses` setting backed by repository benchmarks.
 
 ## Required acceptance evidence
 

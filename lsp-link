@@ -8,6 +8,7 @@ usage() {
   cat <<'EOF'
 Usage:
   ./lsp-link index REPOSITORY [--background] [advanced index options]
+  ./lsp-link crawl REPOSITORY [advanced crawl options]
 
 The index command automatically installs missing bundled tools, loads
 config/default.json, prepares the build model, and builds the graph index.
@@ -22,10 +23,11 @@ resolve_file() {
   node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$1"
 }
 
-run_index() {
-  local workspace=$1
-  local config=$2
-  shift 2
+run_pipeline() {
+  local action=$1
+  local workspace=$2
+  local config=$3
+  shift 3
 
   cd "$repository_root"
   local kotlin_launcher="${repository_root}/.gitnexus/tools/kotlin-lsp/262.9593.0/bin/intellij-server"
@@ -53,8 +55,13 @@ run_index() {
     echo "[pipeline:prepare-build-model] resolving the reusable Bazel indexing model"
     npm run index -- prepare-build-model "$workspace" --config "$config"
   fi
-  echo "[pipeline:build-index] crawling semantics and publishing the knowledge graph"
-  npm run index -- build-index "$workspace" --config "$config" "$@"
+  if [ "$action" = "crawl" ]; then
+    echo "[pipeline:crawl] crawling semantics and writing a comparison checkpoint"
+    npm run index -- crawl "$workspace" --config "$config" "$@"
+  else
+    echo "[pipeline:build-index] crawling semantics and publishing the knowledge graph"
+    npm run index -- build-index "$workspace" --config "$config" "$@"
+  fi
 }
 
 if [ "${1:-}" = "__run-background" ]; then
@@ -78,15 +85,16 @@ if [ "${1:-}" = "__run-background" ]; then
     echo "Background PID ownership could not be established." >&2
     exit 1
   fi
-  run_index "$workspace" "$config" "$@"
+  run_pipeline index "$workspace" "$config" "$@"
   exit 0
 fi
 
-if [ "${1:-}" != "index" ]; then
+if [ "${1:-}" != "index" ] && [ "${1:-}" != "crawl" ]; then
   usage
   if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] || [ -z "${1:-}" ]; then exit 0; fi
   exit 2
 fi
+action=$1
 shift
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then usage; exit 0; fi
@@ -127,11 +135,16 @@ if [ ! -f "$config" ]; then
   exit 2
 fi
 
+if [ "$action" = "crawl" ] && [ "$background" = true ]; then
+  echo "--background is currently supported only by the index command." >&2
+  exit 2
+fi
+
 if [ "$background" = false ]; then
   if [ "$has_forwarded" = true ]; then
-    run_index "$workspace" "$config" "${forwarded[@]}"
+    run_pipeline "$action" "$workspace" "$config" "${forwarded[@]}"
   else
-    run_index "$workspace" "$config"
+    run_pipeline "$action" "$workspace" "$config"
   fi
   exit 0
 fi

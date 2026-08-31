@@ -31,6 +31,7 @@ import type {
   JavaBuildRootPreparation,
   LspKnowledgeGraphBuildOptions,
   LspKnowledgeGraphBuildResult,
+  LspRepositoryCrawlResult,
 } from '../pipeline/types.js';
 import { LspAdapterRegistry, ownerBuildRoot, type JavaBuildRoot } from '../../../lsp_server/public-api.js';
 import { buildBazelBuildGraphBatch } from '../bazel/model.js';
@@ -46,6 +47,27 @@ export async function buildLspKnowledgeGraph(
   options: LspKnowledgeGraphBuildOptions,
   adapterRegistry = new LspAdapterRegistry(),
 ): Promise<LspKnowledgeGraphBuildResult> {
+  return runLspPipeline(options, adapterRegistry, false) as Promise<LspKnowledgeGraphBuildResult>;
+}
+
+export async function crawlLspRepository(
+  options: LspKnowledgeGraphBuildOptions,
+  adapterRegistry = new LspAdapterRegistry(),
+): Promise<LspRepositoryCrawlResult> {
+  return runLspPipeline(options, adapterRegistry, true) as Promise<LspRepositoryCrawlResult>;
+}
+
+async function runLspPipeline(
+  options: LspKnowledgeGraphBuildOptions,
+  adapterRegistry: LspAdapterRegistry,
+  crawlOnly: boolean,
+): Promise<LspKnowledgeGraphBuildResult | LspRepositoryCrawlResult> {
+  const pipelineStartedAt = Date.now();
+  let peakNodeRssBytes = process.memoryUsage.rss();
+  const rssSampler = setInterval(() => {
+    peakNodeRssBytes = Math.max(peakNodeRssBytes, process.memoryUsage.rss());
+  }, 250);
+  rssSampler.unref();
   const workspacePath = path.resolve(options.workspace);
   const repositoryInventory = await buildRepositoryInventory(workspacePath, {
     concurrency: options.concurrency,
@@ -99,10 +121,11 @@ export async function buildLspKnowledgeGraph(
     {
       // Increment whenever crawl semantics change so a checkpoint cannot hide
       // a newly fixed or newly collected LSP observation.
-      stageVersion: 7,
+      stageVersion: 8,
       buildRoots: activeRoots.map(({ id, relativePath, systems }) => ({ id, relativePath, systems })),
       artifactManifestPaths: options.artifactManifestPaths.map((value) => path.resolve(value)),
       crawlProfile: options.crawlProfile,
+      javaSemantics: options.javaSemantics,
       bazelBuildMode: options.bazelBuildMode,
       bazelTargetQuery: options.bazelTargetQuery ?? null,
       runConfigHash: options.runConfigHash ?? null,
@@ -150,10 +173,30 @@ export async function buildLspKnowledgeGraph(
       });
       crawl.lspBatch = dedupeObservationBatch(mergeObservationBatches(crawl.lspBatch, polyglotBatch));
       ({ lspBatch, artifacts, classpathAttempts } = crawl);
-      checkpointStore.saveCached<JavaCrawlCheckpoint>('lsp-crawl', crawlFingerprint, crawl);
+      if (!(crawlOnly && hasIncompleteBatchJavaServer(lspBatch, options.javaSemantics))) {
+        checkpointStore.saveCached<JavaCrawlCheckpoint>('lsp-crawl', crawlFingerprint, crawl);
+      }
     }
     if (options.failOnFailedBuildRoot && lspBatch.servers.some((server) => server.status === 'failed')) {
       throw new Error('Semantic crawl failed for one or more build roots');
+    }
+    if (crawlOnly) {
+      if (hasIncompleteBatchJavaServer(lspBatch, options.javaSemantics)) {
+        throw new Error('Crawl-only validation requires every JDT batch server to complete');
+      }
+      checkpointStore.save('lsp-crawl', crawlFingerprint, {
+        lspBatch, artifacts, classpathAttempts,
+      } satisfies JavaCrawlCheckpoint);
+      return {
+        batch: lspBatch,
+        artifacts,
+        classpathAttempts,
+        checkpoint: path.join(options.checkpointDirectory, 'lsp-crawl.checkpoint'),
+        crawlFingerprint,
+        durationMs: Date.now() - pipelineStartedAt,
+        peakNodeRssMiB: Math.round(peakNodeRssBytes / 1024 / 1024 * 100) / 100,
+        repositoryInventory,
+      };
     }
 
     let callNormalizationBatch = checkpointStore.loadCached<DerivedCallNormalizationBatch>(
@@ -215,8 +258,14 @@ export async function buildLspKnowledgeGraph(
       repositoryInventory,
     };
   } finally {
+    clearInterval(rssSampler);
     await adapterRegistry.shutdownAll();
   }
+}
+
+function hasIncompleteBatchJavaServer(batch: LspObservationBatch, javaSemantics: string): boolean {
+  return javaSemantics === 'batch' && batch.servers.some((server) =>
+    server.languageId === 'java' && server.name.startsWith('JDT Language Server') && server.status !== 'complete');
 }
 
 function emptySemanticCrawl(workspacePath: string, fingerprint: string): JavaCrawlCheckpoint {
@@ -277,11 +326,13 @@ function collectCrawlInputPaths(
     nodir: true,
     ignore: ['**/.git/**', '**/node_modules/**', '**/target/**', '**/build/**', '**/bazel-*/**'],
   });
+  const batchExtension = path.resolve(process.cwd(), 'dist/jdt-batch-extension/gitnexus-jdt-batch-extension.jar');
   return [...new Set([
     ...javaFiles,
     ...semanticSourcePaths,
     ...buildFiles,
     ...artifactManifestPaths.map((value) => path.resolve(value)),
+    ...(fs.existsSync(batchExtension) ? [batchExtension] : []),
   ])].sort();
 }
 

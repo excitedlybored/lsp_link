@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { deserialize } from 'node:v8';
 import type { LspObservationBatch } from '../ingest/batch.js';
-import { compareCrawlSemanticInventories } from '../ingest/semantic-inventory.js';
+import { compareCrawlSemanticInventories, compareRequiredJavaBatchInventories } from '../ingest/semantic-inventory.js';
 
 interface CheckpointEnvelope {
   formatVersion: number;
@@ -15,16 +15,19 @@ function main(argv: string[]): void {
   const [originalPath, candidatePath, ...rest] = argv;
   if (!originalPath || !candidatePath) {
     throw new Error(
-      'Usage: compare:crawls ORIGINAL_LSP_CRAWL_CHECKPOINT CANDIDATE_LSP_CRAWL_CHECKPOINT [--output PATH]',
+      'Usage: compare:crawls ORIGINAL_LSP_CRAWL_CHECKPOINT CANDIDATE_LSP_CRAWL_CHECKPOINT [--required-java-batch] [--output PATH]',
     );
   }
   let outputPath: string | undefined;
+  let requiredJavaBatch = false;
   while (rest.length > 0) {
     const flag = rest.shift();
     if (flag === '--output') {
       const value = rest.shift();
       if (!value || value.startsWith('--')) throw new Error('--output requires a value');
       outputPath = path.resolve(value);
+    } else if (flag === '--required-java-batch') {
+      requiredJavaBatch = true;
     } else {
       throw new Error(`Unknown argument ${flag}`);
     }
@@ -32,9 +35,12 @@ function main(argv: string[]): void {
 
   const original = loadCrawlBatch(originalPath);
   const candidate = loadCrawlBatch(candidatePath);
-  const comparison = compareCrawlSemanticInventories(original, candidate);
+  const comparison = requiredJavaBatch
+    ? compareRequiredJavaBatchInventories(original, candidate)
+    : compareCrawlSemanticInventories(original, candidate);
   const report = {
     equivalent: comparison.equivalent,
+    policy: requiredJavaBatch ? 'required-java-batch-no-missing' : 'exact-semantic-inventory',
     original: { checkpoint: path.resolve(originalPath), counts: batchCounts(original) },
     candidate: { checkpoint: path.resolve(candidatePath), counts: batchCounts(candidate) },
     differences: comparison.differences.map((difference) => ({

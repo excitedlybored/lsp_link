@@ -27,6 +27,15 @@ export interface JdtlsClasspathReadinessProgress {
   lastError?: string;
 }
 
+export interface JdtlsServerProgress {
+  token: string;
+  task?: string;
+  message?: string;
+  percentage?: number;
+  complete: boolean;
+  updatedAt: number;
+}
+
 export interface JdtlsStartupTelemetryOptions {
   shardId: string;
   sourceFileCount: number;
@@ -48,6 +57,7 @@ export class JdtlsStartupTelemetry {
   private phase = 'created';
   private pendingRoots = 0;
   private classpathReadiness?: JdtlsClasspathReadinessProgress;
+  private readonly serverProgress = new Map<string, JdtlsServerProgress>();
   private readonly heartbeatMs: number;
   private readonly now: () => number;
   private readonly log: (line: string) => void;
@@ -84,6 +94,11 @@ export class JdtlsStartupTelemetry {
   setClasspathReadiness(progress: JdtlsClasspathReadinessProgress): void {
     this.classpathReadiness = { ...progress };
     this.pendingRoots = Math.max(0, progress.totalRoots - progress.completedRoots);
+  }
+
+  noteServerProgress(progress: Omit<JdtlsServerProgress, 'updatedAt'>): void {
+    if (progress.complete) this.serverProgress.delete(progress.token);
+    else this.serverProgress.set(progress.token, { ...progress, updatedAt: this.now() });
   }
 
   remainingMs(phase = this.phase): number {
@@ -135,6 +150,14 @@ export class JdtlsStartupTelemetry {
       classpathEntries: this.options.classpathEntryCount,
       pendingRoots: this.pendingRoots,
       classpathReadiness,
+      jdtProgress: [...this.serverProgress.values()].map((progress) => ({
+        token: progress.token,
+        task: progress.task,
+        message: progress.message,
+        percentage: progress.percentage,
+        idleForMs: Math.max(0, this.now() - progress.updatedAt),
+      })),
+      activeJdtTasks: this.serverProgress.size,
       heapXmx: this.options.heapXmx,
       processId,
       processExitCode: metadata.processExitCode ?? undefined,

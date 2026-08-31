@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { globSync } from 'glob';
 import {
@@ -39,11 +39,16 @@ import {
 } from '../adapters/java/bazel-source-inventory.js';
 import type { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 
+const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-jdtls-runtime-'));
+fs.mkdirSync(path.join(runtimeRoot, 'config'), { recursive: true });
+fs.writeFileSync(path.join(runtimeRoot, 'config', 'config.ini'), 'osgi.bundles=reference:file:launcher.jar@4:start\n');
+after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
+
 const runtime: JdtlsRuntime = {
   jdkJavaBin: '/jdk/25/bin/java',
   jdkMajorVersion: 25,
-  equinoxLauncherJar: '/jdtls/launcher.jar',
-  osgiConfigDir: '/jdtls/config',
+  equinoxLauncherJar: path.join(runtimeRoot, 'launcher.jar'),
+  osgiConfigDir: path.join(runtimeRoot, 'config'),
 };
 
 test('resolves a deterministic Java target scope before configured analysis', async (t) => {

@@ -4,7 +4,7 @@ import type { ILspAdapter } from '../../contracts/lsp-adapter.interface.js';
 import type { PreparedJdtlsShard } from './jdtls-sharding.js';
 import type { JdtlsClasspathReadinessProgress } from './jdtls-startup-telemetry.js';
 
-export interface JdtlsClasspathReadinessOptions {
+export interface JdtlsClasspathValidationOptions {
   stallTimeoutMs?: number;
   maxConsecutiveErrors?: number;
   initialPollMs?: number;
@@ -14,17 +14,17 @@ export interface JdtlsClasspathReadinessOptions {
 }
 
 /**
- * ServiceReady precedes completion of Eclipse project import. This gate waits
- * for every expected classpath entry before a shard is exposed to crawlers.
+ * Validate the imported classpath after the explicit JDT indexing barrier.
+ * Retries cover build-tool project import convergence, not global indexing.
  */
-export async function waitForImportedJavaProjects(
+export async function validateImportedJavaProjectClasspaths(
   adapter: ILspAdapter,
   projectModels: PreparedJdtlsShard['projectModels'],
   shardId: string,
   deadlineAt?: number,
   onPendingRoots?: (count: number) => void,
   onProgress?: (progress: JdtlsClasspathReadinessProgress) => void,
-  options: JdtlsClasspathReadinessOptions = {},
+  options: JdtlsClasspathValidationOptions = {},
 ): Promise<void> {
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
@@ -171,7 +171,7 @@ export async function waitForImportedJavaProjects(
   } while (now() < deadline);
   if (pending.size > 0) {
     throw new Error(
-      `[${shardId}] JDT classpath readiness timed out with ${pending.size} pending roots: `
+      `[${shardId}] JDT classpath validation timed out with ${pending.size} pending roots: `
       + [...pending.keys()].join(', '),
     );
   }

@@ -94,9 +94,51 @@ means the local hard RPC deadline fired even if JDT ignored cancellation. A
 stable missing count indicates a classpath-model mismatch;
 a decreasing count indicates continuing import progress.
 
+Current logs call the blocking JDT phase `jdt-index-readiness` and the path-set
+comparison `classpath-validation`. `jdtProgress` lists the active Eclipse jobs,
+their messages, and a percentage only when JDT supplies a meaningful total.
+
 Generated Bazel projects do not run Eclipse autobuild; Maven and Gradle native
 imports retain it. JDT's mutable data workspace is run-scoped, while the
 content-validated consolidated-source cache is reused by unchanged runs.
+
+Java semantic indexing defaults to one binding-aware batch pass:
+
+```json
+"crawl": {
+  "profile": "core",
+  "javaSemantics": "batch",
+  "concurrency": 4,
+  "jdtProcesses": 1,
+  "resume": true
+}
+```
+
+`core` and `exhaustive` now select the same complete Java batch facts. Set
+`javaSemantics` to `lsp` only for operational recovery or parity comparison;
+other languages retain their existing profile behavior. Batch failures publish
+validated completed facts as partial coverage rather than claiming completion.
+
+External dependency-JAR indexes are shared under the clone-local
+`.gitnexus/cache/jdtls/external-indexes` directory. Override it with
+`GITNEXUS_JDT_SHARED_INDEX_DIR`. Use `npm run benchmark:jdt -- REPOSITORY`
+to compare normal tiered compilation with `-XX:TieredStopAtLevel=1` using
+isolated cold and warm runs.
+
+For performance or parity work without ASM enrichment or Ladybug publication,
+run the same semantic orchestration in crawl-only mode:
+
+```bash
+./lsp-link crawl /absolute/path/to/repository
+```
+
+The command writes `lsp-crawl.checkpoint` under the checkpoint directory. Use
+`--profile exhaustive --java-semantics lsp` for a baseline and
+`--profile exhaustive --java-semantics batch` for the candidate, then run
+`npm run compare:crawls -- BASELINE CANDIDATE --required-java-batch`. The gate
+normalizes expression-versus-identifier ranges, interface/implementation
+families, and JavaBean property accessors while still requiring every named
+source declaration and source relationship.
 
 Classpath readiness is a strict correctness gate, not a second dependency
 scan. It succeeds after one complete response, retries incomplete responses
@@ -357,7 +399,7 @@ fails preparation.
 
 | Field | Required | Values and behavior |
 | --- | --- | --- |
-| `profile` | No | `"core"` or `"exhaustive"`; default `"exhaustive"`. `core` collects document symbols while relying on the authoritative Bazel graph and bytecode enrichment for dependency, reference, type, call, and artifact relationships. Reference, hover, hierarchy, semantic-token, signature, and diagnostic requests are explicitly recorded as excluded. `exhaustive` requests the complete LSP capability matrix. The tracked large-repository policy uses `core`. |
+| `profile` | No | `"core"` or `"exhaustive"`; default `"exhaustive"`. For Java batch semantics, both profiles collect the complete binding-aware declaration, occurrence, call, and type fact set; the profile still controls auxiliary standard-LSP observations and other language adapters. With the `lsp` Java fallback, `core` collects document symbols while relying on Bazel and bytecode enrichment, whereas `exhaustive` requests the complete LSP capability matrix. The tracked large-repository policy uses `core`. |
 | `concurrency` | No | Positive integer; default `4`. Number of persistent JDT.LS crawl shards. |
 | `resume` | No | Boolean; default `true`. Reuse an exact content-addressed crawl ID when available. `false` forces execution without deleting cached identities. |
 

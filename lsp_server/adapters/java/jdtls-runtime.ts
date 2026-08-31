@@ -20,6 +20,7 @@ export interface JdtlsRuntime {
   jdkMajorVersion: number;
   equinoxLauncherJar: string;
   osgiConfigDir: string;
+  version?: string;
 }
 
 export interface JdtlsProcessLaunch {
@@ -175,6 +176,7 @@ export class JdtlsRuntimeLocator {
       jdkMajorVersion: selected.version,
       equinoxLauncherJar,
       osgiConfigDir,
+      version: VENDORED_JDTLS_VERSION,
     };
   }
 
@@ -441,14 +443,24 @@ export function jdtlsVmArguments(opts: {
   runtime: JdtlsRuntime;
   dataDir: string;
   heapXmx: string;
+  configurationDir?: string;
 }): string[] {
   const { runtime, dataDir, heapXmx } = opts;
+  const sharedIndexDirectory = jdtlsSharedIndexDirectory(runtime);
+  fs.mkdirSync(sharedIndexDirectory, { recursive: true });
+  const tieredStopLevel = process.env.GITNEXUS_JDT_TIERED_STOP_LEVEL?.trim();
+  if (tieredStopLevel && !/^\d+$/.test(tieredStopLevel)) {
+    throw new Error('GITNEXUS_JDT_TIERED_STOP_LEVEL must be a positive integer or unset');
+  }
   return [
     '-Declipse.application=org.eclipse.jdt.ls.core.id1',
     '-Dosgi.bundles.defaultStartLevel=4',
     '-Declipse.product=org.eclipse.jdt.ls.core.product',
     '-Dlog.level=WARNING',
-    '-XX:TieredStopAtLevel=1',
+    `-Djdt.core.sharedIndexLocation=${sharedIndexDirectory}`,
+    ...(process.env.GITNEXUS_JDT_DEFAULT_TIERED === '1'
+      ? []
+      : [`-XX:TieredStopAtLevel=${tieredStopLevel ?? '1'}`]),
     '-Xms512M',
     `-Xmx${heapXmx}`,
     '-XX:+UseG1GC',
@@ -461,10 +473,22 @@ export function jdtlsVmArguments(opts: {
     '-jar',
     runtime.equinoxLauncherJar,
     '-configuration',
-    runtime.osgiConfigDir,
+    opts.configurationDir ?? runtime.osgiConfigDir,
     '-data',
     dataDir,
   ];
+}
+
+export function jdtlsSharedIndexDirectory(runtime: JdtlsRuntime): string {
+  const configured = process.env.GITNEXUS_JDT_SHARED_INDEX_DIR?.trim();
+  const toolRoot = ancestorDirectories(process.cwd()).find((candidate) =>
+    fs.existsSync(path.join(candidate, 'package.json'))
+      && fs.existsSync(path.join(candidate, 'lsp_server')));
+  const root = configured
+    ? path.resolve(configured)
+    : path.join(toolRoot ?? os.tmpdir(), '.gitnexus/cache/jdtls/external-indexes');
+  return path.join(root, runtime.version ?? VENDORED_JDTLS_VERSION,
+    `java-${runtime.jdkMajorVersion}-${process.platform}-${process.arch}`);
 }
 
 export function createJdtlsProcessLaunch(
@@ -476,8 +500,15 @@ export function createJdtlsProcessLaunch(
   const resolvedDataDir = dataDir ?? defaultWorkspaceDataDir(workspacePath);
   fs.rmSync(resolvedDataDir, { recursive: true, force: true });
   fs.mkdirSync(resolvedDataDir, { recursive: true });
+  // Equinox mutates its configuration area when JDT dynamically installs
+  // extension bundles. A run-owned configuration prevents stale bundle
+  // metadata and concurrent JDT processes from sharing writable OSGi state.
+  const configurationDir = path.join(resolvedDataDir, 'configuration');
+  fs.mkdirSync(configurationDir, { recursive: true });
+  fs.copyFileSync(path.join(runtime.osgiConfigDir, 'config.ini'), path.join(configurationDir, 'config.ini'));
 
   const springTools = springToolsEnabled() ? locateSpringToolsRuntime() : null;
+  const batchExtension = locateJdtBatchExtension();
   const projectImportEnabled = workspace.importBuildTools();
   const nativeBuildToolImportEnabled = workspace.nativeBuildToolImportEnabled();
   return {
@@ -486,12 +517,17 @@ export function createJdtlsProcessLaunch(
       runtime,
       dataDir: resolvedDataDir,
       heapXmx: workspace.heapXmx(),
+      configurationDir,
     }),
     initializationOptions: {
-      ...(springTools?.jdtBundles.length ? { bundles: springTools.jdtBundles } : {}),
+      bundles: [
+        ...(springTools?.jdtBundles ?? []),
+        ...(batchExtension ? [batchExtension] : []),
+      ],
       extendedClientCapabilities: {
         skipProjectConfiguration: !projectImportEnabled,
         classFileContentsSupport: true,
+        progressReportProvider: true,
         shouldLanguageServerExitOnShutdown: true,
       },
       settings: {
@@ -546,6 +582,15 @@ export function createJdtlsProcessLaunch(
       },
     },
   };
+}
+
+export function locateJdtBatchExtension(): string | undefined {
+  if (process.env.GITNEXUS_JDT_BATCH_EXTENSION === '0') return undefined;
+  for (const root of ancestorDirectories(process.cwd())) {
+    const candidate = path.join(root, 'dist/jdt-batch-extension/gitnexus-jdt-batch-extension.jar');
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 function defaultWorkspaceDataDir(workspacePath: string): string {

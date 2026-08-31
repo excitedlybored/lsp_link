@@ -19,6 +19,23 @@ scripts/     optional server installation helpers
 test/        build import and routing tests
 ```
 
+## Batch Java semantic data plane
+
+JDT.LS remains the Java language server and project/classpath authority. The
+indexer loads the offline-built `io.gitnexus.jdt.batch` OSGi bundle through the
+same `initializationOptions.bundles` mechanism used by Spring Tools. After
+project import and classpath validation, one `gitnexus.java.collectBatch`
+command uses JDT Core `ASTParser.createASTs` to emit declarations, portable
+binding identities, occurrences, calls, and type edges as checksummed NDJSON.
+Incoming references and calls are derived globally from those outgoing facts;
+the old per-symbol LSP search loop is retained only when
+`crawl.javaSemantics` is explicitly set to `lsp`.
+
+The standard LSP transport remains the control plane: initialization,
+workspace import, progress, diagnostics, Spring integration, cancellation, and
+shutdown still travel over JSON-RPC. Batch facts use custom capability names
+and are never mislabeled as standard `textDocument/references` observations.
+
 `indexer/` consumes the registry and adapters, normalizes responses, records
 capability coverage, performs the separate JVM artifact stage, and writes
 LadybugDB.
@@ -119,6 +136,12 @@ fifteen minutes unless `GITNEXUS_JDT_STARTUP_TIMEOUT_MS` overrides it. Phase
 transitions and periodic heartbeats expose the process ID, heap, Node/JDT RSS,
 file/classpath counts, and pending roots. Bounded stderr and exit state are
 attached to startup failures.
+
+The former `classpath-readiness` label is split into `jdt-index-readiness`
+(the global JDT index barrier inside command dispatch) and
+`classpath-validation` (the local expected/actual path comparison). Heartbeats
+also expose active `$/progress` or `language/progressReport` tasks without
+inventing percentages for opaque work.
 
 Generated Bazel projects import exact Eclipse metadata with autobuild disabled.
 Their JDT `-data` workspace remains run-scoped. Live benchmarks showed that

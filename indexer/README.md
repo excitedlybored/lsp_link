@@ -66,12 +66,14 @@ persisted with `status = "partial"` and the query diagnostics in
 strict; they still fail when the selected target itself cannot load or lacks
 `JavaInfo`.
 
-The `core` crawl profile remains intentionally declaration-only. Select
-`exhaustive` when source-level Java references, calls, hover, implementation,
-and hierarchy evidence are required. Reflection and string/configuration-driven
-wiring cannot be proven generically by static indexing; the inventory preserves
-the relevant configuration and source evidence without inventing a resolved
-edge.
+Java defaults to a complete binding-aware batch fact pass in both `core` and
+`exhaustive`: declarations, occurrences, calls, type hierarchy, and method
+overrides are not sacrificed by the large-repository profile. The profile still
+controls auxiliary standard-LSP observations, other language adapters, and the
+operational `javaSemantics = "lsp"` fallback. Reflection and
+string/configuration-driven wiring cannot be proven generically by static
+indexing; the inventory preserves the relevant configuration and source
+evidence without inventing a resolved edge.
 
 ### Provider interfaces
 
@@ -112,12 +114,12 @@ Ownership does not overlap:
 
 ## Canonical crawl and cache identity
 
-There is one crawl algorithm. It gathers declarations and declaration-scoped
-references across a build root first, then queries only semantic-token positions
-not already covered by mapped reference evidence. Tokens with gaps still receive
-definition, declaration, eligible type/implementation, and hover requests.
-Production logs report covered and queried counts for every build root; there is
-no legacy Cartesian mode or planner flag.
+There is one crawl orchestration. Java normally asks one JDT extension command
+per process to stream binding-aware AST facts, then derives reverse references
+and incoming calls globally. The `lsp` fallback gathers declarations and
+declaration-scoped references, then queries only semantic-token positions not
+already covered by mapped reference evidence. Other language adapters retain
+their own bounded protocol schedules; there is no legacy Cartesian planner.
 
 Before starting a language server, the runner hashes the workspace path, source
 and build-file contents, semantic adapter catalog, crawl profile, build scope,
@@ -252,16 +254,19 @@ npm test
 
 ## Specialized Java/JDT LS crawl
 
-The production crawler uses language-server protocol responses directly. It
-discovers Java build roots, prepares Bazel project models concurrently, and
-distributes roots across a bounded pool of persistent multi-project JDT LS
-processes. `--concurrency` selects the shard count. Requests inside each process
-remain serialized so one compiler is never flooded.
+JDT.LS remains the project import, classpath, binding, progress, diagnostics,
+Spring extension, cancellation, and lifecycle authority. The default batch
+path loads an offline-built OSGi extension and issues one
+`gitnexus.java.collectBatch` command per JDT process. JDT Core
+`ASTParser.createASTs` streams declarations, portable binding identities,
+occurrences, calls, type edges, and method overrides as atomic checksummed
+NDJSON. The indexer maps those facts to authoritative source URIs and derives
+reverse relationships without global per-symbol searches.
 
-JDT `documentSymbol` supplies declaration nodes and hierarchy. JDT semantic
-tokens then seed usage-level definition, declaration, type-definition,
-implementation, and hover requests, so imported types and dependency usages
-that are not document symbols are still crawled.
+One persistent JDT process is the default regardless of general worker
+concurrency. `crawl.jdtProcesses` or `--jdt-processes` enables an explicit
+multi-process policy only when repository benchmarks justify it. Requests
+inside each process remain serialized so one compiler is never flooded.
 
 Java primitives and synthetic array `length` have no navigable type
 declaration. When JDT LS returns its known malformed empty envelope for those
@@ -277,8 +282,9 @@ and writes the default graph to `<repository>/.gitnexus/lsp-lbug`. Add
 `--background` to detach it. `npm run index -- build-index ...` remains the
 advanced internal entrypoint for explicit output and operational overrides.
 
-`--concurrency` controls persistent JDT LS shards. The separate
-`--artifact-concurrency` sets parsing threads in the single persistent ASM
+`--concurrency` controls ordinary bounded worker queues; `--jdt-processes`
+controls persistent JDT processes. The separate `--artifact-concurrency` sets
+parsing threads in the single persistent ASM
 worker (default 4, maximum 16). Enrichment reports processed, failed, and total class
 counts periodically. `--artifact-max-classes N` can cap detailed parsing when a
 complete dependency-bytecode crawl is not required.

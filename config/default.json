@@ -29,7 +29,9 @@
   },
   "crawl": {
     "profile": "core",
+    "javaSemantics": "batch",
     "concurrency": 4,
+    "jdtProcesses": 1,
     "resume": true
   },
   "artifacts": {

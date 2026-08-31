@@ -1,6 +1,6 @@
 /** Thin CLI shell for the Java knowledge-graph pipeline. */
 
-import { buildLspKnowledgeGraph } from '../application/index-runner.js';
+import { buildLspKnowledgeGraph, crawlLspRepository } from '../application/index-runner.js';
 import { parseLspKnowledgeGraphBuildOptions } from '../pipeline/cli-options.js';
 import { runBazelPreparationCommand } from './bazel-prepare.js';
 
@@ -9,7 +9,7 @@ export { buildLspKnowledgeGraph } from '../application/index-runner.js';
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (command === '--help' || command === '-h') {
-    console.log('Usage: npm run index -- <prepare-build-model|build-index> REPOSITORY [options]');
+    console.log('Usage: npm run index -- <prepare-build-model|crawl|build-index> REPOSITORY [options]');
     return;
   }
   if (command === 'prepare-build-model' || command === 'bazel-prepare') {
@@ -17,11 +17,32 @@ async function main(): Promise<void> {
     return;
   }
   const options = parseLspKnowledgeGraphBuildOptions(process.argv.slice(2));
+  if (command === 'crawl') {
+    const result = await crawlLspRepository(options);
+    console.log(JSON.stringify({
+      mode: 'crawl-only',
+      checkpoint: result.checkpoint,
+      crawlFingerprint: result.crawlFingerprint,
+      durationMs: result.durationMs,
+      peakNodeRssMiB: result.peakNodeRssMiB,
+      crawlProfile: options.crawlProfile,
+      javaSemantics: options.javaSemantics,
+      jdtProcesses: options.jdtProcesses,
+      documents: result.batch.documents.length,
+      symbols: result.batch.symbols.length,
+      occurrences: result.batch.occurrences.length,
+      callSites: result.batch.callSites.length,
+      relations: result.batch.relations.length,
+      artifacts: result.artifacts.length,
+    }, null, 2));
+    return;
+  }
   const { batch, callNormalizationBatch, artifactEnrichment, bazelBuildGraph, output } =
     await buildLspKnowledgeGraph(options);
   console.log(JSON.stringify({
     output,
     crawlProfile: options.crawlProfile,
+    javaSemantics: options.javaSemantics,
     crawlStrategy: 'efficient-facts-first',
     crawlCacheId: batch.analysisRuns[0]?.id.replace(/^run:/, ''),
     buildModelMode: options.bazelBuildMode === 'prebuilt' ? 'prepared' : 'integrated',

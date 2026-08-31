@@ -32,7 +32,7 @@ function completeConfig(): JsonObject {
       },
       preparation: { concurrency: 3, timeoutMs: 9000 },
     },
-    crawl: { profile: 'core', concurrency: 2, resume: false },
+    crawl: { profile: 'core', javaSemantics: 'batch', concurrency: 2, jdtProcesses: 1, resume: false },
     artifacts: {
       concurrency: 5,
       maxClasses: 1200,
@@ -76,6 +76,7 @@ test('loads the tracked polyglot default without repository-specific labels', ()
   assert.equal(config.name, 'default-index');
   assert.equal(config.bazel.buildModelMode, 'prepared');
   assert.equal(config.crawl.profile, 'core');
+  assert.equal(config.crawl.javaSemantics, 'batch');
   assert.deepEqual(config.bazel.scope.includeTargetPatterns, ['//...']);
   assert.deepEqual(config.bazel.scope.includeRuleKinds, [
     'java_binary',
@@ -108,7 +109,9 @@ test('loads every explicit version-1 config field', () => {
     excludeTags: ['coverage', 'reporting-only'],
   });
   assert.deepEqual(config.bazel.preparation, { concurrency: 3, timeoutMs: 9000 });
-  assert.deepEqual(config.crawl, { profile: 'core', concurrency: 2, resume: false });
+  assert.deepEqual(config.crawl, {
+    profile: 'core', javaSemantics: 'batch', concurrency: 2, jdtProcesses: 1, resume: false,
+  });
   assert.deepEqual(config.artifacts, {
     concurrency: 5,
     maxClasses: 1200,
@@ -133,7 +136,9 @@ test('applies every omitted-field default', () => {
     excludeTags: [],
   });
   assert.deepEqual(config.bazel.preparation, { concurrency: 4, timeoutMs: 600_000 });
-  assert.deepEqual(config.crawl, { profile: 'exhaustive', concurrency: 4, resume: true });
+  assert.deepEqual(config.crawl, {
+    profile: 'exhaustive', javaSemantics: 'batch', concurrency: 4, jdtProcesses: 1, resume: true,
+  });
   assert.deepEqual(config.artifacts, {
     concurrency: 4,
     maxClasses: undefined,
@@ -163,6 +168,7 @@ test('accepts all enum values, nullable fields, and numeric boundaries', () => {
   value.bazel.preparation.timeoutMs = 1;
   value.crawl.profile = 'exhaustive';
   value.crawl.concurrency = 1;
+  value.crawl.jdtProcesses = 2;
   value.artifacts.concurrency = 16;
   value.artifacts.maxClasses = null;
   value.checkpoints.directory = null;
@@ -173,6 +179,7 @@ test('accepts all enum values, nullable fields, and numeric boundaries', () => {
   assert.equal(config.bazel.preparation.timeoutMs, 1);
   assert.equal(config.crawl.profile, 'exhaustive');
   assert.equal(config.crawl.concurrency, 1);
+  assert.equal(config.crawl.jdtProcesses, 2);
   assert.equal(config.artifacts.concurrency, 16);
   assert.equal(config.artifacts.maxClasses, undefined);
   assert.equal(config.checkpoints.directory, undefined);
@@ -221,6 +228,7 @@ test('operational fields do not change the semantic hash', () => {
   const value = completeConfig();
   value.bazel.preparation = { concurrency: 8, timeoutMs: 123_456 };
   value.crawl.concurrency = 7;
+  value.crawl.jdtProcesses = 3;
   value.crawl.resume = true;
   value.artifacts.concurrency = 9;
   value.quality.failOnFailedBuildRoot = true;
@@ -242,6 +250,7 @@ test('each semantic field changes the semantic hash', () => {
     ['scope.excludeLabels', (value) => { value.bazel.scope.excludeLabels = []; }],
     ['scope.excludeTags', (value) => { value.bazel.scope.excludeTags = []; }],
     ['crawl.profile', (value) => { value.crawl.profile = 'exhaustive'; }],
+    ['crawl.javaSemantics', (value) => { value.crawl.javaSemantics = 'lsp'; }],
     ['artifacts.maxClasses', (value) => { value.artifacts.maxClasses = 1; }],
     ['artifacts.fetchSources', (value) => { value.artifacts.fetchSources = true; }],
     ['artifacts.classpathManifests', (value) => { value.artifacts.classpathManifests = []; }],
@@ -314,6 +323,7 @@ test('rejects invalid numeric values for every numeric field', () => {
     ['bazel.preparation.concurrency', (value) => { value.bazel.preparation.concurrency = 0; }],
     ['bazel.preparation.timeoutMs', (value) => { value.bazel.preparation.timeoutMs = 1.5; }],
     ['crawl.concurrency', (value) => { value.crawl.concurrency = -1; }],
+    ['crawl.jdtProcesses', (value) => { value.crawl.jdtProcesses = 0; }],
     ['artifacts.concurrency lower bound', (value) => { value.artifacts.concurrency = 0; }],
     ['artifacts.concurrency upper bound', (value) => { value.artifacts.concurrency = 17; }],
     ['artifacts.maxClasses', (value) => { value.artifacts.maxClasses = 0; }],
@@ -376,7 +386,9 @@ test('maps every config field used by the build command', () => {
   assert.equal(options.bazelPreparationConcurrency, config.bazel.preparation.concurrency);
   assert.equal(options.bazelPreparationTimeoutMs, config.bazel.preparation.timeoutMs);
   assert.equal(options.crawlProfile, config.crawl.profile);
+  assert.equal(options.javaSemantics, config.crawl.javaSemantics);
   assert.equal(options.concurrency, config.crawl.concurrency);
+  assert.equal(options.jdtProcesses, config.crawl.jdtProcesses);
   assert.equal(options.resume, config.crawl.resume);
   assert.equal(options.artifactConcurrency, config.artifacts.concurrency);
   assert.equal(options.artifactMaxClasses, config.artifacts.maxClasses);
@@ -390,14 +402,25 @@ test('allows every operational build override with config', () => {
   const filename = configFile();
   const options = parseLspKnowledgeGraphBuildOptions([
     'build-index', '/workspace', '--config', filename,
-    '--output', '/tmp/result.lbug', '--concurrency', '7', '--artifact-concurrency', '8',
+    '--output', '/tmp/result.lbug', '--concurrency', '7', '--jdt-processes', '2', '--artifact-concurrency', '8',
     '--checkpoint-directory', '/tmp/checkpoints', '--no-resume',
   ]);
   assert.equal(options.output, '/tmp/result.lbug');
   assert.equal(options.concurrency, 7);
+  assert.equal(options.jdtProcesses, 2);
   assert.equal(options.artifactConcurrency, 8);
   assert.equal(options.checkpointDirectory, '/tmp/checkpoints');
   assert.equal(options.resume, false);
+});
+
+test('allows crawl-only parity mode to override Java semantic providers with config', () => {
+  const filename = configFile();
+  const options = parseLspKnowledgeGraphBuildOptions([
+    'crawl', '/workspace', '--config', filename,
+    '--profile', 'exhaustive', '--java-semantics', 'lsp',
+  ]);
+  assert.equal(options.crawlProfile, 'exhaustive');
+  assert.equal(options.javaSemantics, 'lsp');
 });
 
 test('rejects every semantic build override with config', () => {

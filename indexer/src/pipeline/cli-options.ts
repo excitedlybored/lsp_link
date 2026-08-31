@@ -11,16 +11,20 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   const extracted = extractRunConfig(argv);
   const args = extracted.args;
   const config = extracted.config;
-  if (args[0] === 'build' || args[0] === 'build-index' || args[0] === 'index') args.shift();
+  const command = args[0];
+  const crawlOverride = command === 'crawl';
+  if (args[0] === 'build' || args[0] === 'build-index' || args[0] === 'index' || args[0] === 'crawl') args.shift();
   const workspace = path.resolve(args.shift() ?? '.');
   let output = path.join(workspace, '.gitnexus', 'lsp-lbug');
   let concurrency = config?.crawl.concurrency ?? 4;
+  let jdtProcesses = config?.crawl.jdtProcesses ?? 1;
   let artifactMaxClasses: number | undefined = config?.artifacts.maxClasses;
   let artifactConcurrency = config?.artifacts.concurrency ?? 4;
   let fetchArtifactSources = config?.artifacts.fetchSources ?? true;
   let checkpointDirectory: string | undefined = config?.checkpoints.directory;
   let resume = config?.crawl.resume ?? true;
-  const crawlProfile: CrawlProfile = config?.crawl.profile ?? 'exhaustive';
+  let crawlProfile: CrawlProfile = config?.crawl.profile ?? 'exhaustive';
+  let javaSemantics = config?.crawl.javaSemantics ?? 'batch';
   let bazelBuildMode: BazelBuildMode = config?.bazel.buildModelMode === 'prepared' ? 'prebuilt' : 'managed';
   let bazelTargetQuery: string | undefined;
   const artifactManifestPaths: string[] = [...(config?.artifacts.classpathManifests ?? [])];
@@ -28,6 +32,19 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     const flag = args.shift();
     if (flag === '--output') output = path.resolve(requireFlagValue(args, flag));
     else if (flag === '--concurrency') concurrency = Number(requireFlagValue(args, flag));
+    else if (flag === '--jdt-processes') jdtProcesses = Number(requireFlagValue(args, flag));
+    else if (flag === '--profile') {
+      semanticConflict(config, flag, crawlOverride);
+      const value = requireFlagValue(args, flag);
+      if (value !== 'core' && value !== 'exhaustive') throw new Error(`${flag} must be core or exhaustive`);
+      crawlProfile = value;
+    }
+    else if (flag === '--java-semantics') {
+      semanticConflict(config, flag, crawlOverride);
+      const value = requireFlagValue(args, flag);
+      if (value !== 'batch' && value !== 'lsp') throw new Error(`${flag} must be batch or lsp`);
+      javaSemantics = value;
+    }
     else if (flag === '--artifact-max-classes') { semanticConflict(config, flag); artifactMaxClasses = Number(requireFlagValue(args, flag)); }
     else if (flag === '--artifact-concurrency') artifactConcurrency = Number(requireFlagValue(args, flag));
     else if (flag === '--checkpoint-directory') checkpointDirectory = path.resolve(requireFlagValue(args, flag));
@@ -58,6 +75,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     }
   }
   requirePositiveInteger('--concurrency', concurrency);
+  requirePositiveInteger('--jdt-processes', jdtProcesses);
   if (artifactMaxClasses !== undefined) requirePositiveInteger('--artifact-max-classes', artifactMaxClasses);
   requirePositiveInteger('--artifact-concurrency', artifactConcurrency);
   if (artifactConcurrency > 16) {
@@ -67,6 +85,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     workspace,
     output,
     concurrency,
+    jdtProcesses,
     artifactMaxClasses,
     artifactConcurrency,
     fetchArtifactSources,
@@ -74,6 +93,7 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     checkpointDirectory: checkpointDirectory ?? `${output}.checkpoints`,
     resume,
     crawlProfile,
+    javaSemantics,
     bazelBuildMode,
     bazelTargetQuery,
     bazelTargetScope: config?.bazel.scope,
@@ -85,8 +105,8 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   };
 }
 
-function semanticConflict(config: unknown, flag: string): void {
-  if (config) throw new Error(`${flag} cannot override semantic settings loaded with --config`);
+function semanticConflict(config: unknown, flag: string, allowed = false): void {
+  if (config && !allowed) throw new Error(`${flag} cannot override semantic settings loaded with --config`);
 }
 
 function requireFlagValue(args: string[], flag: string): string {

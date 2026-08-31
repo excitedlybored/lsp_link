@@ -22,7 +22,7 @@ import { JavaJdtlsAdapter } from '../adapters/java/jdtls-adapter.js';
 import { SpringBootLanguageServerAdapter } from '../adapters/java/spring-boot-adapter.js';
 import type { ILspAdapter } from '../contracts/lsp-adapter.interface.js';
 import { LspAdapterRegistry } from '../registry/lsp-adapter-registry.js';
-import { waitForImportedJavaProjects } from '../adapters/java/jdtls-classpath-readiness.js';
+import { validateImportedJavaProjectClasspaths } from '../adapters/java/jdtls-classpath-validation.js';
 
 class TestStdioAdapter extends BaseStdioLspAdapter {
   readonly id = 'test-lsp';
@@ -312,7 +312,8 @@ test('reports deterministic JDT phase, memory, process, and pending-root telemet
   });
   telemetry.start();
   telemetry.setPendingRoots(1);
-  telemetry.setPhase('classpath-readiness');
+  telemetry.setPhase('jdt-index-readiness');
+  telemetry.noteServerProgress({ token: 'index-1', task: 'Indexing', message: 'Resolving types', percentage: 42, complete: false });
   telemetry.setClasspathReadiness({
     attempts: 7, totalRoots: 1, completedRoots: 0, currentRootId: 'bazel:.',
     expectedEntries: 1_686, classpathEntries: 1_600, modulepathEntries: 20,
@@ -326,7 +327,7 @@ test('reports deterministic JDT phase, memory, process, and pending-root telemet
   const events = lines.map((line) => JSON.parse(line.replace(/^\[jdtls-startup\] /, '')));
   assert.deepEqual(events.map((event) => event.event), ['start', 'phase', 'heartbeat', 'complete']);
   assert.deepEqual(events[2], {
-    event: 'heartbeat', shardId: 'jdtls-shard-1', phase: 'classpath-readiness',
+    event: 'heartbeat', shardId: 'jdtls-shard-1', phase: 'jdt-index-readiness',
     elapsedMs: 15_000, remainingMs: 585_000, sourceFiles: 8_741,
     classpathEntries: 1_686, pendingRoots: 1, heapXmx: '6G', processId: 4321,
     classpathReadiness: {
@@ -335,13 +336,15 @@ test('reports deterministic JDT phase, memory, process, and pending-root telemet
       actualEntries: 1_620, matchedEntries: 1_610, missingEntries: 76,
       rootProgressPercent: 0, entryProgressPercent: 95.49, stalledForMs: 15_000,
     },
+    jdtProgress: [{ token: 'index-1', task: 'Indexing', message: 'Resolving types', percentage: 42, idleForMs: 15_000 }],
+    activeJdtTasks: 1,
     nodeRssMiB: events[2].nodeRssMiB, jdtRssMiB: 512.25,
   });
   now = telemetry.deadlineAt + 1;
   assert.throws(() => telemetry.remainingMs('project-import'), /deadline exceeded during project-import/);
 });
 
-test('classpath readiness counts classpath and modulepath entries and reports request progress', async () => {
+test('classpath validation counts classpath and modulepath entries and reports request progress', async () => {
   const progress: Array<{
     matchedEntries: number; missingEntries: number; completedRoots: number;
     requestState?: string;
@@ -350,7 +353,7 @@ test('classpath readiness counts classpath and modulepath entries and reports re
     documentUri: (filename: string) => `file://${filename}`,
     request: async () => ({ classpaths: ['/deps/runtime.jar'], modulepaths: ['/deps/module.jar'] }),
   } as unknown as ILspAdapter;
-  await waitForImportedJavaProjects(
+  await validateImportedJavaProjectClasspaths(
     adapter,
     [{
       buildRootId: 'bazel:.', projectName: 'project', buildRootPath: '/workspace',
@@ -372,7 +375,7 @@ test('classpath readiness counts classpath and modulepath entries and reports re
   ]);
 });
 
-test('classpath readiness retries only while coverage improves and backs off between stable responses', async () => {
+test('classpath validation retries only while coverage improves and backs off between stable responses', async () => {
   let now = 0;
   const sleeps: number[] = [];
   const responses = [
@@ -383,7 +386,7 @@ test('classpath readiness retries only while coverage improves and backs off bet
     documentUri: (filename: string) => `file://${filename}`,
     request: async () => responses.shift(),
   } as unknown as ILspAdapter;
-  await waitForImportedJavaProjects(
+  await validateImportedJavaProjectClasspaths(
     adapter,
     [readinessProject(['/deps/one.jar', '/deps/two.jar'])],
     'jdtls-shard-1',
@@ -401,7 +404,7 @@ test('classpath readiness retries only while coverage improves and backs off bet
   assert.deepEqual(sleeps, [250]);
 });
 
-test('classpath readiness fails a stable mismatch with bounded missing-entry diagnostics', async () => {
+test('classpath validation fails a stable mismatch with bounded missing-entry diagnostics', async () => {
   let now = 0;
   let requests = 0;
   const adapter = {
@@ -412,7 +415,7 @@ test('classpath readiness fails a stable mismatch with bounded missing-entry dia
     },
   } as unknown as ILspAdapter;
   await assert.rejects(
-    waitForImportedJavaProjects(
+    validateImportedJavaProjectClasspaths(
       adapter,
       [readinessProject(['/deps/one.jar', '/deps/missing.jar'])],
       'jdtls-shard-1',
@@ -433,7 +436,7 @@ test('classpath readiness fails a stable mismatch with bounded missing-entry dia
   assert.equal(now, 2_000);
 });
 
-test('classpath readiness surfaces repeated JDT request failures instead of waiting for the startup deadline', async () => {
+test('classpath validation surfaces repeated JDT request failures instead of waiting for the startup deadline', async () => {
   let now = 0;
   let requests = 0;
   const adapter = {
@@ -444,7 +447,7 @@ test('classpath readiness surfaces repeated JDT request failures instead of wait
     },
   } as unknown as ILspAdapter;
   await assert.rejects(
-    waitForImportedJavaProjects(
+    validateImportedJavaProjectClasspaths(
       adapter,
       [readinessProject(['/deps/one.jar'])],
       'jdtls-shard-1',
@@ -465,7 +468,7 @@ test('classpath readiness surfaces repeated JDT request failures instead of wait
   assert.equal(now, 750);
 });
 
-test('classpath readiness tolerates a transient non-existing project during native import', async () => {
+test('classpath validation tolerates a transient non-existing project during native import', async () => {
   let now = 0;
   let requests = 0;
   const adapter = {
@@ -478,7 +481,7 @@ test('classpath readiness tolerates a transient non-existing project during nati
       return { classpaths: ['/deps/one.jar'], modulepaths: [] };
     },
   } as unknown as ILspAdapter;
-  await waitForImportedJavaProjects(
+  await validateImportedJavaProjectClasspaths(
     adapter,
     [readinessProject(['/deps/one.jar'])],
     'jdtls-shard-1',

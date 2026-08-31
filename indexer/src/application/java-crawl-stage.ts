@@ -52,7 +52,7 @@ export async function crawlJavaWorkspace(
   } = request;
   console.log(
     `[stage:lsp-crawl] preparing ${activeRoots.length} Java build roots `
-    + `(concurrency=${options.concurrency})`,
+    + `(workerConcurrency=${options.concurrency}, jdtProcesses=${options.jdtProcesses})`,
   );
   const run = createAnalysisRun(workspacePath, `run:${crawlFingerprint}`);
   run.configurationHash = options.runConfigHash;
@@ -77,7 +77,7 @@ export async function crawlJavaWorkspace(
   const sourceCounts = new Map(activeRoots.map((root) => [root.id, filesByRoot.get(root.id)?.length ?? 0]));
   const heapBudgetGb = jdtlsHeapBudgetGb();
   const shardPlans = planJdtlsBuildRootShardsWithinBudget(
-    activeRoots, options.concurrency, sourceCounts, heapBudgetGb,
+    activeRoots, options.jdtProcesses, sourceCounts, heapBudgetGb,
   )
     .filter((plan) => plan.roots.some((root) => !cachedByRoot.has(root.id)));
   console.log(
@@ -117,6 +117,7 @@ export async function crawlJavaWorkspace(
           processShardId: shard.id,
           requireSharedAdapter: true,
           crawlProfile: options.crawlProfile,
+          javaSemantics: options.javaSemantics,
         });
         result.artifacts = retainArtifactClasspathEntries(
           result.artifacts,

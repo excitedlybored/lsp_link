@@ -17,6 +17,7 @@ export interface LspKnowledgeGraphBuildOptions {
   workspace: string;
   output: string;
   concurrency: number;
+  jdtProcesses: number;
   artifactMaxClasses?: number;
   artifactConcurrency: number;
   fetchArtifactSources: boolean;
@@ -24,6 +25,7 @@ export interface LspKnowledgeGraphBuildOptions {
   checkpointDirectory: string;
   resume: boolean;
   crawlProfile: CrawlProfile;
+  javaSemantics: 'batch' | 'lsp';
   bazelBuildMode: BazelBuildMode;
   bazelTargetQuery?: string;
   bazelTargetScope?: BazelTargetScope;
@@ -40,6 +42,17 @@ export interface LspKnowledgeGraphBuildResult {
   callNormalizationBatch: DerivedCallNormalizationBatch;
   output: string;
   bazelBuildGraph: BazelBuildGraphBatch;
+  repositoryInventory: RepositoryInventoryBatch;
+}
+
+export interface LspRepositoryCrawlResult {
+  batch: LspObservationBatch;
+  artifacts: NormalizedArtifactDescriptor[];
+  classpathAttempts: ArtifactClasspathProviderAttempt[];
+  checkpoint: string;
+  crawlFingerprint: string;
+  durationMs: number;
+  peakNodeRssMiB: number;
   repositoryInventory: RepositoryInventoryBatch;
 }
 

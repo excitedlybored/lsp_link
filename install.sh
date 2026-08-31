@@ -176,8 +176,9 @@ echo "  Spring Tools $spring_tools_version OK"
 # 6. Compile the classloading-free artifact worker with the locally installed
 #    JDK 21+ and the checksum-verified vendored ASM Core JAR. No network access
 #    is used.
-echo "[6/7] Building the persistent ASM artifact worker..."
+echo "[6/7] Building the persistent ASM worker and JDT batch extension..."
 npm run artifact-worker:build
+npm run jdt-batch-extension:build
 
 echo "[7/7] Initializing Python .venv..."
 # Use python3.12 explicitly; do not let uv select or download another Python.

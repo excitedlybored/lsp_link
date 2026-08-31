@@ -14,7 +14,13 @@ export interface LspLinkRunConfig {
     scope: BazelTargetScope;
     preparation: { concurrency: number; timeoutMs: number };
   };
-  crawl: { profile: CrawlProfile; concurrency: number; resume: boolean };
+  crawl: {
+    profile: CrawlProfile;
+    javaSemantics: 'batch' | 'lsp';
+    concurrency: number;
+    jdtProcesses: number;
+    resume: boolean;
+  };
   artifacts: {
     concurrency: number; maxClasses?: number; fetchSources: boolean; classpathManifests: string[];
   };
@@ -51,7 +57,7 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   const preparation = object(bazel.preparation === undefined ? {} : bazel.preparation, 'config.bazel.preparation');
   keys(preparation, ['concurrency', 'timeoutMs'], 'config.bazel.preparation');
   const crawl = object(root.crawl === undefined ? {} : root.crawl, 'config.crawl');
-  keys(crawl, ['profile', 'concurrency', 'resume'], 'config.crawl');
+  keys(crawl, ['profile', 'javaSemantics', 'concurrency', 'jdtProcesses', 'resume'], 'config.crawl');
   const artifacts = object(root.artifacts === undefined ? {} : root.artifacts, 'config.artifacts');
   keys(artifacts, ['concurrency', 'maxClasses', 'fetchSources', 'classpathManifests'], 'config.artifacts');
   const quality = object(root.quality === undefined ? {} : root.quality, 'config.quality');
@@ -62,9 +68,11 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
     ? enumeration(bazel.buildModelMode, ['integrated', 'prepared'], 'config.bazel.buildModelMode')
     : legacyBuildModelMode(bazel.buildMode);
   const profile = enumeration(crawl.profile === undefined ? 'exhaustive' : crawl.profile, CRAWL_PROFILES, 'config.crawl.profile');
+  const javaSemantics = enumeration(crawl.javaSemantics === undefined ? 'batch' : crawl.javaSemantics,
+    ['batch', 'lsp'], 'config.crawl.javaSemantics');
   const semantic = {
     schemaVersion: 1, name: string(root.name === undefined ? 'default' : root.name, 'config.name'),
-    bazel: { buildModelMode, scope }, profile,
+    bazel: { buildModelMode, scope }, profile, javaSemantics,
     artifacts: {
       maxClasses: optionalPositive(artifacts.maxClasses, 'config.artifacts.maxClasses'),
       fetchSources: boolean(artifacts.fetchSources === undefined ? true : artifacts.fetchSources, 'config.artifacts.fetchSources'),
@@ -85,7 +93,9 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
     },
     crawl: {
       profile,
+      javaSemantics,
       concurrency: positive(crawl.concurrency === undefined ? 4 : crawl.concurrency, 'config.crawl.concurrency'),
+      jdtProcesses: positive(crawl.jdtProcesses === undefined ? 1 : crawl.jdtProcesses, 'config.crawl.jdtProcesses'),
       resume: boolean(crawl.resume === undefined ? true : crawl.resume, 'config.crawl.resume'),
     },
     artifacts: {

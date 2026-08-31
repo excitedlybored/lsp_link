@@ -255,7 +255,7 @@ export interface LspCallSite {
   serverId: string;
   documentId: string;
   callerSymbolId: string;
-  capability: 'callHierarchy/incomingCalls' | 'callHierarchy/outgoingCalls';
+  capability: 'callHierarchy/incomingCalls' | 'callHierarchy/outgoingCalls' | 'gitnexus.java/batchCalls';
   direction: LspCallHierarchyDirection;
   range: LspRange;
   calleeName?: string;

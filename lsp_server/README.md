@@ -161,9 +161,11 @@ reference coverage provides the cross-position optimization: one class-level
 `textDocument/references` result can cover thousands of usages without caching
 by unsafe lexical class names.
 
-JDT process count is constrained by both crawl concurrency and a total heap
-budget. `GITNEXUS_JDT_MAX_TOTAL_HEAP_GB` defaults to `8`; the planner reduces
-the shard count until the aggregate 2/4/6 GB JVM heaps fit. Override
+JDT process count defaults to one independently of general crawl concurrency.
+Set `crawl.jdtProcesses` or `--jdt-processes` only after a benchmark supports
+partitioning the build roots. The explicit count is also constrained by the
+total heap budget. `GITNEXUS_JDT_MAX_TOTAL_HEAP_GB` defaults to `8`; the planner
+reduces the shard count until the aggregate 2/4/6 GB JVM heaps fit. Override
 `GITNEXUS_JDT_STARTUP_TIMEOUT_MS` when an unusually large import needs a fixed
 deadline. Without an override, one overall startup budget scales with source
 files and classpath entries from a three-minute minimum to a fifteen-minute
@@ -179,7 +181,7 @@ failures print at most the final 8 KiB with process exit diagnostics. A
 classpath that is incomplete at the shared deadline fails the shard instead of
 being mislabeled as a complete crawl.
 
-During `classpath-readiness`, the heartbeat also reports request attempts and
+During `classpath-validation`, the heartbeat also reports request attempts and
 the current request state (`sent`, `returned`, or `failed`) and elapsed time,
 completed roots, classpath/module-path response counts, matched and missing
 expected entries, the current root, the last error, and `stalledForMs`. Both
@@ -216,6 +218,22 @@ so the Java adapter converts that exact envelope to the valid nullable result
 `null`. It does not suppress any other JDT LS errors.
 
 ## Java build import
+
+### Batch semantic indexing
+
+The default Java crawl loads `dist/jdt-batch-extension/gitnexus-jdt-batch-extension.jar`
+as a JDT.LS OSGi extension. Its `gitnexus.java.collectBatch` command performs
+bounded binding-aware AST batches and atomically streams checksummed NDJSON.
+The Node indexer maps linked-resource URIs back to authoritative documents,
+merges portable JVM identities across projects, and derives reverse reference
+and call relationships. This removes the global JDT search previously issued
+for every declaration while preserving JDT.LS as the project and protocol host.
+
+Build the bundle offline with `npm run jdt-batch-extension:build`. Set
+`crawl.javaSemantics` to `lsp`, or `GITNEXUS_JDT_BATCH_EXTENSION=0` when
+diagnosing extension loading. The configuration fallback is preferred because
+disabling the bundle while batch mode is selected produces explicit partial
+coverage.
 
 Native Maven and Gradle projects retain automatic build-model refresh and
 Eclipse autobuild. Generated Bazel/Eclipse projects import the exact `.project`

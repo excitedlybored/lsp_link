@@ -166,9 +166,11 @@ export function ingestCalls(
         serverId: context.server.id,
         documentId: call.caller.documentId,
         callerSymbolId: call.caller.id,
-        capability: direction === 'incoming'
-          ? 'callHierarchy/incomingCalls'
-          : 'callHierarchy/outgoingCalls',
+        capability: context.capability === 'gitnexus.java/batchCalls'
+          ? context.capability
+          : direction === 'incoming'
+            ? 'callHierarchy/incomingCalls'
+            : 'callHierarchy/outgoingCalls',
         direction,
         range,
         calleeName: call.target.name,
