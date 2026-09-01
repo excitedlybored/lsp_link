@@ -80,7 +80,7 @@ export async function persistStreamingKnowledgeGraph(
     } finally {
       await initial.close();
     }
-    fs.copyFileSync(stagingPath, manifest.basePath);
+    cloneOrCopyFile(stagingPath, manifest.basePath);
     manifest.initialized = true;
     checkpointStore.save(stage, artifactFingerprint, manifest);
   }
@@ -98,7 +98,7 @@ export async function persistStreamingKnowledgeGraph(
   ) => {
     fs.rmSync(stagingPath, { force: true });
     fs.rmSync(`${stagingPath}.wal`, { force: true });
-    fs.copyFileSync(manifest!.basePath, stagingPath);
+    cloneOrCopyFile(manifest!.basePath, stagingPath);
     let handle = openLspLadybugDatabase(stagingPath, ladybug);
     try {
       await bulkCopyArtifactGraph(
@@ -133,6 +133,30 @@ export async function persistStreamingKnowledgeGraph(
     fs.renameSync(stagingPath, output);
     manifest!.published = true;
     checkpointStore.save(stage, artifactFingerprint, manifest!);
+    cleanupPublishedSidecars(manifest!);
   }, { output });
   return { output, artifactEnrichment };
+}
+
+function cloneOrCopyFile(source: string, destination: string): void {
+  try {
+    // APFS, Btrfs and XFS can make this a copy-on-write clone. Node falls
+    // back to a normal copy when cloning is unsupported.
+    fs.copyFileSync(source, destination, fs.constants.COPYFILE_FICLONE);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOSPC') throw error;
+    fs.copyFileSync(source, destination);
+  }
+}
+
+function cleanupPublishedSidecars(manifest: ArtifactPersistenceManifest): void {
+  try {
+    fs.rmSync(manifest.basePath, { force: true });
+    fs.rmSync(`${manifest.basePath}.wal`, { force: true });
+    fs.rmSync(`${manifest.basePath}.bulk-work`, { recursive: true, force: true });
+    fs.rmSync(manifest.spoolDirectory, { recursive: true, force: true });
+    fs.rmSync(`${manifest.spoolDirectory}.copy-work`, { recursive: true, force: true });
+  } catch (error) {
+    console.warn(`[stage:final-publication] unable to remove published sidecars: ${String(error)}`);
+  }
 }

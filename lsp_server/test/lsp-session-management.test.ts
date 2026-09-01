@@ -10,8 +10,23 @@ import {
   cleanupJdtlsShardWorkspace,
   planJdtlsBuildRootShardsWithinBudget,
   prepareJdtlsShardWorkspace,
+  pruneStaleJdtlsWorkspaces,
   type JdtlsBuildRootShard,
 } from '../adapters/java/jdtls-sharding.js';
+
+test('prunes abandoned JDT workspaces without touching a live process', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jdt-stale-workspaces-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const stale = path.join(root, '99999999-abandoned');
+  const active = path.join(root, `${process.pid}-active`);
+  fs.mkdirSync(path.join(stale, 'shard', '.jdtls-data'), { recursive: true });
+  fs.mkdirSync(path.join(active, 'shard', '.jdtls-data'), { recursive: true });
+
+  pruneStaleJdtlsWorkspaces(root);
+
+  assert.equal(fs.existsSync(stale), false);
+  assert.equal(fs.existsSync(active), true);
+});
 import {
   JdtlsStartupTelemetry,
   jdtlsStartupHeartbeatMs,

@@ -99,7 +99,7 @@ test('writes atomic checkpoints and rejects incompatible input fingerprints', (t
   assert.deepEqual(fs.readdirSync(store.directory), ['lsp-crawl.checkpoint']);
 });
 
-test('retains content-addressed crawl IDs and reuses only exact input identities', (t) => {
+test('retains only the latest content-addressed crawl ID and reuses its exact identity', (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'kg-crawl-cache-'));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
   const store = new PipelineCheckpointStore(path.join(workspace, 'checkpoints'));
@@ -107,13 +107,29 @@ test('retains content-addressed crawl IDs and reuses only exact input identities
   const second = 'b'.repeat(64);
   store.saveCached('lsp-crawl', first, { symbols: ['first'] });
   store.saveCached('lsp-crawl', second, { symbols: ['second'] });
-  assert.deepEqual(store.loadCached('lsp-crawl', first), { symbols: ['first'] });
+  assert.equal(store.loadCached('lsp-crawl', first), undefined);
   assert.deepEqual(store.loadCached('lsp-crawl', second), { symbols: ['second'] });
   assert.equal(store.loadCached('lsp-crawl', 'c'.repeat(64)), undefined);
   assert.deepEqual(
     fs.readdirSync(path.join(store.directory, 'by-id', 'lsp-crawl')).sort(),
-    [`${first}.checkpoint`, `${second}.checkpoint`],
+    [`${second}.checkpoint`],
   );
+});
+
+test('bounds content-addressed checkpoints and removes resumability-only root stages', (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'kg-bounded-cache-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const store = new PipelineCheckpointStore(path.join(workspace, 'checkpoints'));
+  const ids = ['a', 'b', 'c'].map((value) => value.repeat(64));
+  for (const id of ids) store.saveCached('lsp-crawl', id, { id });
+  assert.deepEqual(
+    fs.readdirSync(path.join(store.directory, 'by-id', 'lsp-crawl')).sort(),
+    [`${ids[2]}.checkpoint`],
+  );
+  const rootStage = store.rootStage('bazel:.');
+  store.saveCached(rootStage, ids[2]!, { root: true });
+  store.removeCachedStage(rootStage);
+  assert.equal(fs.existsSync(path.join(store.directory, 'by-id', rootStage)), false);
 });
 
 test('rejects flags that omit their required value', () => {

@@ -95,20 +95,20 @@ Artifact enrichment
 Record each stage as `running`, `complete`, `partial`, or `failed`. An
 interrupted artifact crawl should leave a valid LSP graph that can be resumed.
 
-## 5. Stop duplicating large checkpoints
+## 5. Stop duplicating large checkpoints — implementation complete
 
-The root checkpoint and aggregate LSP checkpoint currently serialize
+The root checkpoint and aggregate LSP checkpoint previously serialized
 essentially the same graph twice. A 41-file Spring Boot project produced two
-203 MB copies.
+203 MB copies. Single-root crawls now write only the aggregate checkpoint.
+Multi-root crawls retain root checkpoints only until the aggregate has been
+written, so interrupted roots remain resumable without retaining duplicate
+completed data. Only the newest content-addressed identity is retained.
 
-Keep:
+The resulting policy keeps:
 
-- one checkpoint per build root;
-- a small manifest listing completed roots and fingerprints;
-- incremental LadybugDB rows as the durable result.
-
-The aggregate checkpoint should reference root checkpoints instead of embedding
-their contents.
+- transient checkpoints for completed roots while a multi-root crawl is active;
+- one exact aggregate semantic checkpoint for warm reuse;
+- the published LadybugDB graph as the durable result.
 
 ## 6. Replace repeated `javap` processes — implementation complete
 

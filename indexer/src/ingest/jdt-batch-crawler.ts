@@ -58,7 +58,12 @@ interface BatchCommandResult {
   firstError?: string;
 }
 type BatchAdapter = CompleteCrawlAdapter & { getSessionMetadata(): { processShardId?: string } };
-const collectionByAdapter = new WeakMap<BatchAdapter, Promise<BatchCommandResult>>();
+interface BatchCollection {
+  promise: Promise<BatchCommandResult>;
+  output: string;
+  manifest: string;
+}
+const collectionByAdapter = new WeakMap<BatchAdapter, BatchCollection>();
 
 export async function crawlJdtBatchRoot(input: {
   run: LspAnalysisRun;
@@ -71,11 +76,11 @@ export async function crawlJdtBatchRoot(input: {
 }): Promise<LspObservationBatch> {
   const { run, server, buildRoot, documents, files, adapter, repositoryPath } = input;
   const batch = ingestRun(run, [server], documents, [buildRoot]);
-  const command = collectionByAdapter.get(adapter) ?? startCollection(adapter, repositoryPath, run.id);
-  collectionByAdapter.set(adapter, command);
+  const collection = collectionByAdapter.get(adapter) ?? startCollection(adapter, repositoryPath, run.id);
+  collectionByAdapter.set(adapter, collection);
   let result: BatchCommandResult;
   try {
-    result = await command;
+    result = await collection.promise;
     validateResult(result);
   } catch (error) {
     server.status = 'partial';
@@ -195,6 +200,28 @@ export async function crawlJdtBatchRoot(input: {
   return batch;
 }
 
+/** Remove the run-scoped batch facts after every root on an adapter consumed them. */
+export async function cleanupJdtBatchCollection(adapter: BatchAdapter): Promise<void> {
+  const collection = collectionByAdapter.get(adapter);
+  if (!collection) return;
+  collectionByAdapter.delete(adapter);
+  let result: BatchCommandResult | undefined;
+  try {
+    result = await collection.promise;
+  } catch {
+    // The command may have failed after creating a partial output. The paths
+    // passed to JDT remain authoritative cleanup targets in that case.
+  }
+  for (const filename of new Set([
+    collection.output,
+    collection.manifest,
+    result?.output,
+    result?.manifest,
+  ].filter((value): value is string => Boolean(value)))) {
+    fs.rmSync(filename, { force: true });
+  }
+}
+
 async function* rootFacts(output: string, documentByPath: Map<string, LspDocument>): AsyncGenerator<BatchFact> {
   const stream = fs.createReadStream(output, { encoding: 'utf8' });
   for await (const line of readline.createInterface({ input: stream, crlfDelay: Infinity })) {
@@ -205,13 +232,14 @@ async function* rootFacts(output: string, documentByPath: Map<string, LspDocumen
   }
 }
 
-function startCollection(adapter: BatchAdapter, repositoryPath: string, runId: string): Promise<BatchCommandResult> {
+function startCollection(adapter: BatchAdapter, repositoryPath: string, runId: string): BatchCollection {
   const token = createHash('sha256').update(`${runId}\0${adapter.getSessionMetadata().processShardId ?? 'jdt'}`).digest('hex').slice(0, 20);
   const output = path.join(repositoryPath, '.gitnexus', 'jdtls', 'batch-output', `${token}.ndjson`);
   fs.mkdirSync(path.dirname(output), { recursive: true });
   console.log(`[stage:jdt-batch-semantics] collecting shard facts into ${path.basename(output)}`);
   const startedAt = Date.now();
-  return adapter.request<BatchCommandResult>('workspace/executeCommand', {
+  const manifest = `${output}.manifest.json`;
+  const promise = adapter.request<BatchCommandResult>('workspace/executeCommand', {
     command: 'gitnexus.java.collectBatch', arguments: [output, 256],
   }).then((result) => {
     console.log(`[jdtls-stage] ${JSON.stringify({
@@ -221,6 +249,7 @@ function startCollection(adapter: BatchAdapter, repositoryPath: string, runId: s
     })}`);
     return result;
   });
+  return { promise, output, manifest };
 }
 
 function validateResult(result: BatchCommandResult): void {

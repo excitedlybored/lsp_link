@@ -7,7 +7,7 @@ import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import type { CompleteCrawlAdapter } from '../src/ingest/crawler.js';
 import { workspaceDocument } from '../src/ingest/crawler.js';
-import { crawlJdtBatchRoot } from '../src/ingest/jdt-batch-crawler.js';
+import { cleanupJdtBatchCollection, crawlJdtBatchRoot } from '../src/ingest/jdt-batch-crawler.js';
 import type { LspAnalysisRun, LspBuildRoot, LspServer } from '../src/model.js';
 
 test('batch JDT facts derive mapped references and calls without per-symbol queries', async (t) => {
@@ -82,6 +82,10 @@ test('batch JDT facts derive mapped references and calls without per-symbol quer
   assert.ok(batch.coverage.some((coverage) =>
     coverage.capability === 'gitnexus.java/batchDefinitions' && coverage.resultCount === 1));
   assert.ok(batch.coverage.every((coverage) => coverage.capability.startsWith('gitnexus.java/batch')));
+  const batchOutputDirectory = path.join(workspace, '.gitnexus', 'jdtls', 'batch-output');
+  assert.ok(fs.readdirSync(batchOutputDirectory).some((name) => name.endsWith('.ndjson')));
+  await cleanupJdtBatchCollection(adapter);
+  assert.deepEqual(fs.readdirSync(batchOutputDirectory), []);
 });
 
 function fact(kind: string, uri: string, startLine: number, startCharacter: number, endLine: number,

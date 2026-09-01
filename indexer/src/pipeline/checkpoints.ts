@@ -4,6 +4,7 @@ import path from 'node:path';
 import { deserialize, serialize } from 'node:v8';
 
 const CHECKPOINT_FORMAT_VERSION = 1;
+const CONTENT_ADDRESSED_RETENTION = 1;
 
 interface CheckpointEnvelope<T> {
   formatVersion: number;
@@ -63,6 +64,13 @@ export class PipelineCheckpointStore {
   /** Atomically stores a crawl result under its immutable content identity. */
   saveCached<T>(stage: string, cacheId: string, payload: T, log = true): void {
     this.savePath(stage, cacheId, payload, this.cachedPath(stage, cacheId), 'crawl-cache', log);
+    this.pruneCachedStage(stage, cacheId);
+  }
+
+  /** Root checkpoints only support an interrupted crawl and are redundant once its aggregate exists. */
+  removeCachedStage(stage: string): void {
+    validateStage(stage);
+    fs.rmSync(path.join(this.directory, 'by-id', stage), { recursive: true, force: true });
   }
 
   private savePath<T>(
@@ -104,6 +112,28 @@ export class PipelineCheckpointStore {
     validateStage(stage);
     if (!/^[a-f0-9]{64}$/.test(cacheId)) throw new Error(`Invalid crawl cache ID: ${cacheId}`);
     return path.join(this.directory, 'by-id', stage, `${cacheId}.checkpoint`);
+  }
+
+  private pruneCachedStage(stage: string, currentCacheId: string): void {
+    const directory = path.join(this.directory, 'by-id', stage);
+    if (!fs.existsSync(directory)) return;
+    const retained = fs.readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.checkpoint'))
+      .map((entry) => ({
+        name: entry.name,
+        modifiedAt: fs.statSync(path.join(directory, entry.name)).mtimeMs,
+      }))
+      .sort((left, right) => right.modifiedAt - left.modifiedAt || right.name.localeCompare(left.name));
+    const currentName = `${currentCacheId}.checkpoint`;
+    const keep = new Set([
+      currentName,
+      ...retained.filter((entry) => entry.name !== currentName)
+        .slice(0, CONTENT_ADDRESSED_RETENTION - 1)
+        .map((entry) => entry.name),
+    ]);
+    for (const entry of retained) {
+      if (!keep.has(entry.name)) fs.rmSync(path.join(directory, entry.name), { force: true });
+    }
   }
 }
 

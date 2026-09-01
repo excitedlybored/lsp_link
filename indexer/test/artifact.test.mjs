@@ -453,6 +453,8 @@ test('resumes production bulk publication atomically with final run-count parity
   );
   assert.equal(resumed.output, output);
   assert.ok(fs.existsSync(output));
+  assert.equal(fs.existsSync(`${output}.partial-fingerprint.lsp-base`), false);
+  assert.equal(fs.existsSync(`${output}.partial-fingerprint.artifacts`), false);
   assert.deepEqual({
     classCount: resumed.artifactEnrichment.run.classCount,
     methodCount: resumed.artifactEnrichment.run.methodCount,

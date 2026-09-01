@@ -39,6 +39,9 @@ export async function executeSemanticCrawl(
 
   if (!cached && !(crawlOnly && hasIncompleteBatchJavaServer(crawl.lspBatch, options.javaSemantics))) {
     pipeline.checkpointStore.saveCached('lsp-crawl', pipeline.crawlFingerprint, crawl);
+    for (const root of pipeline.activeRoots) {
+      pipeline.checkpointStore.removeCachedStage(pipeline.checkpointStore.rootStage(root.id));
+    }
   }
   if (crawlOnly) {
     pipeline.checkpointStore.save('lsp-crawl', pipeline.crawlFingerprint, crawl);

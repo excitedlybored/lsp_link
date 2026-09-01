@@ -12,6 +12,7 @@ import type { LspAnalysisRun } from '../model.js';
 import { PipelineCheckpointStore } from '../pipeline/checkpoints.js';
 import { mapConcurrently } from '../pipeline/concurrency.js';
 import { crawlJavaBuildRoot } from '../pipeline/java-build-root-crawler.js';
+import { cleanupJdtBatchCollection } from '../ingest/jdt-batch-crawler.js';
 import type {
   JavaBuildRootCrawlResult,
   JavaBuildRootPreparation,
@@ -127,7 +128,10 @@ export async function crawlJavaWorkspace(
           result.artifacts,
           path.join(workspacePath, '.gitnexus', 'jvm-artifacts', 'classpath'),
         );
-        if (!result.failed) {
+        // A one-root crawl has no partial progress to resume: its aggregate is
+        // written immediately after completion. Avoid briefly storing the
+        // same large semantic batch twice.
+        if (!result.failed && activeRoots.length > 1) {
           checkpointStore.saveCached(checkpointStore.rootStage(root.id), crawlFingerprint, result);
         }
         completedRootCount += 1;
@@ -139,7 +143,10 @@ export async function crawlJavaWorkspace(
       }
       return results;
     } finally {
-      if (adapter) await adapterRegistry.shutdownAdapter(adapter);
+      if (adapter) {
+        await cleanupJdtBatchCollection(adapter);
+        await adapterRegistry.shutdownAdapter(adapter);
+      }
       cleanupJdtlsShardWorkspace(shard);
     }
   });

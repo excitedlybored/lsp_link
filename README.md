@@ -121,6 +121,14 @@ index can grow to several GiB; remove it explicitly with
 `--shared-jdt-cache --yes` when disk space matters more than JDT warm-start
 performance.
 
+Storage is bounded during normal successful runs: the newest exact semantic
+crawl replaces the previous identity, single-root crawls do not write a
+duplicate root checkpoint, JDT batch facts are deleted after ingestion, and
+graph base/spool sidecars are deleted after atomic publication. Before a new
+JDT session starts, abandoned workspaces belonging to dead processes are also
+removed. Bazel's output base remains Bazel-owned and is never expunged
+automatically.
+
 ## Repository layout
 
 | Directory | Purpose |

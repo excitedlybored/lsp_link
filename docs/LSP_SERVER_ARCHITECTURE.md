@@ -199,17 +199,20 @@ Use `npm run query` for direct interactive requests. Use
 
 ## Persistence and restart behavior
 
-The crawler writes a checkpoint only after a complete build-root crawl. It
-also checkpoints call normalization and JVM artifact enrichment as separate
-stages. Fingerprints include source/build inputs and crawl configuration, so an
-incompatible checkpoint is ignored instead of hiding a changed observation.
+In a multi-root repository, the crawler writes a transient checkpoint after a
+complete build-root crawl. It also checkpoints call normalization and the
+repository-wide semantic result. Fingerprints include source/build inputs and
+crawl configuration, so an incompatible checkpoint is ignored instead of
+hiding a changed observation.
 
 Root-level checkpoints avoid repeating completed roots in a multi-root
-repository. They do not preserve progress within one root: interrupting a long
-single-root crawl repeats that root on the next run. A repository-wide
-content-addressed crawl identity can restore a compatible completed crawl
-without starting a language server. Graph publication bulk-loads staged CSV
-data and atomically publishes only after required stages succeed.
+repository and are removed after the aggregate is durable. A single-root crawl
+does not create that duplicate. Checkpoints do not preserve progress within
+one root: interrupting a long single-root crawl repeats that root on the next
+run. The newest repository-wide content-addressed identity can restore a
+compatible completed crawl without starting a language server. Graph
+publication bulk-loads staged CSV data, atomically publishes, and then removes
+its base database and artifact spools.
 
 ## Performance characteristics
 

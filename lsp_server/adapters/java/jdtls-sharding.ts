@@ -162,6 +162,7 @@ export function prepareJdtlsShardWorkspace(
   // the non-canonical spelling makes JDTUtils miss the imported IProject and
   // silently place the document in its classpath-less invisible project.
   const temporaryRoot = fs.realpathSync(os.tmpdir());
+  pruneStaleJdtlsWorkspaces(path.join(temporaryRoot, 'gitnexus-jdt-projects', repositoryHash));
   const workspacePath = path.join(
     temporaryRoot, 'gitnexus-jdt-projects', repositoryHash, sessionId, shard.id,
   );
@@ -201,6 +202,28 @@ export function prepareJdtlsShardWorkspace(
     }
     fs.rmSync(workspacePath, { recursive: true, force: true });
     throw error;
+  }
+}
+
+/** Remove abandoned sessions without touching a process that is still alive. */
+export function pruneStaleJdtlsWorkspaces(repositoryTemporaryRoot: string): void {
+  if (!fs.existsSync(repositoryTemporaryRoot)) return;
+  const staleUnknownAgeMs = 24 * 60 * 60 * 1_000;
+  for (const entry of fs.readdirSync(repositoryTemporaryRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const entryPath = path.join(repositoryTemporaryRoot, entry.name);
+    const match = /^(\d+)-/.exec(entry.name);
+    if (match) {
+      if (!processExists(Number(match[1]))) fs.rmSync(entryPath, { recursive: true, force: true });
+      continue;
+    }
+    // Old layouts did not carry a PID. Only reap them after a generous age so
+    // an older compatible indexer cannot lose a workspace it still owns.
+    try {
+      if (Date.now() - fs.statSync(entryPath).mtimeMs > staleUnknownAgeMs) {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+      }
+    } catch { /* a concurrent cleanup already removed it */ }
   }
 }
 
