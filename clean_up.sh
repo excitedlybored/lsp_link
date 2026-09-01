@@ -15,16 +15,21 @@ Options:
   --dry-run     Show what would be removed without changing anything.
   --caches      Also remove crawl checkpoints, JDT source caches, and retained
                 JVM artifacts. The next index will repeat this work.
+  --shared-jdt-cache
+                Also remove the shared external-JAR index used by every JDT
+                run. This can be several GiB and will be rebuilt on demand.
   --graph       Also remove the published .gitnexus/lsp-lbug graph.
   --bazel       Also run `bazel clean --expunge` in the repository.
   --all         Remove the repository's entire .gitnexus directory.
-  --yes         Confirm --all or --bazel without an interactive prompt.
+  --yes         Confirm --all, --bazel, or --shared-jdt-cache without an
+                interactive prompt.
   -h, --help    Show this help.
 
 Examples:
   ./clean_up.sh /path/to/repository --dry-run
   ./clean_up.sh /path/to/repository
   ./clean_up.sh /path/to/repository --caches
+  ./clean_up.sh /path/to/repository --shared-jdt-cache --yes
   ./clean_up.sh /path/to/repository --all --bazel --yes
 EOF
 }
@@ -50,6 +55,7 @@ repository_input=$1
 shift
 dry_run=false
 remove_caches=false
+remove_shared_jdt_cache=false
 remove_graph=false
 remove_all=false
 clean_bazel=false
@@ -59,6 +65,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) dry_run=true ;;
     --caches) remove_caches=true ;;
+    --shared-jdt-cache) remove_shared_jdt_cache=true ;;
     --graph) remove_graph=true ;;
     --bazel) clean_bazel=true ;;
     --all) remove_all=true ;;
@@ -115,6 +122,7 @@ safe_remove() {
   case "$target" in
     "$gitnexus"|"$gitnexus"/*) allowed=true ;;
     "$temporary_root/gitnexus-jdt-projects/$repository_hash"|"$temporary_root"/gitnexus-kotlin-lsp-*) allowed=true ;;
+    "$shared_jdt_cache") allowed=true ;;
   esac
   [ "$allowed" = true ] || die "Refusing unsafe cleanup target: $target"
   if [ ! -e "$target" ] && [ ! -L "$target" ]; then return 0; fi
@@ -133,6 +141,22 @@ printf 'Index data before cleanup: %s MiB\n' "$((repository_kib / 1024))"
 
 temporary_root=$(node -e 'const fs=require("node:fs"),os=require("node:os"); console.log(fs.realpathSync(os.tmpdir()))')
 repository_hash=$(node -e 'const c=require("node:crypto"),p=require("node:path"); process.stdout.write(c.createHash("sha256").update(p.resolve(process.argv[1])).digest("hex").slice(0,16))' "$repository")
+if [ -n "${GITNEXUS_JDT_SHARED_INDEX_DIR:-}" ]; then
+  shared_jdt_cache=$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$GITNEXUS_JDT_SHARED_INDEX_DIR")
+else
+  shared_jdt_cache="$script_root/.gitnexus/cache/jdtls/external-indexes"
+fi
+user_home=$(node -e 'console.log(require("node:os").homedir())')
+case "$shared_jdt_cache" in
+  /|"$user_home"|"$repository"|"$script_root")
+    die "Refusing broad shared JDT cache path: $shared_jdt_cache"
+    ;;
+esac
+shared_jdt_cache_kib=0
+if [ -e "$shared_jdt_cache" ]; then
+  shared_jdt_cache_kib=$(du -sk "$shared_jdt_cache" 2>/dev/null | awk '{print $1}')
+  shared_jdt_cache_kib=${shared_jdt_cache_kib:-0}
+fi
 
 if [ "$remove_all" = true ]; then
   [ "$repository" != "$script_root" ] || die "--all cannot target the LSP Link tool repository because it contains installed runtimes"
@@ -180,6 +204,11 @@ else
   fi
 fi
 
+if [ "$remove_shared_jdt_cache" = true ]; then
+  confirm "Remove the shared JDT external-index cache at $shared_jdt_cache?"
+  safe_remove "$shared_jdt_cache"
+fi
+
 if [ "$clean_bazel" = true ]; then
   command -v bazel >/dev/null 2>&1 || die "bazel is not available on PATH"
   confirm "Expunge Bazel outputs for $repository? The next build will be slower."
@@ -202,4 +231,7 @@ else
   if [ "$reclaimed_kib" -lt 0 ]; then reclaimed_kib=0; fi
   printf 'Cleanup complete. Repository index data reclaimed: %s MiB; remaining: %s MiB.\n' \
     "$((reclaimed_kib / 1024))" "$((remaining_kib / 1024))"
+  if [ "$remove_shared_jdt_cache" = true ]; then
+    printf 'Shared JDT cache reclaimed: %s MiB.\n' "$((shared_jdt_cache_kib / 1024))"
+  fi
 fi

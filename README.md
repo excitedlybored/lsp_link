@@ -116,7 +116,10 @@ Inspect and clean abandoned run data with the root cleanup command:
 The default cleanup preserves the graph and reusable caches. Add `--caches`
 to reclaim checkpoint and source-cache space, or use `--all --yes` for a full
 index-state reset. `--bazel --yes` additionally expunges Bazel outputs and
-makes the next build-model preparation slower.
+makes the next build-model preparation slower. The shared JDT external-JAR
+index can grow to several GiB; remove it explicitly with
+`--shared-jdt-cache --yes` when disk space matters more than JDT warm-start
+performance.
 
 ## Repository layout
 
