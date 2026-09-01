@@ -87,13 +87,19 @@ if [ ! -e "$gitnexus" ]; then
   exit 0
 fi
 
-active_processes=$(ps -axo pid=,command= | while IFS= read -r process_line; do
-  case "$process_line" in
-    *lsp-link*"$repository"*|*indexer/src/cli/build.ts*"$repository"*)
-      printf '%s\n' "$process_line"
-      ;;
-  esac
-done)
+find_active_processes() {
+  ps -axo pid=,command= | while IFS= read -r process_line; do
+    case "$process_line" in
+      *lsp-link*"$repository"*|*indexer/src/cli/build.ts*"$repository"*)
+        printf '%s\n' "$process_line"
+        ;;
+    esac
+  done
+}
+
+# Keep the case statement outside command substitution. Apple's Bash 3.2 can
+# misparse a `case ... ;; esac` body nested directly inside `$()`.
+active_processes=$(find_active_processes)
 if [ -n "$active_processes" ]; then
   printf 'An indexing process appears to be using this repository:\n%s\n' "$active_processes" >&2
   die "Stop the indexing process before cleaning"
