@@ -11,7 +11,12 @@ export function buildJdtlsShardUriMappings(
   projectModels = shard.projectModels,
 ): JdtlsUriMapping[] {
   return projectModels.flatMap((model) => model.uriAliases.flatMap((alias) => [
-    { sourcePath: alias.sourcePath, stagedPath: alias.physicalPath },
+    // Send requests through the logical Eclipse resource. In particular, JDT
+    // on macOS does not reliably associate an external physical file URI with
+    // its linked IFile and otherwise routes the document to the classpath-less
+    // jdt.ls-java-project. Keep the physical alias second so server responses
+    // using either URI still map back to the authoritative source.
     { sourcePath: alias.sourcePath, stagedPath: alias.logicalPath },
+    { sourcePath: alias.sourcePath, stagedPath: alias.physicalPath },
   ]));
 }

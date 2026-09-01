@@ -877,7 +877,12 @@ test('builds and applies enterprise-scale JDT URI mappings without repeated sort
 
   assert.equal(mappings.length, 2 * (rootCount + mappingCount));
   const mappedSource = sourceMappings[17]!;
-  assert.equal(fileURLToPath(adapter.documentUri(mappedSource.sourcePath)), mappedSource.analysisPath);
+  const expectedLogicalPath = path.join(
+    '/staged-workspace/projects/gitnexus-project',
+    `source-${sourceRootIndexes.get(mappedSource.sourceRoot)}`,
+    path.relative(mappedSource.sourceRoot, mappedSource.analysisPath),
+  );
+  assert.equal(fileURLToPath(adapter.documentUri(mappedSource.sourcePath)), expectedLogicalPath);
   const sourceAliases = mappings.filter((mapping) => mapping.sourcePath === mappedSource.sourcePath);
   assert.equal(sourceAliases.length, 2);
   const mapProtocolUris = (adapter as unknown as {
