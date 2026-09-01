@@ -106,6 +106,18 @@ The indexer saves resumable checkpoints beside the output. Re-run the same
 command to resume compatible work. Use `--no-resume` for a deliberately fresh
 crawl, or `--checkpoint-directory PATH` to store checkpoints elsewhere.
 
+Inspect and clean abandoned run data with the root cleanup command:
+
+```bash
+./clean_up.sh /path/to/repository --dry-run
+./clean_up.sh /path/to/repository
+```
+
+The default cleanup preserves the graph and reusable caches. Add `--caches`
+to reclaim checkpoint and source-cache space, or use `--all --yes` for a full
+index-state reset. `--bazel --yes` additionally expunges Bazel outputs and
+makes the next build-model preparation slower.
+
 ## Repository layout
 
 | Directory | Purpose |
