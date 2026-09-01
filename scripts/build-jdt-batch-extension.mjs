@@ -12,7 +12,7 @@ const classes = path.join(outputRoot, 'classes');
 const bundle = path.join(outputRoot, 'gitnexus-jdt-batch-extension.jar');
 const required = ['org.eclipse.jdt.ls.core_', 'org.eclipse.jdt.core_', 'org.eclipse.core.runtime_',
   'org.eclipse.core.resources_', 'org.eclipse.core.jobs_', 'org.eclipse.core.contenttype_',
-  'org.eclipse.equinox.common_', 'org.eclipse.osgi_'];
+  'org.eclipse.equinox.common_', 'org.eclipse.osgi_', 'org.eclipse.lsp4j_'];
 const jars = required.map((prefix) => {
   const matches = globSync(path.join(plugins, `${prefix}*.jar`)).sort();
   if (matches.length !== 1) throw new Error(`Expected one ${prefix} JAR, found ${matches.length}`);

@@ -4,6 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { CompleteCrawlAdapter } from './crawler.js';
+import { codeOriginForDocumentOrigin } from '../code-origin.js';
 import {
   LSP_RELATION_KIND,
   type LspAnalysisRun,
@@ -20,14 +21,16 @@ import { ingestCalls, ingestDocumentSymbols, ingestOccurrence, ingestRun, makeMa
 
 const CAPABILITIES = {
   declarations: 'gitnexus.java/batchDeclarations',
+  definitions: 'gitnexus.java/batchDefinitions',
   occurrences: 'gitnexus.java/batchOccurrences',
   calls: 'gitnexus.java/batchCalls',
   types: 'gitnexus.java/batchTypes',
 } as const;
 
 interface BatchFact {
-  kind: 'document' | 'declaration' | 'occurrence' | 'call' | 'typeEdge' | 'summary';
+  kind: 'document' | 'declaration' | 'bindingDefinition' | 'occurrence' | 'call' | 'typeEdge' | 'summary';
   uri?: string;
+  requestUri?: string;
   name?: string;
   declarationKind?: string;
   targetKey?: string;
@@ -90,6 +93,7 @@ export async function crawlJdtBatchRoot(input: {
   const symbolsByPortable = new Map<string, LspSymbol>();
   const fieldsByOwnerAndName = new Map<string, LspSymbol>();
   const symbolsByDocument = new Map<string, LspSymbol[]>();
+  const externalDocuments = new Map<string, LspDocument>();
   const counts = new Map<string, number>();
   for await (const fact of rootFacts(result.output, documentByPath)) {
     if (fact.kind !== 'declaration') continue;
@@ -114,6 +118,30 @@ export async function crawlJdtBatchRoot(input: {
     values.push(symbol); symbolsByDocument.set(document.id, values);
     appendObservationBatch(batch, observed);
     increment(counts, CAPABILITIES.declarations);
+  }
+
+  // The extension resolves binary/source bindings while the AST is already in
+  // memory. Materialize one dependency declaration per portable identity so
+  // later occurrences and calls map without per-symbol LSP requests.
+  for await (const fact of rootFacts(result.output, documentByPath)) {
+    if (fact.kind !== 'bindingDefinition' || !fact.uri || !fact.name || !fact.targetPortableKey) continue;
+    if (symbolsByPortable.has(fact.targetPortableKey)) continue;
+    const document = externalDocuments.get(fact.uri)
+      ?? dependencyDocument(fact.uri, server.languageId);
+    if (!externalDocuments.has(fact.uri)) {
+      externalDocuments.set(fact.uri, document);
+      appendObservationBatch(batch, ingestRun(run, [server], [document], []));
+    }
+    const range = factRange(fact);
+    const observed = ingestDocumentSymbols(
+      { runId: run.id, server, document, capability: CAPABILITIES.definitions },
+      [{ name: fact.name, kind: symbolKind(fact.declarationKind), range, selectionRange: selectionFactRange(fact) }],
+    );
+    const symbol = observed.symbols[0]!;
+    symbol.stableKey = fact.targetPortableKey;
+    symbolsByPortable.set(fact.targetPortableKey, symbol);
+    appendObservationBatch(batch, observed);
+    increment(counts, CAPABILITIES.definitions);
   }
 
   const enclosing = (documentId: string, range: LspRange): LspSymbol | undefined =>
@@ -172,7 +200,8 @@ async function* rootFacts(output: string, documentByPath: Map<string, LspDocumen
   for await (const line of readline.createInterface({ input: stream, crlfDelay: Infinity })) {
     if (!line.trim()) continue;
     const fact = JSON.parse(line) as BatchFact;
-    if (fact.uri && documentByPath.has(uriPath(fact.uri))) yield fact;
+    const ownedUri = fact.kind === 'bindingDefinition' ? fact.requestUri : fact.uri;
+    if (ownedUri && documentByPath.has(uriPath(ownedUri))) yield fact;
   }
 }
 
@@ -246,6 +275,15 @@ function symbolKind(kind?: string): number {
   return kind === 'method' ? 6 : kind === 'constructor' ? 9 : kind === 'interface' ? 11 : kind === 'enum' ? 10
     : kind === 'field' ? 8 : kind === 'parameter' ? 13 : kind === 'variable' ? 13 : kind === 'annotation' ? 11
       : kind === 'package' ? 4 : 5;
+}
+function dependencyDocument(uri: string, languageId: string): LspDocument {
+  const origin = /(?:java\/|java\.|jre|jdk)/i.test(uri) ? 'standard_library' : 'dependency';
+  let filePath: string | undefined;
+  try { filePath = fileURLToPath(uri); } catch { /* JDT class-file URIs are intentionally non-file documents. */ }
+  return {
+    id: stableId('document', uri), uri, filePath, languageId, origin,
+    codeOrigin: codeOriginForDocumentOrigin(origin), wasOpened: false,
+  };
 }
 function uriPath(uri: string): string {
   try { return normalizePath(fileURLToPath(uri)); } catch { return uri; }

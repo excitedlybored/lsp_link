@@ -141,6 +141,44 @@ test('core crawl bounds requests, reports progress, and records intentionally om
   assert.match(hover?.exclusionReason ?? '', /core crawl profile/);
 });
 
+test('Kotlin package positions without source are recorded as empty navigation results', async (t) => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'kotlin-package-crawl-'));
+  t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));
+  const filePath = path.join(workspace, 'Sample.kt');
+  fs.writeFileSync(filePath, 'import java.util.List\n');
+  const uri = pathToFileURL(filePath).href;
+  const fixture = crawlFixture(workspace);
+  fixture.server.languageId = 'kotlin';
+  const adapter: CompleteCrawlAdapter = {
+    id: 'kotlin-ls',
+    getServerCapabilities: () => ({
+      documentSymbolProvider: true, definitionProvider: true, hoverProvider: true,
+      semanticTokensProvider: { full: true, legend: { tokenTypes: ['namespace'], tokenModifiers: [] } },
+    }),
+    documentUri: () => uri, async openDocument() {}, async closeDocument() {},
+    async documentSymbols() { return []; }, async prepareCallHierarchy() { return []; },
+    async getOutgoingCalls() { return []; }, async getIncomingCalls() { return []; },
+    async request<T>(method: string): Promise<T> {
+      if (method === 'textDocument/semanticTokens/full') return { data: [0, 7, 4, 0, 0] } as T;
+      if (method === 'textDocument/definition' || method === 'textDocument/hover') {
+        throw new Error('Invalid PSI Element: KtPackage #JAVA because: parent is null');
+      }
+      return [] as T;
+    },
+    takeNotifications: () => [],
+  };
+  const batch = await crawlLspBuildRoot({
+    ...fixture, documents: [workspaceDocument(filePath, fixture.buildRoot.id, 'workspace', 'kotlin')],
+    adapter, profile: 'exhaustive',
+  });
+  for (const capability of ['textDocument/definition', 'textDocument/hover']) {
+    const coverage = batch.coverage.find((value) => value.capability === capability);
+    assert.equal(coverage?.failureCount, 0);
+    assert.equal(coverage?.successCount, 1);
+    assert.equal(coverage?.status, 'empty');
+  }
+});
+
 test('capability circuit breaker stops repeated timeouts without hiding them as empty results', async (t) => {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'crawl-breaker-'));
   t.after(() => fs.rmSync(workspace, { recursive: true, force: true }));

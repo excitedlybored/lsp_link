@@ -22,6 +22,7 @@ import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.IProgressMonitor;
 import org.eclipse.core.runtime.IStatus;
 import org.eclipse.jdt.core.ICompilationUnit;
+import org.eclipse.jdt.core.IJavaElement;
 import org.eclipse.jdt.core.IJavaProject;
 import org.eclipse.jdt.core.JavaCore;
 import org.eclipse.jdt.core.JavaModelException;
@@ -58,7 +59,10 @@ import org.eclipse.jdt.core.dom.SuperMethodReference;
 import org.eclipse.jdt.core.dom.TypeDeclaration;
 import org.eclipse.jdt.core.dom.TypeMethodReference;
 import org.eclipse.jdt.ls.core.internal.IDelegateCommandHandler;
+import org.eclipse.jdt.ls.core.internal.JDTUtils;
 import org.eclipse.jdt.internal.core.JavaModelManager;
+import org.eclipse.lsp4j.Location;
+import org.eclipse.lsp4j.Range;
 
 /** Binding-aware, bounded, streamed Java fact collection inside JDT.LS. */
 public final class BatchCommandHandler implements IDelegateCommandHandler {
@@ -282,12 +286,14 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
       }
     }
     private void occurrence(SimpleName name, IBinding binding, String role) throws IOException {
+      bindingDefinition(binding);
       write(writer, fact("occurrence", name, binding, map("role", role)));
       counter.occurrences++;
     }
     private void call(ASTNode node, IMethodBinding binding) {
       try {
         if (binding == null) { counter.unresolved++; return; }
+        bindingDefinition(binding);
         Map<String,Object> fact = location("call", node);
         fact.put("targetKey", binding.getMethodDeclaration().getKey());
         fact.put("targetPortableKey", portable(binding));
@@ -295,6 +301,7 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
       } catch (IOException error) { throw new BatchWriteException(error); }
     }
     private void typeEdge(SimpleName node, IBinding source, ITypeBinding target, String relation) throws IOException {
+      bindingDefinition(target);
       Map<String,Object> fact = location("typeEdge", node);
       fact.put("sourceKey", source.getKey()); fact.put("sourcePortableKey", portable(source));
       fact.put("targetKey", target.getTypeDeclaration().getKey()); fact.put("targetPortableKey", portable(target));
@@ -324,10 +331,45 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
       }
     }
     private void bindingEdge(SimpleName node, IBinding source, IBinding target, String relation) throws IOException {
+      bindingDefinition(target);
       Map<String,Object> fact = location("typeEdge", node);
       fact.put("sourceKey", source.getKey()); fact.put("sourcePortableKey", portable(source));
       fact.put("targetKey", target.getKey()); fact.put("targetPortableKey", portable(target));
       fact.put("relation", relation); write(writer, fact); counter.typeEdges++;
+    }
+    private void bindingDefinition(IBinding binding) throws IOException {
+      IBinding declaration = declarationBinding(binding);
+      if (declaration == null) return;
+      String key = portable(declaration);
+      String scopedKey = uri + "\0" + key;
+      if (key.startsWith("JDT:<unresolved>") || counter.externalDefinitionKeys.contains(scopedKey)) return;
+      IJavaElement element = declaration.getJavaElement();
+      if (element == null) return;
+      try {
+        Location location = JDTUtils.toLocation(element);
+        if (location == null || location.getUri() == null || location.getRange() == null) return;
+        Map<String,Object> value = map(
+            "kind", "bindingDefinition", "requestUri", uri, "uri", location.getUri(),
+            "targetPortableKey", key, "name", bindingName(declaration),
+            "declarationKind", bindingKind(declaration));
+        putRange(value, location.getRange());
+        write(writer, value);
+        counter.externalDefinitionKeys.add(scopedKey);
+        counter.bindingDefinitions++;
+      } catch (JavaModelException | RuntimeException ignored) {
+        // A resolved binding may have no attached source. Keep its occurrence
+        // and portable identity even when JDT cannot expose a source location.
+      }
+    }
+    private static void putRange(Map<String,Object> value, Range range) {
+      value.put("startLine", range.getStart().getLine());
+      value.put("startCharacter", range.getStart().getCharacter());
+      value.put("endLine", range.getEnd().getLine());
+      value.put("endCharacter", range.getEnd().getCharacter());
+      value.put("selectionStartLine", range.getStart().getLine());
+      value.put("selectionStartCharacter", range.getStart().getCharacter());
+      value.put("selectionEndLine", range.getEnd().getLine());
+      value.put("selectionEndCharacter", range.getEnd().getCharacter());
     }
     private Map<String,Object> fact(String kind, ASTNode node, IBinding target, Map<String,Object> extra) {
       Map<String,Object> fact = location(kind, node);
@@ -394,6 +436,34 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
     return "JDT:" + binding.getKey();
   }
 
+  private static IBinding declarationBinding(IBinding binding) {
+    if (binding instanceof ITypeBinding type) return type.getTypeDeclaration();
+    if (binding instanceof IMethodBinding method) return method.getMethodDeclaration();
+    if (binding instanceof IVariableBinding variable) return variable.getVariableDeclaration();
+    return binding;
+  }
+
+  private static String bindingName(IBinding binding) {
+    if (binding instanceof IMethodBinding method && method.isConstructor()) {
+      ITypeBinding owner = method.getDeclaringClass();
+      return owner == null ? method.getName() : owner.getName();
+    }
+    return binding.getName();
+  }
+
+  private static String bindingKind(IBinding binding) {
+    if (binding instanceof IMethodBinding method) return method.isConstructor() ? "constructor" : "method";
+    if (binding instanceof IVariableBinding variable) return variable.isField() ? "field" : "variable";
+    if (binding instanceof ITypeBinding type) {
+      if (type.isAnnotation()) return "annotation";
+      if (type.isEnum()) return "enum";
+      if (type.isInterface()) return "interface";
+      if (type.isRecord()) return "record";
+      return "class";
+    }
+    return "variable";
+  }
+
   private static String sourceUri(ICompilationUnit source) {
     IResource resource = source.getResource();
     URI location = resource == null ? null : resource.getLocationURI();
@@ -417,7 +487,8 @@ public final class BatchCommandHandler implements IDelegateCommandHandler {
     String text=String.valueOf(value); StringBuilder out=new StringBuilder("\""); for(char c:text.toCharArray()){ switch(c){case '\\'->out.append("\\\\");case '"'->out.append("\\\"");case '\n'->out.append("\\n");case '\r'->out.append("\\r");case '\t'->out.append("\\t");default->out.append(c);} } return out.append('"').toString();
   }
   private static final class Counter {
-    int documents, declarations, occurrences, calls, typeEdges, unresolved, failedDocuments;
+    int documents, declarations, bindingDefinitions, occurrences, calls, typeEdges, unresolved, failedDocuments;
+    final Set<String> externalDefinitionKeys = new HashSet<>();
     String firstError;
   }
   private static final class BatchWriteException extends RuntimeException { BatchWriteException(IOException cause) { super(cause); } }

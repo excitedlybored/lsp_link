@@ -96,6 +96,11 @@ export async function crawlRegisteredRepositoryLanguages(
       });
       const errors = batch.coverage.reduce((sum, value) => sum + value.failureCount, 0);
       const timeouts = batch.coverage.reduce((sum, value) => sum + value.timeoutCount, 0);
+      const incomplete = batch.coverage.filter((value) => value.failureCount > 0 || value.timeoutCount > 0);
+      if (incomplete.length > 0) {
+        console.warn(`[${language}:workspace] incomplete capabilities: ${incomplete.map((value) =>
+          `${value.capability} (${value.failureCount} failures, ${value.timeoutCount} timeouts)`).join(', ')}`);
+      }
       request.run.errorCount += errors;
       request.run.timeoutCount += timeouts;
       server.status = errors > 0 || timeouts > 0 ? 'partial' : 'complete';

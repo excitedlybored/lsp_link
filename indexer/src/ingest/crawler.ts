@@ -700,9 +700,15 @@ async function collectPositionLocations(
   role: LspOccurrenceRole,
 ): Promise<void> {
   await observeCapability(coverage, capability, async () => {
-    const raw = await adapter.request<unknown>(capability, {
-      textDocument: { uri: adapter.documentUri(filePath) }, position,
-    });
+    let raw: unknown;
+    try {
+      raw = await adapter.request<unknown>(capability, {
+        textDocument: { uri: adapter.documentUri(filePath) }, position,
+      });
+    } catch (error) {
+      if (isKotlinPackageWithoutSource(error)) return { resultCount: 0 };
+      throw error;
+    }
     const locations = normalizeLocations(raw);
     let mapped = 0;
     for (const [ordinal, location] of locations.entries()) {
@@ -738,9 +744,15 @@ async function collectPositionHover(
 ): Promise<void> {
   const capability = 'textDocument/hover';
   await observeCapability(coverage, capability, async () => {
-    const raw = await adapter.request<{ contents?: unknown; range?: LspRange } | null>(capability, {
-      textDocument: { uri: adapter.documentUri(filePath) }, position,
-    });
+    let raw: { contents?: unknown; range?: LspRange } | null;
+    try {
+      raw = await adapter.request<{ contents?: unknown; range?: LspRange } | null>(capability, {
+        textDocument: { uri: adapter.documentUri(filePath) }, position,
+      });
+    } catch (error) {
+      if (isKotlinPackageWithoutSource(error)) return { resultCount: 0 };
+      throw error;
+    }
     if (!raw?.contents) return { resultCount: 0 };
     const hover: LspHover = {
       id: stableId('hover', run.id, server.id, document.id, `${position.line}:${position.character}`),
@@ -918,7 +930,8 @@ async function observeCapability(
     state.unmappedCount += result.unmappedCount ?? 0;
     if (result.resultCount === 0) state.emptyCount += 1;
   } catch (error) {
-    if (error instanceof Error && /timeout|timed out/i.test(error.message)) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/timeout|timed out/i.test(message)) {
       state.timeoutCount += 1;
       state.consecutiveTimeoutCount += 1;
     } else {
@@ -1256,6 +1269,12 @@ function positionInRange(position: LspPosition, range: LspRange): boolean {
 
 function comparePosition(a: LspPosition, b: LspPosition): number {
   return a.line === b.line ? a.character - b.character : a.line - b.line;
+}
+
+function isKotlinPackageWithoutSource(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Invalid PSI Element:')
+    && message.includes('KtPackage');
 }
 
 function rangeSize(range: LspRange): number {

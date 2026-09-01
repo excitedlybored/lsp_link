@@ -16,6 +16,7 @@ test('batch JDT facts derive mapped references and calls without per-symbol quer
   const source = path.join(workspace, 'Sample.java');
   fs.writeFileSync(source, 'class Sample {\n  void target() {}\n  void caller() { target(); }\n}\n');
   const uri = pathToFileURL(source).href;
+  const dependencyUri = 'jdt://contents/spring-context.jar/org/springframework/context/ApplicationContext.class';
   let commandCount = 0;
   const adapter = {
     ...emptyAdapter(uri),
@@ -35,6 +36,16 @@ test('batch JDT facts derive mapped references and calls without per-symbol quer
         fact('declaration', uri, 2, 2, 2, 29, { name: 'caller', declarationKind: 'method', targetPortableKey: 'T:Sample#caller()T:void' }),
         fact('occurrence', uri, 2, 18, 2, 24, { targetPortableKey: 'T:Sample#target()T:void' }),
         fact('call', uri, 2, 18, 2, 26, { targetPortableKey: 'T:Sample#target()T:void' }),
+        fact('bindingDefinition', dependencyUri, 10, 2, 10, 20, {
+          requestUri: uri, name: 'getBean', declarationKind: 'method',
+          targetPortableKey: 'T:org.springframework.context.ApplicationContext#getBean(T:java.lang.Class;)T:java.lang.Object',
+        }),
+        fact('occurrence', uri, 2, 25, 2, 32, {
+          targetPortableKey: 'T:org.springframework.context.ApplicationContext#getBean(T:java.lang.Class;)T:java.lang.Object',
+        }),
+        fact('call', uri, 2, 25, 2, 28, {
+          targetPortableKey: 'T:org.springframework.context.ApplicationContext#getBean(T:java.lang.Class;)T:java.lang.Object',
+        }),
         { kind: 'summary', schemaVersion: 1 },
       ];
       fs.writeFileSync(output, lines.map((value) => JSON.stringify(value)).join('\n') + '\n');
@@ -59,13 +70,17 @@ test('batch JDT facts derive mapped references and calls without per-symbol quer
     adapter, repositoryPath: workspace,
   });
   assert.equal(commandCount, 1);
-  assert.equal(batch.symbols.length, 3);
+  assert.equal(batch.symbols.length, 4);
   assert.deepEqual(batch.symbols[0]?.range, {
     start: { line: 1, character: 0 }, end: { line: 1, character: 12 },
   });
-  assert.equal(batch.occurrences.length, 1);
-  assert.equal(batch.occurrences[0]?.status, 'mapped');
-  assert.equal(batch.callSites.length, 1);
+  assert.equal(batch.occurrences.length, 2);
+  assert.ok(batch.occurrences.every((occurrence) => occurrence.status === 'mapped'));
+  assert.equal(batch.callSites.length, 2);
+  assert.ok(batch.documents.some((document) =>
+    document.uri === dependencyUri && document.origin === 'dependency'));
+  assert.ok(batch.coverage.some((coverage) =>
+    coverage.capability === 'gitnexus.java/batchDefinitions' && coverage.resultCount === 1));
   assert.ok(batch.coverage.every((coverage) => coverage.capability.startsWith('gitnexus.java/batch')));
 });
 
