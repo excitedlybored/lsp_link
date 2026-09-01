@@ -50,6 +50,8 @@ export interface JdtlsProjectModel {
   configurationHash?: string;
   modelSource: 'bazel-java-info' | 'eclipse-classpath' | 'source-discovery';
   projectImportMode: 'native-build-tool' | 'external-eclipse';
+  /** Physical root of the generated Eclipse project used for project-scoped commands. */
+  eclipseProjectPath?: string;
   representativeDocumentPath?: string;
 }
 
@@ -616,6 +618,7 @@ function writeEclipseProject(
   progress?: (event: JdtlsShardPreparationProgress) => void,
 ): void {
   const projectPath = path.join(workspacePath, 'projects', model.projectName);
+  model.eclipseProjectPath = projectPath;
   fs.mkdirSync(projectPath, { recursive: true });
   const allSources = unique([...model.sourcePaths, ...model.generatedSourcePaths]);
   const links = allSources.map((sourcePath, index) => ({

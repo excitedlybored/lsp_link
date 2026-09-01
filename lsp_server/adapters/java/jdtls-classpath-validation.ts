@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { ILspAdapter } from '../../contracts/lsp-adapter.interface.js';
 import type { PreparedJdtlsShard } from './jdtls-sharding.js';
 import type { JdtlsClasspathReadinessProgress } from './jdtls-startup-telemetry.js';
@@ -87,7 +87,12 @@ export async function validateImportedJavaProjectClasspaths(
           classpaths?: unknown; modulepaths?: unknown; projectRoot?: unknown;
         }>('workspace/executeCommand', {
           command: 'java.project.getClasspaths',
-          arguments: [adapter.documentUri(model.representativeDocumentPath!), JSON.stringify({ scope: 'runtime' })],
+          // ProjectCommand.getClasspaths accepts a project-root URI directly.
+          // Use it for generated Eclipse projects so classpath validation does
+          // not depend on JDT resolving a linked source URI back to its IFile.
+          // That resolution is unreliable on macOS and can silently select
+          // JDT's classpath-less fallback project instead.
+          arguments: [classpathRequestUri(adapter, model), JSON.stringify({ scope: 'runtime' })],
         });
         const classpaths = stringPaths(response.classpaths);
         const modulepaths = stringPaths(response.modulepaths);
@@ -181,6 +186,15 @@ export async function validateImportedJavaProjectClasspaths(
       + [...pending.keys()].join(', '),
     );
   }
+}
+
+function classpathRequestUri(
+  adapter: ILspAdapter,
+  model: PreparedJdtlsShard['projectModels'][number],
+): string {
+  return model.projectImportMode === 'external-eclipse' && model.eclipseProjectPath
+    ? pathToFileURL(model.eclipseProjectPath).href
+    : adapter.documentUri(model.representativeDocumentPath!);
 }
 
 class JdtlsStableClasspathMismatchError extends Error {}

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 import { BaseStdioLspAdapter } from '../adapters/base-stdio-adapter.js';
 import {
@@ -347,15 +348,19 @@ test('reports deterministic JDT phase, memory, process, and pending-root telemet
 });
 
 test('classpath validation counts classpath and modulepath entries and reports request progress', async () => {
+  let requestedUri: string | undefined;
   const progress: Array<{
     matchedEntries: number; missingEntries: number; completedRoots: number;
     requestState?: string;
   }> = [];
   const adapter = {
     documentUri: (filename: string) => `file://${filename}`,
-    request: async () => ({
-      classpaths: ['/deps/runtime.jar'], modulepaths: ['/deps/module.jar'], projectRoot: 'file:///workspace/project',
-    }),
+    request: async (_method: string, params: unknown) => {
+      requestedUri = ((params as { arguments?: unknown[] }).arguments?.[0] as string | undefined);
+      return {
+        classpaths: ['/deps/runtime.jar'], modulepaths: ['/deps/module.jar'], projectRoot: 'file:///workspace/project',
+      };
+    },
   } as unknown as ILspAdapter;
   await validateImportedJavaProjectClasspaths(
     adapter,
@@ -364,7 +369,8 @@ test('classpath validation counts classpath and modulepath entries and reports r
       sourcePaths: [], generatedSourcePaths: [], sourceMappings: [], sourceLayout: 'linked',
       consolidatedSourceRoots: [], uriAliases: [], compileClasspath: [], runtimeClasspath: [],
       languageServerClasspath: ['/deps/runtime.jar', '/deps/module.jar'], buildSystems: ['bazel'],
-      modelSource: 'bazel-java-info', representativeDocumentPath: '/workspace/App.java',
+      modelSource: 'bazel-java-info', projectImportMode: 'external-eclipse',
+      eclipseProjectPath: '/generated/projects/project', representativeDocumentPath: '/workspace/App.java',
     }],
     'jdtls-shard-1',
     Date.now() + 1_000,
@@ -380,6 +386,7 @@ test('classpath validation counts classpath and modulepath entries and reports r
       requestState: 'returned', projectRoot: '/workspace/project',
     },
   ]);
+  assert.equal(requestedUri, pathToFileURL('/generated/projects/project').href);
 });
 
 test('classpath validation retries only while coverage improves and backs off between stable responses', async () => {
