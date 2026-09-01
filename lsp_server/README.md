@@ -59,11 +59,12 @@ remains necessary for Java indexing; Kotlin LSP includes its own runtime.
 ### Kotlin
 
 The registry includes the official JetBrains Kotlin LSP adapter for `.kt` and
-`.kts`. The checksum-pinned Linux x64 distribution and its Java runtime are
-committed as four Git-safe archive chunks of at most 90,000,000 bytes.
-`./install.sh` verifies every chunk, stream-extracts the runtime without writing
-an oversized intermediate archive, and verifies the launcher version without
-accessing the network or modifying the user profile. Set
+`.kts`. Checksum-pinned Linux x64 and macOS ARM64 distributions, including
+their Java runtimes, are committed as Git-safe archive chunks of at most
+90,000,000 bytes. `./install.sh` selects the host build, verifies every chunk
+and the upstream macOS archive checksum, records the installed platform, and
+verifies the launcher version without accessing the network or modifying the
+user profile. Set
 `GITNEXUS_KOTLIN_LSP_BIN` to an absolute launcher path only when a centrally
 managed runtime must override the bundled version. Each indexing session
 receives an isolated temporary Kotlin LSP system/cache directory which is

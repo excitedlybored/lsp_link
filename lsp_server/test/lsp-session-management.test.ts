@@ -89,7 +89,7 @@ test('default registry routes Kotlin source and script files to the Kotlin adapt
 test('finds the version-pinned Kotlin launcher from a nested repository path', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '../..');
   const nestedPath = path.join(repositoryRoot, 'lsp_server', 'test');
-  const launcher = findBundledKotlinLsp(nestedPath);
+  const launcher = findBundledKotlinLsp(nestedPath, 'linux', 'x64');
   assert.equal(
     launcher,
     path.join(
@@ -98,14 +98,16 @@ test('finds the version-pinned Kotlin launcher from a nested repository path', (
     ),
   );
   assert.equal(fs.statSync(launcher).mode & 0o111, 0o111);
+  assert.equal(findBundledKotlinLsp(nestedPath, 'darwin', 'arm64'), launcher);
+  assert.equal(findBundledKotlinLsp(nestedPath, 'darwin', 'x64'), null);
 });
 
 test('keeps every vendored Kotlin archive chunk below the Git host file limit', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '../..');
   const archiveDirectory = path.join(repositoryRoot, 'vendor', 'kotlin-lsp', 'archive');
-  const prefix = 'kotlin-lsp-262.9593.0-linux-x64.tar.zst.part-';
-  const parts = fs.readdirSync(archiveDirectory).filter((name) => name.startsWith(prefix)).sort();
-  assert.ok(parts.length > 1);
+  const parts = fs.readdirSync(archiveDirectory).filter((name) => name.includes('.part-')).sort();
+  assert.ok(parts.some((name) => name.includes('linux-x64')));
+  assert.ok(parts.some((name) => name.includes('macos-arm64')));
   const checksums = fs.readFileSync(path.join(archiveDirectory, 'SHA256SUMS'), 'utf8');
   for (const part of parts) {
     assert.ok(fs.statSync(path.join(archiveDirectory, part)).size < 100_000_000, part);

@@ -103,7 +103,13 @@ export class LspAdapterRegistry {
       );
     }
     try {
-      if (!(await adapter.isAvailable())) return null;
+      if (!(await adapter.isAvailable())) {
+        console.warn(
+          `[LSP Registry] Adapter ${adapter.id} for ${language} is unavailable on `
+          + `${process.platform}/${process.arch}; run ./install.sh or configure its executable`,
+        );
+        return null;
+      }
       await adapter.start(workspacePath);
       this.activeAdapters.set(sessionKey, adapter);
       return adapter;

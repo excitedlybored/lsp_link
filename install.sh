@@ -40,24 +40,59 @@ echo "  Eclipse JDT.LS 1.57.0 OK"
 echo "[4/7] Verifying bundled JetBrains Kotlin LSP runtime..."
 kotlin_lsp_version_expected="262.9593.0"
 kotlin_lsp_archive_dir="vendor/kotlin-lsp/archive"
-kotlin_lsp_archive_prefix="kotlin-lsp-${kotlin_lsp_version_expected}-linux-x64.tar.zst.part-"
 kotlin_lsp_install_root=".gitnexus/tools/kotlin-lsp"
 kotlin_lsp_runtime="${kotlin_lsp_install_root}/${kotlin_lsp_version_expected}"
 kotlin_lsp_launcher="${kotlin_lsp_runtime}/bin/intellij-server"
-if [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ]; then
-  if [ ! -x "$kotlin_lsp_launcher" ]; then
+kotlin_lsp_platform_marker="${kotlin_lsp_runtime}/.gitnexus-platform"
+kotlin_lsp_host="$(uname -s)-$(uname -m)"
+case "$kotlin_lsp_host" in
+  Linux-x86_64)
+    kotlin_lsp_platform="linux-x64"
+    kotlin_lsp_archive_prefix="kotlin-lsp-${kotlin_lsp_version_expected}-linux-x64.tar.zst.part-"
+    kotlin_lsp_archive_format="tar-zstd"
+    kotlin_lsp_staged_name="$kotlin_lsp_version_expected"
+    ;;
+  Darwin-arm64)
+    kotlin_lsp_platform="macos-arm64"
+    kotlin_lsp_archive_prefix="kotlin-lsp-${kotlin_lsp_version_expected}-macos-arm64.sit.part-"
+    kotlin_lsp_archive_format="zip"
+    kotlin_lsp_staged_name="kotlin-server-${kotlin_lsp_version_expected}"
+    kotlin_lsp_archive_sha256="6ba6021a706b21e64cef33f7e2b79f187c0910320722bb2d3ed05ad1115ec43f"
+    ;;
+  *)
+    kotlin_lsp_platform=""
+    echo "  No bundled Kotlin LSP for $kotlin_lsp_host; use GITNEXUS_KOTLIN_LSP_BIN on this host."
+    ;;
+esac
+
+if [ -n "$kotlin_lsp_platform" ]; then
+  kotlin_lsp_installed_platform=""
+  if [ -f "$kotlin_lsp_platform_marker" ]; then
+    kotlin_lsp_installed_platform=$(tr -d '[:space:]' < "$kotlin_lsp_platform_marker")
+  fi
+  if [ ! -x "$kotlin_lsp_launcher" ] || [ "$kotlin_lsp_installed_platform" != "$kotlin_lsp_platform" ]; then
     if ! command -v zstd >/dev/null 2>&1; then
-      echo "  'zstd' is required to unpack the bundled Kotlin LSP runtime." >&2
-      exit 1
+      if [ "$kotlin_lsp_archive_format" = "tar-zstd" ]; then
+        echo "  'zstd' is required to unpack the bundled Kotlin LSP runtime." >&2
+        exit 1
+      fi
     fi
-    if ! command -v sha256sum >/dev/null 2>&1; then
-      echo "  'sha256sum' is required to verify the bundled Kotlin LSP runtime." >&2
+    if command -v sha256sum >/dev/null 2>&1; then
+      kotlin_lsp_checksum_command="sha256sum"
+    elif command -v shasum >/dev/null 2>&1; then
+      kotlin_lsp_checksum_command="shasum -a 256"
+    else
+      echo "  'sha256sum' or 'shasum' is required to verify the bundled Kotlin LSP runtime." >&2
       exit 1
     fi
     echo "  Verifying Kotlin LSP archive chunks..."
     (
       cd "$kotlin_lsp_archive_dir"
-      sha256sum -c SHA256SUMS
+      if [ "$kotlin_lsp_checksum_command" = "sha256sum" ]; then
+        sha256sum -c SHA256SUMS
+      else
+        shasum -a 256 -c SHA256SUMS
+      fi
     )
     mkdir -p "$kotlin_lsp_install_root"
     kotlin_lsp_staging=$(mktemp -d "${kotlin_lsp_install_root}/.extract-${kotlin_lsp_version_expected}.XXXXXX")
@@ -67,17 +102,43 @@ if [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ]; then
       find "$kotlin_lsp_staging" -depth -delete
       exit 1
     fi
-    if ! (set -o pipefail; cat "${kotlin_lsp_parts[@]}" | zstd -d --no-progress | tar --same-permissions -xf - -C "$kotlin_lsp_staging"); then
-      echo "  Failed to extract the bundled Kotlin LSP runtime." >&2
-      find "$kotlin_lsp_staging" -depth -delete
-      exit 1
+    if [ "$kotlin_lsp_archive_format" = "tar-zstd" ]; then
+      if ! (set -o pipefail; cat "${kotlin_lsp_parts[@]}" | zstd -d --no-progress | tar --same-permissions -xf - -C "$kotlin_lsp_staging"); then
+        echo "  Failed to extract the bundled Kotlin LSP runtime." >&2
+        find "$kotlin_lsp_staging" -depth -delete
+        exit 1
+      fi
+    else
+      if ! command -v ditto >/dev/null 2>&1; then
+        echo "  macOS 'ditto' is required to unpack the bundled Kotlin LSP runtime." >&2
+        find "$kotlin_lsp_staging" -depth -delete
+        exit 1
+      fi
+      kotlin_lsp_archive=$(mktemp "${kotlin_lsp_install_root}/.archive-${kotlin_lsp_version_expected}.XXXXXX.sit")
+      cat "${kotlin_lsp_parts[@]}" > "$kotlin_lsp_archive"
+      kotlin_lsp_actual_sha256=$(shasum -a 256 "$kotlin_lsp_archive" | awk '{print $1}')
+      if [ "$kotlin_lsp_actual_sha256" != "$kotlin_lsp_archive_sha256" ]; then
+        rm -f "$kotlin_lsp_archive"
+        find "$kotlin_lsp_staging" -depth -delete
+        echo "  Bundled Kotlin LSP macOS archive checksum mismatch." >&2
+        exit 1
+      fi
+      if ! ditto -x -k "$kotlin_lsp_archive" "$kotlin_lsp_staging"; then
+        rm -f "$kotlin_lsp_archive"
+        find "$kotlin_lsp_staging" -depth -delete
+        echo "  Failed to extract the bundled Kotlin LSP macOS runtime." >&2
+        exit 1
+      fi
+      rm -f "$kotlin_lsp_archive"
     fi
-    kotlin_lsp_staged_runtime="${kotlin_lsp_staging}/${kotlin_lsp_version_expected}"
+    kotlin_lsp_staged_runtime="${kotlin_lsp_staging}/${kotlin_lsp_staged_name}"
+    chmod +x "${kotlin_lsp_staged_runtime}/bin/intellij-server" 2>/dev/null || true
     if [ ! -x "${kotlin_lsp_staged_runtime}/bin/intellij-server" ]; then
       echo "  Extracted Kotlin LSP launcher is missing." >&2
       find "$kotlin_lsp_staging" -depth -delete
       exit 1
     fi
+    printf '%s\n' "$kotlin_lsp_platform" > "${kotlin_lsp_staged_runtime}/.gitnexus-platform"
     if [ -e "$kotlin_lsp_runtime" ]; then
       kotlin_lsp_previous="${kotlin_lsp_runtime}.previous.$$"
       mv "$kotlin_lsp_runtime" "$kotlin_lsp_previous"
@@ -104,8 +165,6 @@ if [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ]; then
     exit 1
   fi
   echo "  JetBrains Kotlin LSP $kotlin_lsp_version OK"
-else
-  echo "  Bundled Kotlin LSP is Linux x86-64 only; use GITNEXUS_KOTLIN_LSP_BIN on this host."
 fi
 
 # 5. Install the platform-independent Spring Tools VS Code extension from the

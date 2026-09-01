@@ -38,6 +38,21 @@ run_pipeline() {
 
   cd "$repository_root"
   local kotlin_launcher="${repository_root}/.gitnexus/tools/kotlin-lsp/262.9593.0/bin/intellij-server"
+  local kotlin_platform_marker="${repository_root}/.gitnexus/tools/kotlin-lsp/262.9593.0/.gitnexus-platform"
+  local kotlin_expected_platform=""
+  local kotlin_installed_platform=""
+  local kotlin_missing=false
+  case "$(uname -s)-$(uname -m)" in
+    Linux-x86_64) kotlin_expected_platform="linux-x64" ;;
+    Darwin-arm64) kotlin_expected_platform="macos-arm64" ;;
+  esac
+  if [ -f "$kotlin_platform_marker" ]; then
+    kotlin_installed_platform=$(tr -d '[:space:]' < "$kotlin_platform_marker")
+  fi
+  if [ -n "$kotlin_expected_platform" ] && [ -z "${GITNEXUS_KOTLIN_LSP_BIN:-}" ] \
+    && { [ ! -x "$kotlin_launcher" ] || [ "$kotlin_installed_platform" != "$kotlin_expected_platform" ]; }; then
+    kotlin_missing=true
+  fi
   local spring_tools_root="${repository_root}/.gitnexus/tools/spring-tools/5.3.0.RELEASE/extension/language-server"
   local spring_tools_server
   local spring_tools_missing=false
@@ -52,8 +67,7 @@ run_pipeline() {
   esac
   if [ ! -x "${repository_root}/node_modules/.bin/tsx" ] \
     || [ "$spring_tools_missing" = true ] \
-    || { [ "$(uname -s)-$(uname -m)" = "Linux-x86_64" ] \
-      && [ -z "${GITNEXUS_KOTLIN_LSP_BIN:-}" ] && [ ! -x "$kotlin_launcher" ]; }; then
+    || [ "$kotlin_missing" = true ]; then
     echo "[pipeline:install] required tools are missing; running the offline installer"
     ./install.sh
   fi

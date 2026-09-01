@@ -61,8 +61,13 @@ export class KotlinLspAdapter extends BaseStdioLspAdapter {
   }
 }
 
-export function findBundledKotlinLsp(start: string): string | null {
-  if (process.platform !== 'linux' || process.arch !== 'x64') return null;
+export function findBundledKotlinLsp(
+  start: string,
+  platform = process.platform,
+  architecture = process.arch,
+): string | null {
+  if (!((platform === 'linux' && architecture === 'x64')
+    || (platform === 'darwin' && architecture === 'arm64'))) return null;
   for (const workspaceRoot of ancestorDirectories(start)) {
     const bundled = path.join(
       workspaceRoot,
