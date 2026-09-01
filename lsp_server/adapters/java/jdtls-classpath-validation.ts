@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
 import type { ILspAdapter } from '../../contracts/lsp-adapter.interface.js';
 import type { PreparedJdtlsShard } from './jdtls-sharding.js';
 import type { JdtlsClasspathReadinessProgress } from './jdtls-startup-telemetry.js';
@@ -82,12 +83,15 @@ export async function validateImportedJavaProjectClasspaths(
         requestElapsedMs: 0,
       });
       try {
-        const response = await adapter.request<{ classpaths?: unknown; modulepaths?: unknown }>('workspace/executeCommand', {
+        const response = await adapter.request<{
+          classpaths?: unknown; modulepaths?: unknown; projectRoot?: unknown;
+        }>('workspace/executeCommand', {
           command: 'java.project.getClasspaths',
           arguments: [adapter.documentUri(model.representativeDocumentPath!), JSON.stringify({ scope: 'runtime' })],
         });
         const classpaths = stringPaths(response.classpaths);
         const modulepaths = stringPaths(response.modulepaths);
+        const projectRoot = responseProjectRoot(response.projectRoot);
         const actual = new Set([...classpaths, ...modulepaths].map(classpathReadinessKey));
         const expected = expectedByRoot.get(rootId) ?? new Map<string, string>();
         const missing = [...expected].filter(([key]) => !actual.has(key)).map(([, original]) => original);
@@ -119,12 +123,14 @@ export async function validateImportedJavaProjectClasspaths(
           lastProgressAt,
           requestState: 'returned',
           requestElapsedMs: Math.max(0, now() - requestStartedAt),
+          ...(projectRoot ? { projectRoot } : {}),
         });
         const stalledForMs = now() - (lastProgressByRoot.get(rootId) ?? lastProgressAt);
         if (missing.length > 0 && stalledForMs >= stallTimeoutMs) {
           throw new JdtlsStableClasspathMismatchError(
             `[${shardId}] JDT classpath for ${rootId} stopped progressing for ${stalledForMs} ms: `
             + `${missing.length}/${expected.size} Bazel entries are missing. `
+            + `JDT project root: ${projectRoot ?? 'not reported'}. `
             + `Missing sample: ${missing.slice(0, 10).join(', ')}`,
           );
         }
@@ -194,6 +200,11 @@ function stringPaths(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === 'string').map((entry) => path.resolve(entry))
     : [];
+}
+
+function responseProjectRoot(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  try { return value.startsWith('file:') ? fileURLToPath(value) : path.resolve(value); } catch { return value; }
 }
 
 function classpathReadinessKey(value: string): string {

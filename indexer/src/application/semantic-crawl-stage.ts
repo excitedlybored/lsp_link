@@ -86,8 +86,10 @@ function ensureRequiredSemanticCoverage(
   options: LspKnowledgeGraphBuildOptions,
   crawlOnly: boolean,
 ): void {
-  if (options.failOnFailedBuildRoot && batch.servers.some((server) => server.status === 'failed')) {
-    throw new Error('Semantic crawl failed for one or more build roots');
+  const failedServers = batch.servers.filter((server) => server.status === 'failed');
+  if (options.failOnFailedBuildRoot && failedServers.length > 0) {
+    const failedRoots = [...new Set(failedServers.map((server) => server.buildRootId ?? server.id))].sort();
+    throw new Error(`Semantic crawl failed for build roots: ${failedRoots.join(', ')}`);
   }
   if (crawlOnly && hasIncompleteBatchJavaServer(batch, options.javaSemantics)) {
     throw new Error('Crawl-only validation requires every JDT batch server to complete');

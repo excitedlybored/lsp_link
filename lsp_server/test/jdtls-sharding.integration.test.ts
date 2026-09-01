@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -81,6 +82,90 @@ test('one persistent JDT LS process preserves project isolation and root-local r
   }
   assert.equal(adapter.getSessionMetadata().processShardId, shard.id);
   assert.deepEqual(adapter.getSessionMetadata().buildRootIds, roots.map((root) => root.id));
+});
+
+test('imports an enterprise-scale Bazel classpath into one generated Eclipse project', {
+  skip: process.env.GITNEXUS_RUN_JDTLS_INTEGRATION !== '1',
+  timeout: 300_000,
+}, async (t) => {
+  const repository = fs.mkdtempSync(path.join(os.tmpdir(), 'jdtls-large-classpath-live-'));
+  t.after(() => fs.rmSync(repository, { recursive: true, force: true }));
+  const sourceRoot = path.join(repository, 'src/main/java/example');
+  fs.mkdirSync(sourceRoot, { recursive: true });
+  const sources = Array.from({ length: 129 }, (_, index) => {
+    const source = path.join(sourceRoot, `Application${index}.java`);
+    const content = `package example; public class Application${index} {}\n`;
+    fs.writeFileSync(source, content);
+    return {
+      path: source, analysisPath: source, origin: 'repository' as const,
+      contentHash: createHash('sha256').update(content).digest('hex'),
+      targetLabels: ['//:application'], originalRepositoryPaths: [source],
+      configuredSourceAssociations: [], sourceJarAssociations: [],
+    };
+  });
+  const source = sources[0].path;
+
+  const dependencyJar = JdtlsRuntimeLocator.locate().equinoxLauncherJar;
+  const libraryRoot = path.join(repository, '.gitnexus/test-classpath');
+  fs.mkdirSync(libraryRoot, { recursive: true });
+  const artifacts = Array.from({ length: 1_678 }, (_, index) => {
+    const identity = `dependency-${index.toString().padStart(4, '0')}`;
+    const compile = path.join(libraryRoot, `${identity}-ijar.jar`);
+    const runtime = path.join(libraryRoot, `${identity}.jar`);
+    // JDT may reject compiler-only interface archives even though Bazel can
+    // consume them. The runtime counterpart must be selected before import.
+    fs.writeFileSync(compile, 'interface-only');
+    fs.copyFileSync(dependencyJar, runtime, fs.constants.COPYFILE_FICLONE);
+    return { compile, runtime };
+  });
+  const classpath = artifacts.map((artifact) => artifact.compile);
+  const runtimeClasspath = artifacts.map((artifact) => artifact.runtime);
+  const modelDirectory = path.join(repository, '.gitnexus/jdtls');
+  fs.mkdirSync(modelDirectory, { recursive: true });
+  const sourceInventoryPath = path.join(modelDirectory, 'bazel-source-inventory.json');
+  fs.writeFileSync(sourceInventoryPath, JSON.stringify({
+    schemaVersion: 3,
+    workspacePath: repository,
+    configurationHash: 'live-large-classpath',
+    targetQuery: '//...',
+    generatedAt: new Date().toISOString(),
+    targets: [],
+    sources,
+    comparison: {
+      repositorySources: sources.length,
+      configuredRepositorySources: sources.length,
+      generatedSources: 0,
+      sourceJarOnlySources: 0,
+      externalTargetsRetained: 0,
+      externalSourceJarAssociationsExcluded: 0,
+      unownedRepositorySources: [],
+      duplicateSources: 0,
+      crawlSources: sources.length,
+    },
+  }));
+  fs.writeFileSync(path.join(modelDirectory, 'bazel-project.json'), JSON.stringify({
+    classpath,
+    runtimeClasspath,
+    sourcePaths: ['src/main/java'],
+    generatedSourcePaths: [],
+    configurationHash: 'live-large-classpath',
+    sourceInventoryPath,
+  }));
+  const root: JavaBuildRoot = {
+    id: 'bazel:.', workspacePath: repository, relativePath: '.', systems: ['bazel'], excludedRoots: [],
+  };
+  const shard = prepareJdtlsShardWorkspace(repository, planJdtlsBuildRootShards([root], 1)[0]);
+  const registry = new LspAdapterRegistry();
+  t.after(() => registry.shutdownAll());
+  const adapter = await registry.getOrStartJavaShard(shard);
+  assert.ok(adapter, 'JDT LS must retain the enterprise-scale generated classpath');
+  const response = await adapter.request<{ classpaths?: string[] }>('workspace/executeCommand', {
+    command: 'java.project.getClasspaths',
+    arguments: [adapter.documentUri(source), JSON.stringify({ scope: 'runtime' })],
+  });
+  const actual = new Set((response.classpaths ?? []).map((entry) => path.resolve(entry)));
+  assert.equal(runtimeClasspath.filter((entry) => actual.has(path.resolve(entry))).length, runtimeClasspath.length);
+  assert.equal(classpath.filter((entry) => actual.has(path.resolve(entry))).length, 0);
 });
 
 test('Spring Tools receives JDT classpaths and reports framework structure', {

@@ -62,7 +62,11 @@ export async function crawlJavaWorkspace(
     const cached = checkpointStore.loadCached<JavaBuildRootCrawlResult>(
       checkpointStore.rootStage(root.id), crawlFingerprint,
     );
-    if (cached) cachedByRoot.set(root.id, cached);
+    if (cached && !cached.failed) {
+      cachedByRoot.set(root.id, cached);
+    } else if (cached?.failed) {
+      console.warn(`[stage:lsp-crawl] ignoring failed checkpoint for ${root.id}; the root will be retried`);
+    }
   }
   let completedRootCount = cachedByRoot.size;
   if (completedRootCount > 0) {
@@ -123,9 +127,14 @@ export async function crawlJavaWorkspace(
           result.artifacts,
           path.join(workspacePath, '.gitnexus', 'jvm-artifacts', 'classpath'),
         );
-        checkpointStore.saveCached(checkpointStore.rootStage(root.id), crawlFingerprint, result);
+        if (!result.failed) {
+          checkpointStore.saveCached(checkpointStore.rootStage(root.id), crawlFingerprint, result);
+        }
         completedRootCount += 1;
-        console.log(`[${root.id}] complete (${completedRootCount}/${activeRoots.length})`);
+        console.log(
+          `[${root.id}] ${result.failed ? 'failed' : 'complete'} `
+          + `(${completedRootCount}/${activeRoots.length})`,
+        );
         results.push(result);
       }
       return results;

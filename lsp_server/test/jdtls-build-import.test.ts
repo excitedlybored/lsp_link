@@ -292,15 +292,19 @@ test('uses full Bazel runtime binaries for JDT navigation while preserving compi
   const root = fixture({
     'lib/header_spring-context.jar': '',
     'lib/processed_spring-context.jar': '',
+    'lib/libservice-ijar.jar': '',
+    'lib/libservice.jar': '',
     'lib/compile-only.jar': '',
   });
   const header = path.join(root, 'lib/header_spring-context.jar');
   const binary = path.join(root, 'lib/processed_spring-context.jar');
+  const ijar = path.join(root, 'lib/libservice-ijar.jar');
+  const serviceBinary = path.join(root, 'lib/libservice.jar');
   const compileOnly = path.join(root, 'lib/compile-only.jar');
   assert.deepEqual(jdtlsResolutionClasspath({
-    classpath: [header, compileOnly],
-    runtimeClasspath: [binary],
-  }), [compileOnly, binary].sort());
+    classpath: [header, ijar, compileOnly],
+    runtimeClasspath: [binary, serviceBinary],
+  }), [compileOnly, binary, serviceBinary].sort());
 });
 
 test('generates and refreshes an exact Bazel JavaInfo classpath and source model', async () => {

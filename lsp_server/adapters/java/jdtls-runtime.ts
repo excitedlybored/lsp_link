@@ -77,7 +77,7 @@ function jarIdentity(jarPath: string): string {
     .replace(/^header_/, '')
     .replace(/^processed_/, '')
     .replace(/-hjar(?=\.jar$)/, '')
-    .replace(/\.ijar(?=\.jar$)/, '');
+    .replace(/(?:-|\.)ijar(?=\.jar$)/, '');
 }
 
 export interface JavaBuildImportStatus {

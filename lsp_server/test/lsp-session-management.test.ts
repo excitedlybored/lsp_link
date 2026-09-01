@@ -351,7 +351,9 @@ test('classpath validation counts classpath and modulepath entries and reports r
   }> = [];
   const adapter = {
     documentUri: (filename: string) => `file://${filename}`,
-    request: async () => ({ classpaths: ['/deps/runtime.jar'], modulepaths: ['/deps/module.jar'] }),
+    request: async () => ({
+      classpaths: ['/deps/runtime.jar'], modulepaths: ['/deps/module.jar'], projectRoot: 'file:///workspace/project',
+    }),
   } as unknown as ILspAdapter;
   await validateImportedJavaProjectClasspaths(
     adapter,
@@ -367,11 +369,14 @@ test('classpath validation counts classpath and modulepath entries and reports r
     undefined,
     (event) => progress.push(event),
   );
-  assert.deepEqual(progress.map(({ matchedEntries, missingEntries, completedRoots, requestState }) => ({
-    matchedEntries, missingEntries, completedRoots, requestState,
+  assert.deepEqual(progress.map(({ matchedEntries, missingEntries, completedRoots, requestState, projectRoot }) => ({
+    matchedEntries, missingEntries, completedRoots, requestState, projectRoot,
   })), [
-    { matchedEntries: 0, missingEntries: 2, completedRoots: 0, requestState: 'sent' },
-    { matchedEntries: 2, missingEntries: 0, completedRoots: 1, requestState: 'returned' },
+    { matchedEntries: 0, missingEntries: 2, completedRoots: 0, requestState: 'sent', projectRoot: undefined },
+    {
+      matchedEntries: 2, missingEntries: 0, completedRoots: 1,
+      requestState: 'returned', projectRoot: '/workspace/project',
+    },
   ]);
 });
 
