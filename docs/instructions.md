@@ -11,11 +11,37 @@ From the `lsp_link` repository root:
 ./lsp-link index /absolute/path/to/repository
 ```
 
-Add `--background` to detach it from the terminal. The log and PID are written
-to `.gitnexus/index.log` and `.gitnexus/index.pid` in the target repository.
-The launcher installs missing local tools, loads `config/default.json`, runs
-`prepare-build-model`, and starts `build-index` only after preparation succeeds.
-The default graph is `<repository>/.gitnexus/lsp-lbug`.
+This is the only production indexing command. Normally, do not invoke the npm
+stage commands or run a separate Bazel build. The launcher installs missing
+bundled tools, loads `config/default.json`, prepares the build model, crawls
+every installed language adapter that owns discovered files, enriches the
+results, and atomically publishes the graph at
+`<repository>/.gitnexus/lsp-lbug`.
+
+To use another configuration:
+
+```bash
+./lsp-link index /absolute/path/to/repository \
+  --config /absolute/path/to/index-config.json
+```
+
+Add `--background` to detach it from the terminal:
+
+```bash
+./lsp-link index /absolute/path/to/repository --background
+tail -f /absolute/path/to/repository/.gitnexus/index.log
+```
+
+The background PID is written to `<repository>/.gitnexus/index.pid` and is
+removed when the run finishes. A foreground run exits nonzero on failure; the
+background log ends with the same final status, error summary, and result
+counts.
+
+Re-run the same command after a failure or repository update. Compatible Bazel
+actions, consolidated source snapshots, dependency indexes, checkpoints, and
+exact LSP crawl results are reused. Source, build-model, adapter, or relevant
+configuration changes produce new cache identities instead of reusing stale
+semantic evidence.
 
 ## Overall automated flow
 
@@ -118,6 +144,17 @@ Java semantic indexing defaults to one binding-aware batch pass:
 `javaSemantics` to `lsp` only for operational recovery or parity comparison;
 other languages retain their existing profile behavior. Batch failures publish
 validated completed facts as partial coverage rather than claiming completion.
+The batch pass resolves workspace and dependency bindings while each AST is in
+memory. It publishes dependency source or class-file documents, declarations,
+ranges, occurrences, calls, and type relationships without issuing a separate
+LSP reference request for every symbol. Dependency records are deduplicated by
+their authoritative source document and portable binding identity.
+
+Kotlin remains a regular language-server crawl. A Kotlin server may return
+`Invalid PSI Element` for a synthetic `KtPackage` symbol that has no navigable
+source location; this specific pseudo-symbol result is treated as a successful
+empty navigation result. Classes, functions, properties, files, and all other
+protocol failures retain normal coverage and error reporting.
 
 External dependency-JAR indexes are shared under the clone-local
 `.gitnexus/cache/jdtls/external-indexes` directory. Override it with
@@ -548,16 +585,16 @@ published graph.
 
 ```bash
 # High-level graph summary.
-npm run graph:summary -- /tmp/repository.lbug
+npm run graph:summary -- /absolute/path/to/repository/.gitnexus/lsp-lbug
 
 # Typed read-only graph client.
-npm run lbug:read -- /tmp/repository.lbug
+npm run lbug:read -- /absolute/path/to/repository/.gitnexus/lsp-lbug
 
 # Run the Temporal semantic extractor.
-npm run extract -- /tmp/repository.lbug --extractor temporal
+npm run extract -- /absolute/path/to/repository/.gitnexus/lsp-lbug --extractor temporal
 
 # Start the read-only OpenCypher MCP server.
-LBUG_REPO=/tmp/repository.lbug npm run mcp:analyzer
+LBUG_REPO=/absolute/path/to/repository/.gitnexus/lsp-lbug npm run mcp:analyzer
 ```
 
 The analyzer does not mutate the database. Its MCP server rejects write

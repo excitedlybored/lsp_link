@@ -34,10 +34,25 @@ Run it independently of the terminal with:
 tail -f /path/to/repository/.gitnexus/index.log
 ```
 
-The default graph is `/path/to/repository/.gitnexus/lsp-lbug`. The launcher
-loads `config/default.json`, installs missing local tools, runs the
-`prepare-build-model` stage when configured, and then runs `build-index`.
-Advanced CLI options can be appended to the same command.
+This is the only production indexing command. It installs missing bundled
+tools, loads `config/default.json`, prepares the build model, crawls every
+applicable installed language adapter, enriches the results, and atomically
+publishes the default graph at
+`/path/to/repository/.gitnexus/lsp-lbug`. Do not normally invoke the internal
+npm stages or run a separate Bazel build.
+
+Use a custom configuration when needed:
+
+```bash
+./lsp-link index /path/to/repository \
+  --config /path/to/index-config.json
+```
+
+Re-running the command safely reuses compatible Bazel actions, consolidated
+sources, dependency indexes, checkpoints, and exact semantic crawl results.
+Relevant source, build, adapter, or configuration changes create new cache
+identities rather than reusing stale evidence. Advanced CLI options can be
+appended to the same command.
 
 `index` is the production command. For semantic performance validation without
 ASM enrichment or graph publication, use the diagnostic crawl-only command:
