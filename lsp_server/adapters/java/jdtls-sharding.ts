@@ -67,7 +67,8 @@ export interface PreparedJdtlsShard extends JdtlsBuildRootShard {
 
 export interface JdtlsShardPreparationProgress {
   phase: 'loading-model' | 'mapping-sources' | 'cache-validation' | 'cache-hit' | 'cache-build'
-    | 'consolidating-sources' | 'staging-sources' | 'link-project' | 'complete';
+    | 'consolidating-sources' | 'cache-finalization' | 'cache-pruning' | 'model-finalization'
+    | 'staging-sources' | 'link-project' | 'complete';
   completed?: number;
   total?: number;
 }
@@ -247,15 +248,25 @@ function loadProjectModel(
     )
     : { mappings: [] };
   const sourceMappings = sourcePreparation.mappings;
+  progress?.({ phase: 'model-finalization', completed: 0, total: 1 });
   const sourcePaths = stringArray(bazel?.sourcePaths).map((entry) => path.resolve(root.workspacePath, entry));
-  const eclipse = readEclipseClasspath(root.workspacePath);
-  const discovered = discoverSourcePaths(root.workspacePath);
   const generatedSourcePaths = stringArray(bazel?.generatedSourcePaths)
     .map((entry) => path.resolve(root.workspacePath, entry));
   const bazelClasspath = stringArray(bazel?.classpath)
     .map((entry) => path.resolve(root.workspacePath, entry)).filter(fs.existsSync);
   const runtimeClasspath = stringArray(bazel?.runtimeClasspath)
     .map((entry) => path.resolve(root.workspacePath, entry)).filter(fs.existsSync);
+  // The validated Bazel inventory is authoritative. Recursively discovering
+  // fallback sources here rescans a large monorepo immediately after its exact
+  // source inventory was consolidated.
+  const needsEclipseFallback = (sourceMappings.length === 0 && sourcePaths.length === 0)
+    || bazelClasspath.length === 0;
+  const eclipse = needsEclipseFallback
+    ? readEclipseClasspath(root.workspacePath)
+    : { sources: [], libraries: [] };
+  const discovered = sourceInventory
+    ? { sourcePaths: [], generatedSourcePaths: [] }
+    : discoverSourcePaths(root.workspacePath);
   const compileClasspath = bazelClasspath.length > 0 ? bazelClasspath : eclipse.libraries;
   const languageServerClasspath = bazelClasspath.length > 0
     ? jdtlsResolutionClasspath({ classpath: bazelClasspath, runtimeClasspath })
@@ -264,10 +275,12 @@ function loadProjectModel(
   // standard resource filters include `bazel-.*`; a project named after a
   // `bazel:` root is imported but all of its source resources are hidden.
   const projectName = `gitnexus-${safeName(root.id)}-${createHash('sha256').update(root.id).digest('hex').slice(0, 8)}`;
-  const inspectedJavaMajor = JdtlsWorkspace.inspect(root.workspacePath, {
-    buildSystems: root.systems,
-    excludedRoots: root.excludedRoots,
-  }).requiredJavaMajor;
+  const inspectedJavaMajor = typeof bazel?.javaMajor === 'number'
+    ? undefined
+    : JdtlsWorkspace.inspect(root.workspacePath, {
+      buildSystems: root.systems,
+      excludedRoots: root.excludedRoots,
+    }).requiredJavaMajor;
   const inventorySourcePaths = unique(sourceMappings.map((mapping) => mapping.sourceRoot));
   const effectiveSourcePaths = unique(inventorySourcePaths.length > 0
     ? inventorySourcePaths
@@ -303,6 +316,7 @@ function loadProjectModel(
     ...(representativeDocumentPath ? { representativeDocumentPath } : {}),
   };
   if (sourcePreparation.cacheLeasePath) cacheLeaseByModel.set(model, sourcePreparation.cacheLeasePath);
+  progress?.({ phase: 'model-finalization', completed: 1, total: 1 });
   return model;
 }
 
@@ -359,7 +373,9 @@ function sourceMappingsForInventory(
     const cacheParent = path.join(workspacePath, '.gitnexus', 'jdtls', 'consolidated-sources');
     const cacheRoot = ensureConsolidatedSourceCache(cacheParent, inventoryHash, entries, progress);
     const cacheLeasePath = createCacheLease(cacheRoot, cacheLeaseId);
+    progress?.({ phase: 'cache-pruning', completed: 0, total: 1 });
     pruneConsolidatedSourceCaches(cacheParent, cacheRoot);
+    progress?.({ phase: 'cache-pruning', completed: 1, total: 1 });
     return {
       mappings: entries.map((entry) => ({
         sourcePath: entry.sourcePath,
@@ -459,6 +475,7 @@ function ensureConsolidatedSourceCache(
       reportPreparationProgress(progress, 'cache-build', index + 1, entries.length);
       reportPreparationProgress(progress, 'consolidating-sources', index + 1, entries.length);
     }
+    progress?.({ phase: 'cache-finalization', completed: 0, total: 1 });
     const manifest: ConsolidatedCacheManifest = {
       schemaVersion: 1,
       sourceInventoryHash: inventoryHash,
@@ -469,6 +486,7 @@ function ensureConsolidatedSourceCache(
     if (fs.existsSync(destination)) {
       if (validateConsolidatedSourceCache(destination, inventoryHash, entries)) {
         fs.rmSync(temporary, { recursive: true, force: true });
+        progress?.({ phase: 'cache-finalization', completed: 1, total: 1 });
         return destination;
       }
       destination = path.join(cacheParent, `${inventoryHash}.rebuild-${randomUUID()}`);
@@ -481,6 +499,7 @@ function ensureConsolidatedSourceCache(
         || !validateConsolidatedSourceCache(destination, inventoryHash, entries)) throw error;
       fs.rmSync(temporary, { recursive: true, force: true });
     }
+    progress?.({ phase: 'cache-finalization', completed: 1, total: 1 });
     return destination;
   } catch (error) {
     fs.rmSync(temporary, { recursive: true, force: true });
