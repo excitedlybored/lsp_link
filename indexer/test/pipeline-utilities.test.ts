@@ -16,7 +16,7 @@ import {
   type LadybugModuleLike,
 } from '../src/lbug/repository.js';
 
-test('bounds the default LadybugDB buffer pool at one GiB and accepts an override', async (t) => {
+test('sets the default LadybugDB buffer pool to four GiB and accepts an override', async (t) => {
   const original = process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
   t.after(() => {
     if (original === undefined) delete process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
@@ -36,7 +36,7 @@ test('bounds the default LadybugDB buffer pool at one GiB and accepts an overrid
 
   delete process.env.GITNEXUS_LBUG_BUFFER_POOL_MB;
   await openLspLadybugDatabase('/tmp/default-pool.lbug', ladybug).close();
-  assert.equal(bufferManagerSize, 1_024 * 1024 * 1024);
+  assert.equal(bufferManagerSize, 4_096 * 1024 * 1024);
 
   process.env.GITNEXUS_LBUG_BUFFER_POOL_MB = '512';
   await openLspLadybugDatabase('/tmp/override-pool.lbug', ladybug).close();

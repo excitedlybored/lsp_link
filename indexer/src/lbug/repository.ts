@@ -23,7 +23,7 @@ import { DerivedCallNormalizationRepository } from '../derived/call-normalizatio
 import { BazelBuildGraphRepository } from '../bazel/repository.js';
 import { RepositoryInventoryRepository } from '../repository/repository.js';
 
-const DEFAULT_LBUG_BUFFER_POOL_MIB = 1_024;
+const DEFAULT_LBUG_BUFFER_POOL_MIB = 4_096;
 
 export interface LbugQueryResultLike {
   close?(): void | Promise<void>;

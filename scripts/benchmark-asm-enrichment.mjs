@@ -11,7 +11,7 @@ import { ArtifactBulkSpoolSink, bulkCopyArtifactGraph } from '../indexer/dist/ar
 
 const options = parseArguments(process.argv.slice(2));
 const SCALING_GATE_MAX_RATIO = 3;
-process.env.GITNEXUS_LBUG_BUFFER_POOL_MB ??= '1024';
+process.env.GITNEXUS_LBUG_BUFFER_POOL_MB ??= '4096';
 if (options.gate) {
   const small = await benchmark({ ...options, classes: 25_000, output: undefined });
   const large = await benchmark({ ...options, classes: 100_000, output: undefined });
