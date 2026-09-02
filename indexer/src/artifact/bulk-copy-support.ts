@@ -23,7 +23,7 @@ export class BulkCsvFiles {
   private readonly variants = new Map<string, Map<string, { key: string; columns: string[] }>>();
 
   constructor(
-    private readonly directory: string,
+    readonly directory: string,
     private readonly rowsPerFile = DEFAULT_ROWS_PER_FILE,
   ) {
     if (!Number.isInteger(rowsPerFile) || rowsPerFile < 1) {
@@ -86,6 +86,11 @@ export class BulkCsvFiles {
   close(): void {
     for (const writer of this.writers.values()) this.closeWriter(writer);
     this.writers.clear();
+  }
+
+  remove(): void {
+    this.close();
+    fs.rmSync(this.directory, { recursive: true, force: true });
   }
 
   private flushWriter(writer: CsvWriter): void {

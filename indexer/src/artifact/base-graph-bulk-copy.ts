@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 
 import type { BazelBuildGraphBatch, BazelRelation } from '../bazel/model.js';
 import type { DerivedCallNormalizationBatch, DerivedCallRelation } from '../derived/call-normalization/model.js';
@@ -31,6 +32,11 @@ import {
 } from './bulk-copy-support.js';
 import { withMemoryTelemetry } from '../telemetry/memory.js';
 
+const BASE_COPY_ROWS_PER_CHUNK = positiveInteger(
+  process.env.GITNEXUS_LBUG_BASE_ROWS_PER_CHUNK, 100_000,
+  'GITNEXUS_LBUG_BASE_ROWS_PER_CHUNK',
+);
+
 interface NodeSpec {
   key: string;
   table: string;
@@ -58,7 +64,6 @@ export async function bulkCopyBaseGraph(
 ): Promise<void> {
   fs.rmSync(workDirectory, { recursive: true, force: true });
   fs.mkdirSync(workDirectory, { recursive: true });
-  const csv = new BulkCsvFiles(workDirectory);
   const symbolsByTable = new Map<LspSymbolNodeTable, Array<Record<string, unknown>>>();
   for (const symbol of lsp.symbols) {
     const record = toSymbolRecord(symbol);
@@ -112,29 +117,101 @@ export async function bulkCopyBaseGraph(
   ];
 
   try {
-    await withMemoryTelemetry('csv-generation', async () => {
-      for (const spec of nodes) for (const row of spec.rows) csv.object(spec.key, row, spec.columns);
-      for (const spec of relations) for (const row of spec.rows) csv.object(spec.key, row, spec.columns);
-      csv.close();
-    }, { graph: 'base' });
-
-    await withMemoryTelemetry('node-copying', async () => {
-      for (const spec of nodes) {
-        await copyNodeCsvFragments(connection, csv, spec.key, spec.table, spec.columns);
+    for (const spec of nodes) {
+      const chunks = chunked(spec.rows, BASE_COPY_ROWS_PER_CHUNK);
+      for (const [chunkIndex, rows] of chunks.entries()) {
+        const csv = await generateBaseCsvChunk(
+          workDirectory, `${spec.key}-${chunkIndex}`, spec.table, chunkIndex, chunks.length,
+          (output) => { for (const row of rows) output.object(spec.key, row, spec.columns); },
+        );
+        try {
+          await withMemoryTelemetry('node-copying', () => copyNodeCsvFragments(
+              connection, csv, spec.key, spec.table, spec.columns,
+            ), { graph: 'base', table: spec.table, chunk: chunkIndex + 1, chunks: chunks.length });
+        } finally {
+          csv.remove();
+        }
+        reportBaseProgress('node-copying', spec.table, chunkIndex, chunks.length, rows.length);
       }
-      await applyArrayProperties(connection, lsp, calls, inventory, symbolsByTable);
-    }, { graph: 'base' });
-    await withMemoryTelemetry('relationship-copying', async () => {
-      for (const spec of relations) {
-        await copyRelationCsvFragments(
-          connection, csv, spec.key, spec.table, spec.columns, spec.from, spec.to,
+    }
+    await applyArrayProperties(connection, lsp, calls, inventory, symbolsByTable);
+
+    for (const spec of relations) {
+      const chunks = chunked(spec.rows, BASE_COPY_ROWS_PER_CHUNK);
+      for (const [chunkIndex, rows] of chunks.entries()) {
+        const csv = await generateBaseCsvChunk(
+          workDirectory, `${spec.key}-${chunkIndex}`, `${spec.from}->${spec.to}`,
+          chunkIndex, chunks.length,
+          (output) => { for (const row of rows) output.object(spec.key, row, spec.columns); },
+        );
+        try {
+          await withMemoryTelemetry('relationship-copying', () => copyRelationCsvFragments(
+              connection, csv, spec.key, spec.table, spec.columns, spec.from, spec.to,
+            ), {
+              graph: 'base', table: spec.table, from: spec.from, to: spec.to,
+              chunk: chunkIndex + 1, chunks: chunks.length,
+            });
+        } finally {
+          csv.remove();
+        }
+        reportBaseProgress(
+          'relationship-copying', `${spec.from}->${spec.to}`,
+          chunkIndex, chunks.length, rows.length,
         );
       }
-    }, { graph: 'base' });
+    }
   } finally {
-    csv.close();
     fs.rmSync(workDirectory, { recursive: true, force: true });
   }
+}
+
+async function generateBaseCsvChunk(
+  workDirectory: string,
+  name: string,
+  table: string,
+  chunkIndex: number,
+  chunkCount: number,
+  write: (csv: BulkCsvFiles) => void,
+): Promise<BulkCsvFiles> {
+  const csv = new BulkCsvFiles(path.join(workDirectory, name));
+  fs.mkdirSync(csv.directory, { recursive: true });
+  try {
+    await withMemoryTelemetry('csv-generation', async () => {
+      write(csv);
+      csv.close();
+    }, { graph: 'base', table, chunk: chunkIndex + 1, chunks: chunkCount });
+    return csv;
+  } catch (error) {
+    csv.remove();
+    throw error;
+  }
+}
+
+function chunked<T>(values: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+}
+
+function reportBaseProgress(
+  stage: string,
+  table: string,
+  index: number,
+  total: number,
+  rows: number,
+): void {
+  const completed = index + 1;
+  if (completed === total || completed === 1 || completed % 10 === 0) {
+    const percent = total === 0 ? 100 : Math.floor(completed / total * 100);
+    console.log(`[stage:${stage}] ${table} ${completed}/${total} chunks (${percent}%); chunkRows=${rows}`);
+  }
+}
+
+function positiveInteger(value: string | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer, got ${value}`);
+  return parsed;
 }
 
 function node<T extends object>(

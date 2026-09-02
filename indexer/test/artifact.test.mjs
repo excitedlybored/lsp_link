@@ -37,6 +37,46 @@ test('buffers bounded CSV fragments without losing interleaved rows', (t) => {
   assert.equal(fs.readFileSync(csv.paths('Other')[0], 'utf8'), '"separate"\n');
 });
 
+test('imports artifact CSV in bounded chunks and removes every chunk immediately', async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-bounded-artifact-csv-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const spoolFiles = Array.from({ length: 33 }, (_, index) => {
+    const file = path.join(fixture, `artifact-${index}.complete.ndjson`);
+    fs.writeFileSync(file, `${JSON.stringify({
+      runs: [], artifacts: [], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
+      classes: [{
+        id: `class:${index}`, stageId: 'stage', artifactId: `artifact:${index}`,
+        binaryName: `example.Type${index}`, packageName: 'example', simpleName: `Type${index}`,
+        kind: 'class', interfaces: [], seedUris: [], annotations: [], isSeed: false,
+        wasDisassembled: true, codeOrigin: 'dependency',
+      }],
+      methods: [], fields: [], callSites: [], relations: [], bindings: [],
+    })}\n`);
+    return file;
+  });
+  const empty = {
+    runs: [], artifacts: [], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
+    classes: [], methods: [], fields: [], callSites: [], relations: [], bindings: [],
+  };
+  const run = {
+    id: 'stage', lspRunId: 'run', status: 'complete', startedAt: new Date(0).toISOString(),
+    provider: 'asm', classpathProviders: [], classpathResolutionJson: '[]', classpathErrorCount: 0,
+    artifactCount: 33, classCount: 33, methodCount: 0, fieldCount: 0, callSiteCount: 0,
+    errorCount: 0, truncated: false,
+  };
+  const connection = new RecordingConnection();
+  const work = path.join(fixture, 'copy-work');
+
+  await bulkCopyArtifactGraph(connection, empty, empty, spoolFiles, run, work);
+
+  const copyQueries = connection.queries.filter((value) => value.startsWith('COPY JvmClass'));
+  assert.ok(copyQueries.some((value) => value.includes('nodes-0')));
+  assert.ok(copyQueries.some((value) => value.includes('nodes-1')));
+  assert.equal(fs.existsSync(work), false);
+  assert.ok(spoolFiles.every((file) => fs.existsSync(file)),
+    'ASM spools remain the resume authority until final graph publication');
+});
+
 test('negotiates one persistent ASM worker without javap', async () => {
   const worker = new AsmArtifactWorker(2);
   const info = await worker.start();
@@ -265,6 +305,8 @@ test('bulk-copies spooled ASM facts with graph parity and no duplicate nodes', a
   );
   assert.deepEqual(await distinct.getAll(), [{ total: expected.classes.length, distinctIds: expected.classes.length }]);
   await distinct.close();
+  assert.equal(fs.existsSync(path.join(fixture, 'copy-work')), false,
+    'bounded CSV work is removed immediately after bulk COPY');
   await handle.close();
 });
 
@@ -446,6 +488,8 @@ test('resumes production bulk publication atomically with final run-count parity
     enrichmentInput, faultyLadybug, true,
   ), /simulated COPY publication interruption/);
   assert.equal(fs.existsSync(output), false, 'an interrupted staging database is never published');
+  assert.equal(fs.existsSync(`${output}.partial-fingerprint.artifacts.copy-work`), false,
+    'reproducible CSV chunks are removed after an interrupted COPY');
 
   const resumed = await persistStreamingKnowledgeGraph(
     output, 'fingerprint', checkpointStore, lspBatch, normalization,

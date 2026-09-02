@@ -115,8 +115,10 @@ The resulting policy keeps:
 The artifact stage now launches one JDK 21-compatible worker using vendored
 ASM Core 9.9.1. It parses JARs without classloading and streams versioned,
 bounded NDJSON batches into per-artifact disk spools. Completed spools are
-converted to bounded CSV fragments and loaded into the staging LadybugDB with
-`COPY FROM`; small run/status updates remain transactional. Failed worker
+converted 32 artifacts at a time: node CSV is generated, copied, and removed,
+then relationship CSV follows the same bounded pass. Base graph families use
+100,000-row chunks. CSV therefore never exists as a repository-wide duplicate
+of the ASM or inventory facts. Rows are loaded with `COPY FROM`; small run/status updates remain transactional. Failed worker
 attempts truncate back to their spool checkpoint before the one-time replay,
 and resume restores run totals from validated completed-artifact sidecars.
 

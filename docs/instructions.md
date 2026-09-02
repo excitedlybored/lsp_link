@@ -554,6 +554,15 @@ the tools' normal credential stores. Relevant environment variables include:
   fragment. The default is `10000`; lower it only if database import memory is
   constrained. CSV output is buffered and keeps at most one descriptor open
   per table/column variant.
+- `GITNEXUS_LBUG_COPY_ARTIFACTS_PER_CHUNK`: number of ASM artifact spools
+  converted to CSV at once. The default is `32`. Each node or relationship
+  chunk is imported and deleted before the next chunk is generated.
+- `GITNEXUS_LBUG_LOOKUP_ROWS_PER_CHUNK`: maximum number of JVM class
+  resolutions, binary references, or resolution links converted at once. The
+  default is `100000`.
+- `GITNEXUS_LBUG_BASE_ROWS_PER_CHUNK`: maximum number of LSP, Bazel, or
+  repository-inventory rows converted to CSV at once. The default is `100000`.
+  Lower values reduce peak temporary storage at the cost of more COPY calls.
 
 Repository credentials remain in Bazel, `.netrc`, credential helpers, or the
 environment expected by the repository. They are neither read from nor stored

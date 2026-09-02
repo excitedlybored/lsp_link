@@ -126,7 +126,10 @@ crawl replaces the previous identity, single-root crawls do not write a
 duplicate root checkpoint, JDT batch facts are deleted after ingestion, and
 graph base/spool sidecars are deleted after atomic publication. Before a new
 JDT session starts, abandoned workspaces belonging to dead processes are also
-removed. Bazel's output base remains Bazel-owned and is never expunged
+removed. Base graph CSV is generated in 100,000-row chunks; JVM CSV is
+generated in 32-artifact chunks. Each chunk is imported and removed before the
+next is created, so CSV peak storage is bounded independently of repository
+size. Bazel's output base remains Bazel-owned and is never expunged
 automatically.
 
 ## Repository layout

@@ -26,6 +26,14 @@ const COPY_ROWS_PER_FILE = positiveInteger(
 const COPY_FRAGMENTS_PER_ROTATION = positiveInteger(
   process.env.GITNEXUS_LBUG_ROTATE_BATCHES, 20, 'GITNEXUS_LBUG_ROTATE_BATCHES',
 );
+const COPY_ARTIFACTS_PER_CHUNK = positiveInteger(
+  process.env.GITNEXUS_LBUG_COPY_ARTIFACTS_PER_CHUNK, 32,
+  'GITNEXUS_LBUG_COPY_ARTIFACTS_PER_CHUNK',
+);
+const COPY_LOOKUP_ROWS_PER_CHUNK = positiveInteger(
+  process.env.GITNEXUS_LBUG_LOOKUP_ROWS_PER_CHUNK, 100_000,
+  'GITNEXUS_LBUG_LOOKUP_ROWS_PER_CHUNK',
+);
 
 export class ArtifactBulkSpoolSink implements JvmArtifactStreamingSink {
   private readonly resolutions = new Map<string, JvmClassResolution>();
@@ -192,131 +200,161 @@ export async function bulkCopyArtifactGraph(
   };
   fs.rmSync(workDirectory, { recursive: true, force: true });
   fs.mkdirSync(workDirectory, { recursive: true });
-  const csv = new BulkCsvFiles(workDirectory, COPY_ROWS_PER_FILE);
   const computedResolutions = selectedResolutions
     ? undefined
     : new Map<string, JvmClassResolution>();
   const resolutions = selectedResolutions ?? computedResolutions!;
   const references = new Map<string, string>();
+  const chunks = chunked(spoolFiles, COPY_ARTIFACTS_PER_CHUNK);
   try {
-    await withMemoryTelemetry('csv-generation', async () => {
-      for (const file of spoolFiles) {
-        for await (const batch of readBatches(file)) {
-          writeFacts(csv, batch);
-          if (!selectedResolutions) for (const value of batch.resolutions) {
-            const current = resolutions.get(value.binaryName);
-            if (!current || value.classpathOrdinal < current.classpathOrdinal) {
-              computedResolutions!.set(value.binaryName, value);
+    // Generate, import, and remove bounded node CSV chunks. Keeping the
+    // durable ASM spools until final publication preserves interruption
+    // recovery without allowing a repository-wide second representation.
+    for (const [chunkIndex, files] of chunks.entries()) {
+      const csv = await generateCsvChunk(
+        workDirectory, `nodes-${chunkIndex}`, 'nodes', chunkIndex, chunks.length,
+        async (output) => {
+          for (const file of files) for await (const batch of readBatches(file)) {
+            writeNodeFacts(output, batch);
+            if (!selectedResolutions) for (const value of batch.resolutions) {
+              const current = resolutions.get(value.binaryName);
+              if (!current || value.classpathOrdinal < current.classpathOrdinal) {
+                computedResolutions!.set(value.binaryName, value);
+              }
+            }
+            for (const value of batch.binaryReferences) {
+              references.set(value.binaryName, value.stageId);
             }
           }
-          for (const value of batch.binaryReferences) references.set(value.binaryName, value.stageId);
-        }
+        },
+      );
+      try {
+        await withMemoryTelemetry('node-copying', () => copyNodeTables(
+            csv, FACT_NODE_TABLES, () => activeConnection,
+            async () => checkpointCopiedFragments(),
+          ), { graph: 'jvm', chunk: chunkIndex + 1, chunks: chunks.length });
+      } finally {
+        removeCsvChunk(csv);
       }
-      for (const value of resolutions.values()) csv.row('JvmClassResolution', [
+      reportChunkProgress('node-copying', chunkIndex, chunks.length, files.length);
+    }
+
+    await copyLookupNodeChunks(
+      workDirectory, 'class-resolutions', 'JvmClassResolution',
+      iterableChunks(resolutions.values(), COPY_LOOKUP_ROWS_PER_CHUNK),
+      Math.ceil(resolutions.size / COPY_LOOKUP_ROWS_PER_CHUNK),
+      (csv, value) => csv.row('JvmClassResolution', [
         value.binaryName, value.stageId, value.classId, value.artifactId, value.classpathOrdinal,
-      ]);
-      for (const [binaryName, stageId] of references) csv.row('JvmBinaryReference', [binaryName, stageId]);
-      for (const value of resolutions.values()) {
-        if (!references.has(value.binaryName)) continue;
-        csv.row(RESOLUTION_LINK.key, [
-          value.classId,
-          value.binaryName,
-          `resolved-reference:${value.binaryName}`,
-          value.stageId,
-        ]);
-      }
-      csv.close();
-    }, { graph: 'jvm', spoolFiles: spoolFiles.length });
-  } finally {
-    csv.close();
-  }
-
-  await withMemoryTelemetry('node-copying', async () => {
-    const progress = copyProgress(
-      'node-copying',
-      NODE_TABLES.reduce((sum, table) => sum + csv.fragments(table.key, table.columns).length, 0),
-    );
-    for (const table of NODE_TABLES) {
-      trace(`node ${table.name}`);
-      await copyNodeCsvFragments(
-        () => activeConnection, csv, table.key, table.name, table.columns, async () => {
-          await checkpointCopiedFragments();
-          progress();
-        },
-      );
-    }
-  }, { graph: 'jvm' });
-
-  let repository = new JvmArtifactRepository(activeConnection);
-  const metadata = emptyJvmArtifactBatch();
-  metadata.runs.push(run);
-  for (const file of spoolFiles) {
-    const artifactFile = `${file}.artifact.json`;
-    if (fs.existsSync(artifactFile)) metadata.artifacts.push(JSON.parse(fs.readFileSync(artifactFile, 'utf8')) as JvmArtifact);
-  }
-  // Relationship COPY resolves endpoint primary keys, so the small run and
-  // artifact metadata nodes must exist before containment edges are loaded.
-  await repository.mergeBatch(metadata);
-  await withMemoryTelemetry('relationship-copying', async () => {
-    const progress = copyProgress(
-      'relationship-copying',
-      RELATION_TABLES.reduce((sum, relation) =>
-        sum + csv.fragments(relation.key, relation.columns).length, 0)
-        + csv.fragments(RESOLUTION_LINK.key, RESOLUTION_LINK.columns).length,
-    );
-    for (const relation of RELATION_TABLES) {
-      trace(`relationship ${relation.table} ${relation.from}->${relation.to}`);
-      await copyRelationCsvFragments(
-        () => activeConnection, csv, relation.key, relation.table, relation.columns, relation.from, relation.to,
-        async () => {
-          await checkpointCopiedFragments();
-          progress();
-        },
-      );
-    }
-    await copyRelationCsvFragments(
+      ]),
       () => activeConnection,
-      csv,
-      RESOLUTION_LINK.key,
-      RESOLUTION_LINK.table,
-      RESOLUTION_LINK.columns,
-      RESOLUTION_LINK.from,
-      RESOLUTION_LINK.to,
-      async () => {
-        await checkpointCopiedFragments();
-        progress();
-      },
+      async () => checkpointCopiedFragments(),
     );
-  }, { graph: 'jvm' });
+    await copyLookupNodeChunks(
+      workDirectory, 'binary-references', 'JvmBinaryReference',
+      iterableChunks(references, COPY_LOOKUP_ROWS_PER_CHUNK),
+      Math.ceil(references.size / COPY_LOOKUP_ROWS_PER_CHUNK),
+      (csv, [binaryName, stageId]) => csv.row('JvmBinaryReference', [binaryName, stageId]),
+      () => activeConnection,
+      async () => checkpointCopiedFragments(),
+    );
 
-  // Array properties cannot safely encode arbitrary comma-containing values in
-  // Ladybug CSV lists. Apply them after scalar COPY in bounded batches.
-  for (const file of spoolFiles) for await (const batch of readBatches(file)) {
-    trace(`array properties ${path.basename(file)}`);
-    await updateArrayProperties(activeConnection, 'JvmClass', batch.classes.filter((value) =>
-      value.interfaces.length > 0 || value.seedUris.length > 0 || value.annotations.length > 0,
-    ).map((value) => ({
-      id: value.id, interfaces: value.interfaces, seedUris: value.seedUris, annotations: value.annotations,
-    })), ['interfaces', 'seedUris', 'annotations']);
-    await updateArrayProperties(activeConnection, 'JvmMethod', batch.methods.filter((value) => value.annotations.length > 0).map((value) => ({
-      id: value.id, annotations: value.annotations,
-    })), ['annotations']);
-    await updateArrayProperties(activeConnection, 'JvmField', batch.fields.filter((value) => value.annotations.length > 0).map((value) => ({
-      id: value.id, annotations: value.annotations,
-    })), ['annotations']);
+    let repository = new JvmArtifactRepository(activeConnection);
+    const metadata = emptyJvmArtifactBatch();
+    metadata.runs.push(run);
+    for (const file of spoolFiles) {
+      const artifactFile = `${file}.artifact.json`;
+      if (fs.existsSync(artifactFile)) metadata.artifacts.push(JSON.parse(fs.readFileSync(artifactFile, 'utf8')) as JvmArtifact);
+    }
+    // Relationship COPY resolves endpoint primary keys, so the small run and
+    // artifact metadata nodes must exist before containment edges are loaded.
+    await repository.mergeBatch(metadata);
+
+    for (const [chunkIndex, files] of chunks.entries()) {
+      const csv = await generateCsvChunk(
+        workDirectory, `relations-${chunkIndex}`, 'relationships', chunkIndex, chunks.length,
+        async (output) => {
+          for (const file of files) for await (const batch of readBatches(file)) {
+            writeRelationFacts(output, batch);
+          }
+        },
+      );
+      try {
+        await withMemoryTelemetry('relationship-copying', () => copyRelationTables(
+            csv, RELATION_TABLES, () => activeConnection,
+            async () => checkpointCopiedFragments(),
+          ), { graph: 'jvm', chunk: chunkIndex + 1, chunks: chunks.length });
+      } finally {
+        removeCsvChunk(csv);
+      }
+      reportChunkProgress('relationship-copying', chunkIndex, chunks.length, files.length);
+    }
+
+    let resolutionLinkCount = 0;
+    for (const value of resolutions.values()) {
+      if (references.has(value.binaryName)) resolutionLinkCount++;
+    }
+    const resolutionLinkChunkCount = Math.ceil(resolutionLinkCount / COPY_LOOKUP_ROWS_PER_CHUNK);
+    const resolutionLinkChunks = iterableChunks(
+      matchingResolutions(resolutions.values(), references), COPY_LOOKUP_ROWS_PER_CHUNK,
+    );
+    let resolutionLinkChunkIndex = 0;
+    for (const values of resolutionLinkChunks) {
+      const chunkIndex = resolutionLinkChunkIndex++;
+      const csv = await generateCsvChunk(
+        workDirectory, `resolution-links-${chunkIndex}`, 'resolution-links',
+        chunkIndex, resolutionLinkChunkCount, async (output) => {
+          for (const value of values) output.row(RESOLUTION_LINK.key, [
+            value.classId, value.binaryName,
+            `resolved-reference:${value.binaryName}`, value.stageId,
+          ]);
+        },
+      );
+      try {
+        await withMemoryTelemetry('relationship-copying', () => copyRelationTables(
+            csv, [RESOLUTION_LINK], () => activeConnection,
+            async () => checkpointCopiedFragments(),
+          ), {
+            graph: 'jvm', phase: 'resolution-links',
+            chunk: chunkIndex + 1, chunks: resolutionLinkChunkCount,
+          });
+      } finally {
+        removeCsvChunk(csv);
+      }
+    }
+
+    // Array properties cannot safely encode arbitrary comma-containing values
+    // in Ladybug CSV lists. Apply them from the durable spools in bounded batches.
+    for (const file of spoolFiles) for await (const batch of readBatches(file)) {
+      trace(`array properties ${path.basename(file)}`);
+      await updateArrayProperties(activeConnection, 'JvmClass', batch.classes.filter((value) =>
+        value.interfaces.length > 0 || value.seedUris.length > 0 || value.annotations.length > 0,
+      ).map((value) => ({
+        id: value.id, interfaces: value.interfaces, seedUris: value.seedUris, annotations: value.annotations,
+      })), ['interfaces', 'seedUris', 'annotations']);
+      await updateArrayProperties(activeConnection, 'JvmMethod', batch.methods.filter((value) => value.annotations.length > 0).map((value) => ({
+        id: value.id, annotations: value.annotations,
+      })), ['annotations']);
+      await updateArrayProperties(activeConnection, 'JvmField', batch.fields.filter((value) => value.annotations.length > 0).map((value) => ({
+        id: value.id, annotations: value.annotations,
+      })), ['annotations']);
+    }
+
+    const links = emptyJvmArtifactBatch();
+    links.relations.push(...initialization.relations);
+    links.bindings.push(...finalBatch.bindings);
+    repository = new JvmArtifactRepository(activeConnection);
+    await repository.mergeBatch(links);
+    await withMemoryTelemetry('resolution-finalization', async () => {
+      trace('final relations');
+      await repository.finalizeAsmRelations(run.id);
+      trace('final counts');
+      await repository.finalizeAsmRun(run);
+    }, { graph: 'jvm' });
+  } finally {
+    // CSV is always reproducible from the ASM spools. Never retain it after a
+    // success, protocol failure, database error, or ordinary cancellation.
+    fs.rmSync(workDirectory, { recursive: true, force: true });
   }
-
-  const links = emptyJvmArtifactBatch();
-  links.relations.push(...initialization.relations);
-  links.bindings.push(...finalBatch.bindings);
-  repository = new JvmArtifactRepository(activeConnection);
-  await repository.mergeBatch(links);
-  await withMemoryTelemetry('resolution-finalization', async () => {
-    trace('final relations');
-    await repository.finalizeAsmRelations(run.id);
-    trace('final counts');
-    await repository.finalizeAsmRun(run);
-  }, { graph: 'jvm' });
 }
 
 const NODE_TABLES = [
@@ -327,6 +365,7 @@ const NODE_TABLES = [
   { key: 'JvmClassResolution', name: 'JvmClassResolution', columns: ['binaryName','stageId','classId','artifactId','classpathOrdinal'] },
   { key: 'JvmBinaryReference', name: 'JvmBinaryReference', columns: ['binaryName','stageId'] },
 ] as const;
+const FACT_NODE_TABLES = NODE_TABLES.slice(0, 4);
 
 const RELATION_TABLES = [
   ...([['JvmArtifact','JvmClass'],['JvmClass','JvmMethod'],['JvmClass','JvmField'],['JvmClass','JvmClass'],['JvmMethod','JvmCallSite'],['JvmCallSite','JvmMethod']] as const)
@@ -343,11 +382,14 @@ const RESOLUTION_LINK = {
   columns: ['from', 'to', 'id', 'stageId'],
 } as const;
 
-function writeFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
+function writeNodeFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
   for (const v of batch.classes) csv.object('JvmClass', v as unknown as Record<string, unknown>, NODE_TABLES[0].columns);
   for (const v of batch.methods) csv.object('JvmMethod', v as unknown as Record<string, unknown>, NODE_TABLES[1].columns);
   for (const v of batch.fields) csv.object('JvmField', v as unknown as Record<string, unknown>, NODE_TABLES[2].columns);
   for (const v of batch.callSites) csv.object('JvmCallSite', v as unknown as Record<string, unknown>, NODE_TABLES[3].columns);
+}
+
+function writeRelationFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
   for (const v of batch.relations) {
     const key = `JvmRelation-${v.sourceKind}-${v.targetKind}`;
     const spec = RELATION_TABLES.find((value) => value.key === key)!;
@@ -366,6 +408,122 @@ function writeFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
   }
 }
 
+async function generateCsvChunk(
+  workDirectory: string,
+  name: string,
+  phase: string,
+  chunkIndex: number,
+  chunkCount: number,
+  write: (csv: BulkCsvFiles) => Promise<void>,
+): Promise<BulkCsvFiles> {
+  const directory = path.join(workDirectory, name);
+  fs.rmSync(directory, { recursive: true, force: true });
+  fs.mkdirSync(directory, { recursive: true });
+  const csv = new BulkCsvFiles(directory, COPY_ROWS_PER_FILE);
+  try {
+    await withMemoryTelemetry('csv-generation', async () => {
+      await write(csv);
+      csv.close();
+    }, { graph: 'jvm', phase, chunk: chunkIndex + 1, chunks: chunkCount });
+    return csv;
+  } catch (error) {
+    csv.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function copyNodeTables(
+  csv: BulkCsvFiles,
+  tables: readonly (typeof NODE_TABLES)[number][],
+  connection: () => LbugConnectionLike,
+  copied: () => Promise<void>,
+): Promise<void> {
+  for (const table of tables) {
+    await copyNodeCsvFragments(
+      connection, csv, table.key, table.name, table.columns, copied,
+    );
+  }
+}
+
+async function copyRelationTables(
+  csv: BulkCsvFiles,
+  tables: readonly (typeof RELATION_TABLES)[number][] | readonly [typeof RESOLUTION_LINK],
+  connection: () => LbugConnectionLike,
+  copied: () => Promise<void>,
+): Promise<void> {
+  for (const relation of tables) {
+    await copyRelationCsvFragments(
+      connection, csv, relation.key, relation.table, relation.columns,
+      relation.from, relation.to, copied,
+    );
+  }
+}
+
+function removeCsvChunk(csv: BulkCsvFiles): void {
+  csv.remove();
+}
+
+function chunked<T>(values: readonly T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) chunks.push(values.slice(index, index + size));
+  return chunks;
+}
+
+function* iterableChunks<T>(values: Iterable<T>, size: number): Generator<T[]> {
+  let chunk: T[] = [];
+  for (const value of values) {
+    chunk.push(value);
+    if (chunk.length < size) continue;
+    yield chunk;
+    chunk = [];
+  }
+  if (chunk.length > 0) yield chunk;
+}
+
+function* matchingResolutions(
+  values: Iterable<JvmClassResolution>,
+  references: ReadonlyMap<string, string>,
+): Generator<JvmClassResolution> {
+  for (const value of values) if (references.has(value.binaryName)) yield value;
+}
+
+async function copyLookupNodeChunks<T>(
+  workDirectory: string,
+  name: string,
+  tableName: 'JvmClassResolution' | 'JvmBinaryReference',
+  chunks: Iterable<T[]>,
+  chunkCount: number,
+  write: (csv: BulkCsvFiles, value: T) => void,
+  connection: () => LbugConnectionLike,
+  copied: () => Promise<void>,
+): Promise<void> {
+  const table = NODE_TABLES.find((value) => value.key === tableName)!;
+  let nextChunkIndex = 0;
+  for (const values of chunks) {
+    const chunkIndex = nextChunkIndex++;
+    const csv = await generateCsvChunk(
+      workDirectory, `${name}-${chunkIndex}`, name, chunkIndex, chunkCount,
+      async (output) => { for (const value of values) write(output, value); },
+    );
+    try {
+      await withMemoryTelemetry('node-copying', () => copyNodeTables(
+          csv, [table], connection, copied,
+        ), { graph: 'jvm', phase: name, chunk: chunkIndex + 1, chunks: chunkCount });
+    } finally {
+      removeCsvChunk(csv);
+    }
+  }
+}
+
+function reportChunkProgress(stage: string, index: number, total: number, artifacts: number): void {
+  const completed = index + 1;
+  if (completed === total || completed === 1 || completed % 10 === 0) {
+    const percent = total === 0 ? 100 : Math.floor(completed / total * 100);
+    console.log(`[stage:${stage}] ${completed}/${total} artifact chunks (${percent}%); chunkArtifacts=${artifacts}`);
+  }
+}
+
 async function* readBatches(file: string): AsyncIterable<JvmArtifactBatch> {
   const lines = readline.createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity });
   for await (const line of lines) if (line) yield JSON.parse(line) as JvmArtifactBatch;
@@ -380,17 +538,4 @@ function positiveInteger(value: string | undefined, fallback: number, name: stri
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer, got ${value}`);
   return parsed;
-}
-
-function copyProgress(stage: string, total: number): () => void {
-  let completed = 0;
-  let lastLogAt = Date.now();
-  return () => {
-    completed++;
-    const now = Date.now();
-    if (completed !== total && now - lastLogAt < 15_000) return;
-    const percent = total === 0 ? 100 : Math.floor(completed / total * 100);
-    console.log(`[stage:${stage}] ${completed}/${total} COPY fragments (${percent}%)`);
-    lastLogAt = now;
-  };
 }
