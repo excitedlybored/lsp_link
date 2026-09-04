@@ -10,9 +10,9 @@ from typing import Any, Mapping
 import ladybug
 
 try:
-    from .database import resolve_lbug_path
+    from .database import open_read_only_lbug_database, resolve_lbug_path
 except ImportError:
-    from database import resolve_lbug_path
+    from database import open_read_only_lbug_database, resolve_lbug_path
 
 WRITE_TOKEN = re.compile(
     r"\b(CREATE|MERGE|DELETE|DETACH|SET|DROP|ALTER|COPY|INSTALL|ATTACH|LOAD|CHECKPOINT|EXPORT|IMPORT)\b",
@@ -56,7 +56,7 @@ def execute_opencypher(
     assert_read_only_cypher(cypher)
     cap = max(1, min(int(limit), MAX_LIMIT))
     db_path = resolve_lbug_dir(repo)
-    db = ladybug.Database(str(db_path), read_only=True)
+    db = open_read_only_lbug_database(db_path)
     conn = ladybug.Connection(db)
     try:
         params = dict(parameters) if parameters else None

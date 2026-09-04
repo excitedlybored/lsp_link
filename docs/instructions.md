@@ -547,8 +547,10 @@ the tools' normal credential stores. Relevant environment variables include:
   the value must be a positive integer. The repository-wide preparation
   deadline still takes precedence.
 - `GITNEXUS_LBUG_BUFFER_POOL_MB`: LadybugDB buffer-pool size in MiB. The
-  default is `4096` (4 GiB), and the minimum override is `64`. Large graph
-  imports can exhaust a 1 GiB pool while resolving relationship endpoints.
+  default is `4096` (4 GiB), and the minimum override is `64`. It applies to
+  both graph publication and read-only analyzer/extractor queries. Large graph
+  imports or joins can exhaust a 1 GiB pool while resolving relationship
+  endpoints.
 - `GITNEXUS_LBUG_ROTATE_BATCHES`: positive number of committed COPY fragments
   between staging-connection rotations.
 - `GITNEXUS_LBUG_COPY_ROWS`: positive number of rows per JVM graph COPY

@@ -7,7 +7,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import ladybug
 
 try:
-    from .database import resolve_lbug_path, schema_family, table_catalog
+    from .database import open_read_only_lbug_database, resolve_lbug_path, schema_family, table_catalog
     from .models import (
         BaseNode, ClassNode, InterfaceNode, MethodNode, FunctionNode, RouteNode,
         ProcessNode, CommunityNode, FileNode, FolderNode, CodeRelation, ProcessStep,
@@ -21,7 +21,7 @@ try:
         LspSymbolNode,
     )
 except ImportError:  # Direct execution: python analyzer/lbug_client.py
-    from database import resolve_lbug_path, schema_family, table_catalog
+    from database import open_read_only_lbug_database, resolve_lbug_path, schema_family, table_catalog
     from models import (
         BaseNode, ClassNode, InterfaceNode, MethodNode, FunctionNode, RouteNode,
         ProcessNode, CommunityNode, FileNode, FolderNode, CodeRelation, ProcessStep,
@@ -56,7 +56,7 @@ class LadybugClient:
         self.project_path = (
             self.db_path.parent.parent if self.db_path.name == "lbug" else self.db_path.parent
         )
-        self.db = ladybug.Database(str(self.db_path), read_only=True)
+        self.db = open_read_only_lbug_database(self.db_path)
         self.conn = ladybug.Connection(self.db)
         self.tables = table_catalog(self.conn)
         self.schema = schema_family(self.tables)

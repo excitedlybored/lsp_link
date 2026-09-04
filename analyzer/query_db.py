@@ -13,13 +13,13 @@ import ladybug
 from tabulate import tabulate
 
 try:
-    from .database import resolve_lbug_path, table_catalog
+    from .database import open_read_only_lbug_database, resolve_lbug_path, table_catalog
 except ImportError:
-    from database import resolve_lbug_path, table_catalog
+    from database import open_read_only_lbug_database, resolve_lbug_path, table_catalog
 
 def query_lbug(project_path: str, mode: str = "summary", arg: str = None):
     db_path = resolve_lbug_path(project_path)
-    db = ladybug.Database(str(db_path), read_only=True)
+    db = open_read_only_lbug_database(db_path)
     conn = ladybug.Connection(db)
     tables_by_name = table_catalog(conn)
     

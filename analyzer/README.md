@@ -39,6 +39,15 @@ npm run lbug:read -- /path/to/repository/.gitnexus/lsp-lbug
 npm run extract -- /path/to/repository/.gitnexus/lsp-lbug --extractor temporal
 ```
 
+The analyzer uses a 4 GiB Ladybug buffer pool by default, matching indexing.
+On a memory-constrained host, or to grant a larger pool to a large extraction,
+set `GITNEXUS_LBUG_BUFFER_POOL_MB` for the command (minimum `64`):
+
+```bash
+GITNEXUS_LBUG_BUFFER_POOL_MB=4096 npm run extract -- \
+  /path/to/repository/.gitnexus/lsp-lbug --extractor temporal
+```
+
 The typed client exposes exact symbol kinds and ranges, individual
 `LspCallSite` observations, occurrence mappings, capability coverage, and the
 separate JVM artifact-enrichment model, including typed `LspJvmBinding`

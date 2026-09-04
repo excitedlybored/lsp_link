@@ -6,6 +6,39 @@ import os
 from pathlib import Path
 from typing import Any
 
+import ladybug
+
+
+DEFAULT_LBUG_BUFFER_POOL_MIB = 4_096
+
+
+def open_read_only_lbug_database(database_path: str | Path) -> ladybug.Database:
+    """Open an indexed graph with the same bounded pool policy as the writer.
+
+    Ladybug's implicit reader pool is intentionally small.  That is suitable
+    for interactive metadata queries, but not for an extractor joining a large
+    compact JVM call graph.  Keep the published database read-only while using
+    the indexer's four-GiB default; an operator may lower or raise it for the
+    host through ``GITNEXUS_LBUG_BUFFER_POOL_MB``.
+    """
+
+    configured = os.environ.get("GITNEXUS_LBUG_BUFFER_POOL_MB")
+    try:
+        pool_mib = DEFAULT_LBUG_BUFFER_POOL_MIB if configured is None else int(configured)
+    except ValueError as error:
+        raise ValueError(
+            "GITNEXUS_LBUG_BUFFER_POOL_MB must be an integer of at least 64"
+        ) from error
+    if pool_mib < 64:
+        raise ValueError(
+            "GITNEXUS_LBUG_BUFFER_POOL_MB must be an integer of at least 64"
+        )
+    return ladybug.Database(
+        str(database_path),
+        buffer_pool_size=pool_mib * 1024 * 1024,
+        read_only=True,
+    )
+
 
 def resolve_lbug_path(value: str | os.PathLike[str] | None = None) -> Path:
     """Resolve a direct Ladybug database or an indexed project directory.
