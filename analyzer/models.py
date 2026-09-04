@@ -322,6 +322,8 @@ class JvmArtifactEnrichmentRunNode:
     completed_at: Optional[str]
     provider: str
     provider_version: Optional[str]
+    graph_schema_version: int
+    projection: str
     classpath_providers: List[str]
     classpath_resolution_json: str
     classpath_error_count: int

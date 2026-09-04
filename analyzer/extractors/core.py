@@ -25,6 +25,7 @@ class EvidenceQuery:
     category: str
     cypher: str
     parameters: Mapping[str, Any] = field(default_factory=dict)
+    projections: tuple[str, ...] = ("legacy", "compact")
 
 
 @dataclass(frozen=True)
@@ -129,9 +130,15 @@ class ExtractionPipeline:
                 }
                 findings: dict[str, Any] = {}
             else:
+                artifact_runs = client.get_jvm_enrichment_runs()
+                projection = next((
+                    getattr(run, "projection", "compact" if run.provider == "sootup" else "legacy")
+                    for run in artifact_runs if not index_health.get("analysisRuns")
+                    or run.lsp_run_id == index_health["analysisRuns"][0]["id"]
+                ), "legacy")
                 results = {
                     query.id: self._execute(client, query)
-                    for query in extractor.queries
+                    for query in extractor.queries if projection in query.projections
                 }
                 assembler = self._load_assembler(extractor)
                 summary, findings = assembler(results)
@@ -202,6 +209,36 @@ class ExtractionPipeline:
             )
             if result.has_next():
                 present.add(role)
+                continue
+            result = client.conn.execute(
+                "MATCH (type:JvmClass) WHERE type.binaryName = $binaryName "
+                "RETURN type.id LIMIT 1",
+                parameters={"binaryName": binary_name},
+            )
+            if result.has_next():
+                present.add(role)
+                continue
+            try:
+                result = client.conn.execute(
+                    "MATCH (type:JvmClass) "
+                    "WHERE list_contains(type.annotations, $binaryName) "
+                    "RETURN type.id LIMIT 1",
+                    parameters={"binaryName": binary_name},
+                )
+                if result.has_next():
+                    present.add(role)
+                    continue
+                result = client.conn.execute(
+                    "MATCH (method:JvmMethod) "
+                    "WHERE list_contains(method.annotations, $binaryName) "
+                    "RETURN method.id LIMIT 1",
+                    parameters={"binaryName": binary_name},
+                )
+                if result.has_next():
+                    present.add(role)
+            except RuntimeError:
+                # Legacy databases can predate the structured annotation columns.
+                continue
         return present
 
     @staticmethod
@@ -272,6 +309,8 @@ class ExtractionPipeline:
                 "id": run.id,
                 "status": run.status,
                 "provider": run.provider,
+                "graphSchemaVersion": getattr(run, "graph_schema_version", 1),
+                "projection": getattr(run, "projection", "legacy"),
                 "artifactCount": run.artifact_count,
                 "classCount": run.class_count,
                 "classpathErrorCount": run.classpath_error_count,
@@ -532,7 +571,10 @@ def load_extractor(extractor_id: str) -> SemanticExtractor:
             parameters=_resolve_query_parameters(
                 entry.get("parameters", {}), semantic_types, extractor_id
             ),
+            projections=tuple(entry.get("projections", ("legacy", "compact"))),
         )
+        if not query.projections or not set(query.projections).issubset({"legacy", "compact"}):
+            raise ValueError(f"Evidence query {query.id!r} has invalid projections")
         assert_portable_evidence_query(query)
         queries.append(query)
     return SemanticExtractor(

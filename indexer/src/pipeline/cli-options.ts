@@ -15,11 +15,17 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   const crawlOverride = command === 'crawl';
   if (args[0] === 'build' || args[0] === 'build-index' || args[0] === 'index' || args[0] === 'crawl') args.shift();
   const workspace = path.resolve(args.shift() ?? '.');
-  let output = path.join(workspace, '.gitnexus', 'lsp-lbug');
+  const configuredAnalyzer = config?.artifacts.analyzer ?? 'asm';
+  let output = configuredAnalyzer === 'sootup'
+    ? path.join(workspace, '.gitnexus', 'experiments', 'sootup', 'lsp-lbug')
+    : path.join(workspace, '.gitnexus', 'lsp-lbug');
   let concurrency = config?.crawl.concurrency ?? 4;
   let jdtProcesses = config?.crawl.jdtProcesses ?? 1;
   let artifactMaxClasses: number | undefined = config?.artifacts.maxClasses;
   let artifactConcurrency = config?.artifacts.concurrency ?? 4;
+  const artifactAnalyzer = config?.artifacts.analyzer ?? 'asm';
+  const artifactProjection = config?.artifacts.projection ?? 'compact';
+  const artifactExternalBodies = config?.artifacts.externalBodies ?? 'none';
   let fetchArtifactSources = config?.artifacts.fetchSources ?? true;
   let checkpointDirectory: string | undefined = config?.checkpoints.directory;
   let resume = config?.crawl.resume ?? true;
@@ -81,6 +87,12 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
   if (artifactConcurrency > 16) {
     throw new Error(`--artifact-concurrency must be at most 16, got ${artifactConcurrency}`);
   }
+  const productionOutput = path.join(workspace, '.gitnexus', 'lsp-lbug');
+  if (artifactAnalyzer === 'sootup' && path.resolve(output) === path.resolve(productionOutput)) {
+    throw new Error(
+      `Experimental analyzers cannot publish to the production ASM database path: ${productionOutput}`,
+    );
+  }
   return {
     workspace,
     output,
@@ -88,6 +100,12 @@ export function parseLspKnowledgeGraphBuildOptions(argv: string[]): LspKnowledge
     jdtProcesses,
     artifactMaxClasses,
     artifactConcurrency,
+    artifactAnalyzer,
+    artifactProjection,
+    artifactExternalBodies,
+    configurationSources: config?.configuration.sources ?? [],
+    activeProfiles: config?.configuration.activeProfiles ?? [],
+    helmValuesFiles: config?.configuration.helmValuesFiles ?? [],
     fetchArtifactSources,
     artifactManifestPaths,
     checkpointDirectory: checkpointDirectory ?? `${output}.checkpoints`,

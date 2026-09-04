@@ -1,0 +1,1 @@
+"""Kafka semantic extractor."""

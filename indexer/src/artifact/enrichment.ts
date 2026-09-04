@@ -154,7 +154,8 @@ function ensureMethod(
   if (existing) return existing;
   const method: JvmMethod = {
     id, stageId, classId: clazz.id, owner: clazz.binaryName, name, descriptor,
-    hasCode: false, isExternalPlaceholder: placeholder, annotations: [], codeOrigin: clazz.codeOrigin,
+    hasCode: false, isExternalPlaceholder: placeholder, annotations: [], annotationValuesJson: '{}',
+    codeOrigin: clazz.codeOrigin,
   };
   batch.methods.push(method);
   batch.relations.push(createJvmRelation(

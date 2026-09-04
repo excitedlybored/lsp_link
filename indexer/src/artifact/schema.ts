@@ -9,7 +9,8 @@ const LSP_JVM_BINDING_ENDPOINTS = LSP_JVM_BINDING_SOURCES.flatMap((source) => [
 export const JVM_ARTIFACT_SCHEMA_QUERIES = [
   `CREATE NODE TABLE JvmArtifactEnrichmentRun (
     id STRING, lspRunId STRING, status STRING, startedAt STRING, completedAt STRING,
-    provider STRING, providerVersion STRING, classpathProviders STRING[] DEFAULT [],
+    provider STRING, providerVersion STRING, graphSchemaVersion INT32, projection STRING,
+    classpathProviders STRING[] DEFAULT [],
     classpathResolutionJson STRING, classpathErrorCount INT64, artifactCount INT64, classCount INT64,
     methodCount INT64, fieldCount INT64, callSiteCount INT64, errorCount INT64,
     truncated BOOLEAN, PRIMARY KEY (id))`,
@@ -31,19 +32,33 @@ export const JVM_ARTIFACT_SCHEMA_QUERIES = [
     packageName STRING, simpleName STRING, kind STRING, access STRING,
     superName STRING, interfaces STRING[] DEFAULT [], sourceEntry STRING, isSeed BOOLEAN,
     seedUris STRING[] DEFAULT [], wasDisassembled BOOLEAN, annotations STRING[] DEFAULT [],
-    codeOrigin STRING, PRIMARY KEY (id))`,
+    annotationValuesJson STRING, codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmMethod (
     id STRING, stageId STRING, classId STRING, owner STRING, name STRING,
     descriptor STRING, declaration STRING, access STRING, hasCode BOOLEAN,
-    isExternalPlaceholder BOOLEAN, annotations STRING[] DEFAULT [], codeOrigin STRING, PRIMARY KEY (id))`,
+    isExternalPlaceholder BOOLEAN, annotations STRING[] DEFAULT [], annotationValuesJson STRING,
+    codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmField (
     id STRING, stageId STRING, classId STRING, owner STRING, name STRING,
     descriptor STRING, declaration STRING, access STRING, annotations STRING[] DEFAULT [],
+    annotationValuesJson STRING,
     codeOrigin STRING, PRIMARY KEY (id))`,
   `CREATE NODE TABLE JvmCallSite (
     id STRING, stageId STRING, callerMethodId STRING, bytecodeOffset INT64,
     opcode STRING, targetOwner STRING, targetName STRING,
     targetDescriptor STRING, status STRING, codeOrigin STRING, PRIMARY KEY (id))`,
+  `CREATE NODE TABLE JvmMethodReference (
+    signature STRING, stageId STRING, owner STRING, name STRING, descriptor STRING,
+    status STRING, PRIMARY KEY (signature))`,
+  `CREATE NODE TABLE JvmTypeReference (
+    binaryName STRING, stageId STRING, status STRING, PRIMARY KEY (binaryName))`,
+  `CREATE REL TABLE JvmCompactCall (
+    FROM JvmMethod TO JvmMethodReference,
+    id STRING, stageId STRING, bytecodeOffset INT64, opcode STRING,
+    dispatchKind STRING, confidence DOUBLE, evidence STRING, ordinal INT32)`,
+  `CREATE REL TABLE JvmCompactTypeReference (
+    FROM JvmClass TO JvmTypeReference,
+    id STRING, stageId STRING, kind STRING, confidence DOUBLE, ordinal INT32)`,
   `CREATE REL TABLE JvmRelation (
     FROM JvmArtifactEnrichmentRun TO JvmArtifact,
     FROM JvmArtifact TO JvmClass,

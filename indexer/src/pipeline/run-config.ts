@@ -5,7 +5,7 @@ import type { BazelTargetScope } from '../../../lsp_server/public-api.js';
 import { CRAWL_PROFILES, type CrawlProfile } from '../ingest/crawl-profile.js';
 
 export interface LspLinkRunConfig {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   name: string;
   path: string;
   semanticHash: string;
@@ -23,6 +23,12 @@ export interface LspLinkRunConfig {
   };
   artifacts: {
     concurrency: number; maxClasses?: number; fetchSources: boolean; classpathManifests: string[];
+    analyzer: 'asm' | 'sootup'; projection: 'legacy' | 'compact'; externalBodies: 'none' | 'all';
+  };
+  configuration: {
+    sources: Array<'spring' | 'kubernetes' | 'helm'>;
+    activeProfiles: string[];
+    helmValuesFiles: string[];
   };
   quality: { failOnFailedBuildRoot: boolean };
   checkpoints: { directory?: string };
@@ -45,8 +51,10 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   try { raw = JSON.parse(fs.readFileSync(resolved, 'utf8')); }
   catch (error) { throw new Error(`Cannot read JSON run config ${resolved}: ${message(error)}`); }
   const root = object(raw, 'config');
-  keys(root, ['schemaVersion', 'name', 'bazel', 'crawl', 'artifacts', 'quality', 'checkpoints'], 'config');
-  if (root.schemaVersion !== 1) throw new Error(`config.schemaVersion must be 1, got ${String(root.schemaVersion)}`);
+  keys(root, ['schemaVersion', 'name', 'bazel', 'crawl', 'artifacts', 'configuration', 'quality', 'checkpoints'], 'config');
+  if (root.schemaVersion !== 1 && root.schemaVersion !== 2) {
+    throw new Error(`config.schemaVersion must be 1 or 2, got ${String(root.schemaVersion)}`);
+  }
   const directory = path.dirname(resolved);
   const bazel = object(root.bazel, 'config.bazel');
   keys(bazel, ['buildModelMode', 'buildMode', 'scope', 'preparation'], 'config.bazel');
@@ -59,7 +67,9 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   const crawl = object(root.crawl === undefined ? {} : root.crawl, 'config.crawl');
   keys(crawl, ['profile', 'javaSemantics', 'concurrency', 'jdtProcesses', 'resume'], 'config.crawl');
   const artifacts = object(root.artifacts === undefined ? {} : root.artifacts, 'config.artifacts');
-  keys(artifacts, ['concurrency', 'maxClasses', 'fetchSources', 'classpathManifests'], 'config.artifacts');
+  keys(artifacts, ['concurrency', 'maxClasses', 'fetchSources', 'classpathManifests', 'analyzer', 'projection', 'externalBodies'], 'config.artifacts');
+  const configuration = object(root.configuration === undefined ? {} : root.configuration, 'config.configuration');
+  keys(configuration, ['sources', 'activeProfiles', 'helmValuesFiles'], 'config.configuration');
   const quality = object(root.quality === undefined ? {} : root.quality, 'config.quality');
   keys(quality, ['failOnFailedBuildRoot'], 'config.quality');
   const checkpoints = object(root.checkpoints === undefined ? {} : root.checkpoints, 'config.checkpoints');
@@ -70,18 +80,37 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
   const profile = enumeration(crawl.profile === undefined ? 'exhaustive' : crawl.profile, CRAWL_PROFILES, 'config.crawl.profile');
   const javaSemantics = enumeration(crawl.javaSemantics === undefined ? 'batch' : crawl.javaSemantics,
     ['batch', 'lsp'], 'config.crawl.javaSemantics');
+  const analyzer = enumeration(artifacts.analyzer === undefined ? 'asm' : artifacts.analyzer,
+    ['asm', 'sootup'], 'config.artifacts.analyzer');
+  const projection = enumeration(
+    artifacts.projection === undefined
+      ? (root.schemaVersion === 2 ? 'compact' : 'legacy')
+      : artifacts.projection,
+    ['legacy', 'compact'], 'config.artifacts.projection');
+  const externalBodies = enumeration(artifacts.externalBodies === undefined ? 'none' : artifacts.externalBodies,
+    ['none', 'all'], 'config.artifacts.externalBodies');
+  const configurationSources = enumerations(
+    configuration.sources === undefined ? [] : configuration.sources,
+    ['spring', 'kubernetes', 'helm'], 'config.configuration.sources',
+  );
+  const activeProfiles = strings(configuration.activeProfiles === undefined ? [] : configuration.activeProfiles,
+    'config.configuration.activeProfiles');
+  const helmValuesFiles = strings(configuration.helmValuesFiles === undefined ? [] : configuration.helmValuesFiles,
+    'config.configuration.helmValuesFiles').map((value) => path.resolve(directory, value));
   const semantic = {
     schemaVersion: 1, name: string(root.name === undefined ? 'default' : root.name, 'config.name'),
     bazel: { buildModelMode, scope }, profile, javaSemantics,
     artifacts: {
+      analyzer, projection, externalBodies,
       maxClasses: optionalPositive(artifacts.maxClasses, 'config.artifacts.maxClasses'),
       fetchSources: boolean(artifacts.fetchSources === undefined ? true : artifacts.fetchSources, 'config.artifacts.fetchSources'),
       classpathManifests: strings(artifacts.classpathManifests === undefined ? [] : artifacts.classpathManifests, 'config.artifacts.classpathManifests')
         .map((value) => path.resolve(directory, value)),
     },
+    configuration: { sources: configurationSources, activeProfiles, helmValuesFiles },
   };
   return {
-    schemaVersion: 1, name: semantic.name, path: resolved,
+    schemaVersion: root.schemaVersion, name: semantic.name, path: resolved,
     semanticHash: createHash('sha256').update(JSON.stringify(semantic)).digest('hex'),
     bazel: {
       buildModelMode,
@@ -99,11 +128,13 @@ export function loadRunConfig(configPath: string): LspLinkRunConfig {
       resume: boolean(crawl.resume === undefined ? true : crawl.resume, 'config.crawl.resume'),
     },
     artifacts: {
+      analyzer, projection, externalBodies,
       concurrency: bounded(artifacts.concurrency === undefined ? 4 : artifacts.concurrency, 1, 16, 'config.artifacts.concurrency'),
       maxClasses: semantic.artifacts.maxClasses,
       fetchSources: semantic.artifacts.fetchSources,
       classpathManifests: semantic.artifacts.classpathManifests,
     },
+    configuration: { sources: configurationSources, activeProfiles, helmValuesFiles },
     quality: { failOnFailedBuildRoot: boolean(quality.failOnFailedBuildRoot === undefined ? true : quality.failOnFailedBuildRoot, 'config.quality.failOnFailedBuildRoot') },
     checkpoints: {
       directory: checkpoints.directory === undefined || checkpoints.directory === null
@@ -172,5 +203,10 @@ function bounded(value: unknown, min: number, max: number, name: string): number
 function enumeration<T extends string>(value: unknown, allowed: readonly T[], name: string): T {
   if (typeof value !== 'string' || !allowed.includes(value as T)) throw new Error(`${name} must be one of ${allowed.join(', ')}`);
   return value as T;
+}
+function enumerations<T extends string>(value: unknown, allowed: readonly T[], name: string): T[] {
+  if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
+  const result = value.map((item, index) => enumeration(item, allowed, `${name}[${index}]`));
+  return [...new Set(result)];
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }

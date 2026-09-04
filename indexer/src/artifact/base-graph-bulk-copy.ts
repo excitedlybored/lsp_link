@@ -108,6 +108,14 @@ export async function bulkCopyBaseGraph(
     node('RepositoryProviderRun', REPOSITORY_PROVIDER_COLUMNS, inventory.providers),
     node('RepositoryDocument', REPOSITORY_DOCUMENT_COLUMNS, inventory.documents),
     node('RepositoryDeclaration', REPOSITORY_DECLARATION_COLUMNS, inventory.declarations),
+    node('ConfigurationKey', CONFIGURATION_KEY_COLUMNS, inventory.configurationKeys ?? []),
+    node('ConfigurationValue', CONFIGURATION_VALUE_COLUMNS, (inventory.configurationValues ?? []).map((value) => ({
+      ...value, resolvedValue: value.resolvedValue ?? null, profileName: value.profile ?? null,
+    }))),
+    node('ConfigurationReference', CONFIGURATION_REFERENCE_COLUMNS, inventory.configurationReferences ?? []),
+    node('DeploymentUnit', DEPLOYMENT_UNIT_COLUMNS, (inventory.deploymentUnits ?? []).map((value) => ({
+      ...value, namespace: value.namespace ?? null,
+    }))),
   ];
   const relations = [
     ...groupLspRelations(lsp.relations),
@@ -275,6 +283,26 @@ function repositoryRelations(batch: RepositoryInventoryBatch): RelationSpec[] {
       from: 'RepositoryDocument', to: 'RepositoryDeclaration',
       row: { from: value.documentId, to: value.id, kind: 'DECLARES' },
     })),
+    ...(batch.configurationValues ?? []).map((value) => ({
+      from: 'RepositoryDocument', to: 'ConfigurationValue',
+      row: { from: value.documentId, to: value.id, kind: 'HAS_CONFIGURATION_VALUE' },
+    })),
+    ...(batch.configurationValues ?? []).map((value) => ({
+      from: 'ConfigurationValue', to: 'ConfigurationKey',
+      row: { from: value.id, to: value.keyId, kind: 'ASSIGNS_CONFIGURATION_KEY' },
+    })),
+    ...(batch.configurationReferences ?? []).map((value) => ({
+      from: 'ConfigurationValue', to: 'ConfigurationReference',
+      row: { from: value.valueId, to: value.id, kind: 'HAS_CONFIGURATION_REFERENCE' },
+    })),
+    ...(batch.configurationReferences ?? []).map((value) => ({
+      from: 'ConfigurationReference', to: 'ConfigurationKey',
+      row: { from: value.id, to: value.targetKeyId, kind: 'REFERENCES_CONFIGURATION_KEY' },
+    })),
+    ...(batch.deploymentUnits ?? []).map((value) => ({
+      from: 'RepositoryDocument', to: 'DeploymentUnit',
+      row: { from: value.documentId, to: value.id, kind: 'DECLARES_DEPLOYMENT' },
+    })),
   ]);
 }
 
@@ -358,4 +386,8 @@ const REPOSITORY_RUN_COLUMNS = ['id','workspacePath','status','documentCount','d
 const REPOSITORY_PROVIDER_COLUMNS = ['id','runId','providerId','providerVersion','authority','status','discoveredCount','indexedCount','skippedCount','errorCount','errorsJson'];
 const REPOSITORY_DOCUMENT_COLUMNS = ['id','runId','path','relativePath','languageId','kind','contentHash','byteSize','lineCount','codeOrigin','providerId','providerVersion','authority'];
 const REPOSITORY_DECLARATION_COLUMNS = ['id','runId','documentId','kind','name','startLine','startCharacter','endLine','endCharacter','providerId','providerVersion','authority','codeOrigin'];
+const CONFIGURATION_KEY_COLUMNS = ['id','name'];
+const CONFIGURATION_VALUE_COLUMNS = ['id','documentId','keyId','key','rawValue','resolvedValue','status','sourceKind','scope','profileName','precedence','confidence','startLine','startCharacter'];
+const CONFIGURATION_REFERENCE_COLUMNS = ['id','valueId','targetKeyId','targetKey','kind','status'];
+const DEPLOYMENT_UNIT_COLUMNS = ['id','documentId','kind','name','namespace'];
 const REPOSITORY_RELATION_COLUMNS = ['from','to','kind'];

@@ -77,6 +77,69 @@ test('imports artifact CSV in bounded chunks and removes every chunk immediately
     'ASM spools remain the resume authority until final graph publication');
 });
 
+test('publishes compact JVM calls and hierarchy without legacy call-site nodes', async (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'lsp-compact-artifact-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  const databasePath = path.join(fixture, 'compact.lbug');
+  const handle = openLspLadybugDatabase(databasePath, lbug);
+  t.after(() => handle.close());
+  await handle.repository.initializeSchema();
+  await handle.artifactRepository.initializeSchema();
+  const run = {
+    id: 'compact-stage', lspRunId: 'lsp-run', status: 'complete', startedAt: new Date(0).toISOString(),
+    completedAt: new Date(1).toISOString(), provider: 'sootup', providerVersion: '2.0.0',
+    graphSchemaVersion: 2, projection: 'compact', classpathProviders: ['fixture'],
+    classpathResolutionJson: '[]', classpathErrorCount: 0, artifactCount: 1, classCount: 1,
+    methodCount: 1, fieldCount: 0, callSiteCount: 1, errorCount: 0, truncated: false,
+  };
+  const artifact = {
+    id: 'artifact', stageId: run.id, buildRootIds: ['root'], classpathProviders: ['fixture'],
+    classpathScopes: ['compile'], modulePath: false, classpathEntryPath: '/fixture.jar',
+    sourceOrigin: 'unavailable', associationStatus: 'binary_only', classCount: 1, methodCount: 1,
+    fieldCount: 0, callSiteCount: 1, contentHash: 'hash', classpathOrdinal: 0,
+    codeOrigin: 'first_party_artifact', processingStatus: 'complete', errorCount: 0,
+    completedAt: new Date(1).toISOString(),
+  };
+  const batch = {
+    runs: [], artifacts: [], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
+    classes: [{ id: 'class', stageId: run.id, artifactId: artifact.id, binaryName: 'example.Source',
+      packageName: 'example', simpleName: 'Source', kind: 'class', interfaces: ['example.Contract'],
+      seedUris: [], annotations: [], annotationValuesJson: '{}', isSeed: false,
+      wasDisassembled: true, codeOrigin: 'first_party_artifact' }],
+    methods: [{ id: 'method', stageId: run.id, classId: 'class', owner: 'example.Source',
+      name: 'invoke', descriptor: '()V', hasCode: true, isExternalPlaceholder: false,
+      annotations: [], annotationValuesJson: '{}', codeOrigin: 'first_party_artifact' }],
+    fields: [], callSites: [],
+    methodReferences: [{ signature: 'external.Api#send()V', stageId: run.id,
+      owner: 'external.Api', name: 'send', descriptor: '()V', status: 'external' }],
+    compactCalls: [{ id: 'call', stageId: run.id, callerMethodId: 'method',
+      targetSignature: 'external.Api#send()V', bytecodeOffset: 0, opcode: 'invokevirtual',
+      dispatchKind: 'virtual', confidence: 0.9, evidence: 'fixture', ordinal: 0 }],
+    typeReferences: [{ binaryName: 'example.Contract', stageId: run.id, status: 'resolved' }],
+    compactTypeReferences: [{ id: 'interface', stageId: run.id, sourceClassId: 'class',
+      targetBinaryName: 'example.Contract', kind: 'INTERFACE', confidence: 1, ordinal: 0 }],
+    relations: [{ id: 'declares', sourceKind: 'JvmClass', sourceId: 'class',
+      targetKind: 'JvmMethod', targetId: 'method', kind: 'DECLARES_METHOD', stageId: run.id,
+      status: 'observed', ordinal: 0 }], bindings: [],
+  };
+  const spool = path.join(fixture, 'artifact.complete.ndjson');
+  fs.writeFileSync(spool, `${JSON.stringify(batch)}\n`);
+  fs.writeFileSync(`${spool}.artifact.json`, JSON.stringify(artifact));
+  await bulkCopyArtifactGraph(
+    handle.artifactRepository.connectionForBulkCopy(),
+    { ...batch, classes: [], methods: [], methodReferences: [], compactCalls: [],
+      typeReferences: [], compactTypeReferences: [], relations: [] },
+    { ...batch, classes: [], methods: [], methodReferences: [], compactCalls: [],
+      typeReferences: [], compactTypeReferences: [], relations: [] },
+    [spool], run, path.join(fixture, 'copy-work'),
+  );
+  const connection = handle.artifactRepository.connectionForBulkCopy();
+  assert.equal(await scalarCount(connection, 'MATCH ()-[r:JvmCompactCall]->() RETURN count(r) AS count'), 1);
+  assert.equal(await scalarCount(connection, 'MATCH ()-[r:JvmCompactTypeReference]->() RETURN count(r) AS count'), 1);
+  assert.equal(await scalarCount(connection, 'MATCH (n:JvmCallSite) RETURN count(n) AS count'), 0);
+  assert.equal(await scalarCount(connection, 'MATCH (n:JvmClassResolution) RETURN count(n) AS count'), 0);
+});
+
 test('negotiates one persistent ASM worker without javap', async () => {
   const worker = new AsmArtifactWorker(2);
   const info = await worker.start();
@@ -824,6 +887,14 @@ class RecordingConnection {
   async query(cypher) { this.queries.push(cypher); return { close() {} }; }
   async prepare() { return { isSuccess: () => true }; }
   async execute() { return { close() {} }; }
+}
+
+async function scalarCount(connection, cypher) {
+  const result = await connection.query(cypher);
+  const single = Array.isArray(result) ? result[0] : result;
+  const rows = await single.getAll();
+  await single.close?.();
+  return Number(rows[0]?.count ?? 0);
 }
 
 function jdkTool(name) {

@@ -9,8 +9,10 @@ export interface JvmArtifactEnrichmentRun {
   status: JvmArtifactStageStatus;
   startedAt: string;
   completedAt?: string;
-  provider: 'asm';
+  provider: 'asm' | 'sootup';
   providerVersion?: string;
+  graphSchemaVersion: number;
+  projection: 'legacy' | 'compact';
   classpathProviders: string[];
   classpathResolutionJson: string;
   classpathErrorCount: number;
@@ -88,6 +90,7 @@ export interface JvmClass {
   seedUris: string[];
   wasDisassembled: boolean;
   annotations: string[];
+  annotationValuesJson: string;
   codeOrigin: CodeOrigin;
 }
 
@@ -103,6 +106,7 @@ export interface JvmMethod {
   hasCode: boolean;
   isExternalPlaceholder: boolean;
   annotations: string[];
+  annotationValuesJson: string;
   codeOrigin: CodeOrigin;
 }
 
@@ -116,6 +120,7 @@ export interface JvmField {
   declaration?: string;
   access?: string;
   annotations: string[];
+  annotationValuesJson: string;
   codeOrigin: CodeOrigin;
 }
 
@@ -132,9 +137,48 @@ export interface JvmCallSite {
   codeOrigin: CodeOrigin;
 }
 
+export interface JvmMethodReference {
+  signature: string;
+  stageId: string;
+  owner: string;
+  name: string;
+  descriptor: string;
+  status: 'resolved' | 'external' | 'unresolved';
+}
+
+export interface JvmCompactCall {
+  id: string;
+  stageId: string;
+  callerMethodId: string;
+  targetSignature: string;
+  bytecodeOffset: number;
+  opcode: string;
+  dispatchKind: 'static' | 'special' | 'virtual' | 'interface' | 'dynamic' | 'unknown';
+  confidence: number;
+  evidence: string;
+  ordinal: number;
+}
+
+export interface JvmTypeReference {
+  binaryName: string;
+  stageId: string;
+  status: 'resolved' | 'external' | 'unresolved';
+}
+
+export interface JvmCompactTypeReference {
+  id: string;
+  stageId: string;
+  sourceClassId: string;
+  targetBinaryName: string;
+  kind: 'SUPERCLASS' | 'INTERFACE' | 'SIGNATURE' | 'ANNOTATION';
+  confidence: number;
+  ordinal: number;
+}
+
 export type JvmEntityKind =
   | 'JvmArtifactEnrichmentRun' | 'JvmArtifact' | 'JvmClassResolution' | 'JvmClass'
-  | 'JvmBinaryReference' | 'JvmMethod' | 'JvmField' | 'JvmCallSite';
+  | 'JvmBinaryReference' | 'JvmMethod' | 'JvmField' | 'JvmCallSite'
+  | 'JvmMethodReference' | 'JvmTypeReference';
 
 export interface JvmRelation {
   id: string;
@@ -175,6 +219,10 @@ export interface JvmArtifactBatch {
   methods: JvmMethod[];
   fields: JvmField[];
   callSites: JvmCallSite[];
+  methodReferences: JvmMethodReference[];
+  compactCalls: JvmCompactCall[];
+  typeReferences: JvmTypeReference[];
+  compactTypeReferences: JvmCompactTypeReference[];
   relations: JvmRelation[];
   bindings: LspJvmBinding[];
 }
@@ -187,7 +235,8 @@ export interface JvmArtifactEnrichmentSummary {
 export function emptyJvmArtifactBatch(): JvmArtifactBatch {
   return {
     runs: [], artifacts: [], resolutions: [], binaryReferences: [], binaryReferenceRelations: [],
-    classes: [], methods: [], fields: [], callSites: [],
+    classes: [], methods: [], fields: [], callSites: [], methodReferences: [], compactCalls: [],
+    typeReferences: [], compactTypeReferences: [],
     relations: [], bindings: [],
   };
 }

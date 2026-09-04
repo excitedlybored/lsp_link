@@ -402,19 +402,38 @@ class LadybugClient:
     def get_jvm_enrichment_runs(self) -> List[JvmArtifactEnrichmentRunNode]:
         if "JvmArtifactEnrichmentRun" not in self.tables:
             return []
-        rows = self.query(
-            "MATCH (n:JvmArtifactEnrichmentRun) RETURN n.id, n.lspRunId, n.status, n.startedAt, "
-            "n.completedAt, n.provider, n.providerVersion, n.classpathProviders, "
-            "n.classpathResolutionJson, n.classpathErrorCount, n.artifactCount, n.classCount, "
-            "n.methodCount, n.fieldCount, n.callSiteCount, n.errorCount, n.truncated"
-        )
+        try:
+            rows = self.query(
+                "MATCH (n:JvmArtifactEnrichmentRun) RETURN n.id, n.lspRunId, n.status, n.startedAt, "
+                "n.completedAt, n.provider, n.providerVersion, n.graphSchemaVersion, n.projection, "
+                "n.classpathProviders, n.classpathResolutionJson, n.classpathErrorCount, "
+                "n.artifactCount, n.classCount, n.methodCount, n.fieldCount, n.callSiteCount, "
+                "n.errorCount, n.truncated"
+            )
+            modern = True
+        except RuntimeError:
+            rows = self.query(
+                "MATCH (n:JvmArtifactEnrichmentRun) RETURN n.id, n.lspRunId, n.status, n.startedAt, "
+                "n.completedAt, n.provider, n.providerVersion, n.classpathProviders, "
+                "n.classpathResolutionJson, n.classpathErrorCount, n.artifactCount, n.classCount, "
+                "n.methodCount, n.fieldCount, n.callSiteCount, n.errorCount, n.truncated"
+            )
+            modern = False
         return [JvmArtifactEnrichmentRunNode(
             id=r[0], lsp_run_id=r[1], status=r[2], started_at=r[3], completed_at=r[4],
-            provider=r[5], provider_version=r[6], classpath_providers=list(r[7] or []),
-            classpath_resolution_json=r[8], classpath_error_count=int(r[9] or 0),
-            artifact_count=int(r[10] or 0), class_count=int(r[11] or 0),
-            method_count=int(r[12] or 0), field_count=int(r[13] or 0),
-            call_site_count=int(r[14] or 0), error_count=int(r[15] or 0), truncated=bool(r[16]),
+            provider=r[5], provider_version=r[6],
+            graph_schema_version=int(r[7] or 1) if modern else 1,
+            projection=str(r[8] or "legacy") if modern else "legacy",
+            classpath_providers=list(r[9 if modern else 7] or []),
+            classpath_resolution_json=r[10 if modern else 8],
+            classpath_error_count=int(r[11 if modern else 9] or 0),
+            artifact_count=int(r[12 if modern else 10] or 0),
+            class_count=int(r[13 if modern else 11] or 0),
+            method_count=int(r[14 if modern else 12] or 0),
+            field_count=int(r[15 if modern else 13] or 0),
+            call_site_count=int(r[16 if modern else 14] or 0),
+            error_count=int(r[17 if modern else 15] or 0),
+            truncated=bool(r[18 if modern else 16]),
         ) for r in rows]
 
     def get_jvm_methods(self) -> List[JvmMethodNode]:

@@ -1,0 +1,2 @@
+messaging:
+  topic: ${TOPIC_NAME:neutral.events}

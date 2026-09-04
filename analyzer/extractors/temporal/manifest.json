@@ -47,6 +47,7 @@
   "queries": [
     {
       "id": "sdk_classes",
+      "projections": ["legacy"],
       "category": "dependency",
       "description": "Temporal SDK classes present in the artifact-enrichment stage.",
       "file": "queries/sdk_classes.cypher",
@@ -67,6 +68,7 @@
     },
     {
       "id": "jvm_workflow_contracts",
+      "projections": ["legacy"],
       "category": "contract",
       "description": "Workflow interfaces confirmed directly from compiled class and method annotations.",
       "file": "queries/jvm_workflow_contracts.cypher",
@@ -86,6 +88,7 @@
     },
     {
       "id": "jvm_activity_contracts",
+      "projections": ["legacy"],
       "category": "contract",
       "description": "Activity interfaces confirmed directly from compiled class annotations.",
       "file": "queries/jvm_activity_contracts.cypher",
@@ -108,6 +111,7 @@
     },
     {
       "id": "jvm_annotated_methods",
+      "projections": ["legacy"],
       "category": "entrypoint",
       "description": "Workflow, signal, query, update, and activity methods identified from bytecode annotations.",
       "file": "queries/jvm_annotated_methods.cypher",
@@ -127,6 +131,7 @@
     },
     {
       "id": "jvm_implementations",
+      "projections": ["legacy"],
       "category": "implementation",
       "description": "Compiled classes connected to workflow and activity interfaces by BYTECODE_INTERFACE.",
       "file": "queries/jvm_implementations.cypher",
@@ -143,6 +148,7 @@
     },
     {
       "id": "jvm_method_implementations",
+      "projections": ["legacy"],
       "category": "implementation",
       "description": "Concrete bytecode methods matched exactly to implemented interface methods.",
       "file": "queries/jvm_method_implementations.cypher",
@@ -159,6 +165,7 @@
     },
     {
       "id": "jvm_resolved_calls",
+      "projections": ["legacy"],
       "category": "flow",
       "description": "Resolved bytecode call sites with owning classes and methods.",
       "file": "queries/jvm_resolved_calls.cypher",
@@ -179,6 +186,7 @@
     },
     {
       "id": "jvm_temporal_sdk_calls",
+      "projections": ["legacy"],
       "category": "runtime",
       "description": "Resolved bytecode calls into canonical io.temporal APIs or annotated workflow contract methods.",
       "file": "queries/jvm_temporal_sdk_calls.cypher",
@@ -189,6 +197,90 @@
         "queryEntryPointType": {"semanticType": "queryEntryPoint"},
         "updateEntryPointType": {"semanticType": "updateEntryPoint"}
       }
+    },
+    {
+      "id": "compact_sdk_classes",
+      "projections": ["compact"],
+      "category": "dependency",
+      "description": "Temporal classes retained by the compact JVM projection.",
+      "file": "queries/compact_sdk_classes.cypher",
+      "parameters": {"sdkNamespacePrefix": "io.temporal."}
+    },
+    {
+      "id": "compact_workflow_contracts",
+      "projections": ["compact"],
+      "category": "contract",
+      "description": "Workflow contracts from compact JVM annotation evidence.",
+      "file": "queries/compact_contracts.cypher",
+      "parameters": {
+        "contractKind": "workflow",
+        "contractType": {"semanticType": "workflowContract"},
+        "methodType": {"semanticType": "workflowEntryPoint"}
+      }
+    },
+    {
+      "id": "compact_activity_contracts",
+      "projections": ["compact"],
+      "category": "contract",
+      "description": "Activity contracts from compact JVM annotation evidence.",
+      "file": "queries/compact_contracts.cypher",
+      "parameters": {
+        "contractKind": "activity",
+        "contractType": {"semanticType": "activityContract"},
+        "methodType": {"semanticType": "workflowEntryPoint"}
+      }
+    },
+    {
+      "id": "compact_annotated_methods",
+      "projections": ["compact"],
+      "category": "entrypoint",
+      "description": "Temporal entry points from compact JVM annotation evidence.",
+      "file": "queries/compact_annotated_methods.cypher",
+      "parameters": {
+        "workflowEntryPointType": {"semanticType": "workflowEntryPoint"},
+        "signalEntryPointType": {"semanticType": "signalEntryPoint"},
+        "queryEntryPointType": {"semanticType": "queryEntryPoint"},
+        "updateEntryPointType": {"semanticType": "updateEntryPoint"},
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
+      "id": "compact_implementations",
+      "projections": ["compact"],
+      "category": "implementation",
+      "description": "Implementations connected through compact interface references.",
+      "file": "queries/compact_implementations.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"},
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
+      "id": "compact_method_implementations",
+      "projections": ["compact"],
+      "category": "implementation",
+      "description": "Exact method implementations in the compact JVM graph.",
+      "file": "queries/compact_method_implementations.cypher",
+      "parameters": {
+        "workflowContractType": {"semanticType": "workflowContract"},
+        "activityContractType": {"semanticType": "activityContract"}
+      }
+    },
+    {
+      "id": "compact_resolved_calls",
+      "projections": ["compact"],
+      "category": "flow",
+      "description": "Direct JVM invocation evidence retained by the compact graph.",
+      "file": "queries/compact_calls.cypher",
+      "parameters": {"sdkOnly": false, "sdkNamespacePrefix": "io.temporal."}
+    },
+    {
+      "id": "compact_temporal_sdk_calls",
+      "projections": ["compact"],
+      "category": "runtime",
+      "description": "Direct calls from first-party code into Temporal APIs.",
+      "file": "queries/compact_calls.cypher",
+      "parameters": {"sdkOnly": true, "sdkNamespacePrefix": "io.temporal."}
     }
   ]
 }

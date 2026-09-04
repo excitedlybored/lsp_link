@@ -20,6 +20,12 @@ export interface LspKnowledgeGraphBuildOptions {
   jdtProcesses: number;
   artifactMaxClasses?: number;
   artifactConcurrency: number;
+  artifactAnalyzer: 'asm' | 'sootup';
+  artifactProjection: 'legacy' | 'compact';
+  artifactExternalBodies: 'none' | 'all';
+  configurationSources: Array<'spring' | 'kubernetes' | 'helm'>;
+  activeProfiles: string[];
+  helmValuesFiles: string[];
   fetchArtifactSources: boolean;
   artifactManifestPaths: string[];
   checkpointDirectory: string;

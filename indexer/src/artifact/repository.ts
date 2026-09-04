@@ -29,6 +29,10 @@ export class JvmArtifactRepository {
     await this.insertRowsInTransactions('JvmMethod', batch.methods.map(methodRow));
     await this.insertRowsInTransactions('JvmField', batch.fields.map(fieldRow));
     await this.insertRowsInTransactions('JvmCallSite', batch.callSites);
+    await this.insertRowsInTransactions('JvmMethodReference', batch.methodReferences ?? []);
+    await this.insertRowsInTransactions('JvmTypeReference', batch.typeReferences ?? []);
+    await this.mergeCompactCalls(batch.compactCalls ?? []);
+    await this.mergeCompactTypeReferences(batch.compactTypeReferences ?? []);
     await this.mergeBinaryReferenceRelations(batch.binaryReferenceRelations);
     await this.mergeResolutionLinks(batch.resolutions, batch.binaryReferences);
     for (const chunk of chunks(batch.relations)) {
@@ -55,6 +59,10 @@ export class JvmArtifactRepository {
     await this.mergeRowsInTransactions('JvmMethod', batch.methods.map(methodRow), 'id');
     await this.mergeRowsInTransactions('JvmField', batch.fields.map(fieldRow), 'id');
     await this.mergeRowsInTransactions('JvmCallSite', batch.callSites, 'id');
+    await this.mergeRowsInTransactions('JvmMethodReference', batch.methodReferences ?? [], 'signature');
+    await this.mergeRowsInTransactions('JvmTypeReference', batch.typeReferences ?? [], 'binaryName');
+    await this.mergeCompactCalls(batch.compactCalls ?? []);
+    await this.mergeCompactTypeReferences(batch.compactTypeReferences ?? []);
     await this.mergeBinaryReferenceRelations(batch.binaryReferenceRelations);
     await this.mergeResolutionLinks(batch.resolutions, batch.binaryReferences);
     for (const chunk of chunks(batch.relations)) {
@@ -239,6 +247,38 @@ export class JvmArtifactRepository {
         + `SET link.stageId = row.stageId`,
       );
       await closeResults(await this.connection.execute(createSelected, { rows: selected }));
+    });
+  }
+
+  private async mergeCompactCalls(values: JvmArtifactBatch['compactCalls']): Promise<void> {
+    for (const chunk of chunks(values)) await this.inTransaction(async () => {
+      const statement = await this.prepare(
+        `UNWIND $rows AS row MATCH (source:JvmMethod {id: row.from}), `
+        + `(target:JvmMethodReference {signature: row.to}) `
+        + `MERGE (source)-[relation:JvmCompactCall {id: row.id}]->(target) `
+        + `SET relation.stageId = row.stageId, relation.bytecodeOffset = row.bytecodeOffset, `
+        + `relation.opcode = row.opcode, relation.dispatchKind = row.dispatchKind, `
+        + `relation.confidence = row.confidence, relation.evidence = row.evidence, `
+        + `relation.ordinal = row.ordinal`,
+      );
+      await closeResults(await this.connection.execute(statement, { rows: chunk.map((value) => ({
+        ...value, from: value.callerMethodId, to: value.targetSignature,
+      })) }));
+    });
+  }
+
+  private async mergeCompactTypeReferences(values: JvmArtifactBatch['compactTypeReferences']): Promise<void> {
+    for (const chunk of chunks(values)) await this.inTransaction(async () => {
+      const statement = await this.prepare(
+        `UNWIND $rows AS row MATCH (source:JvmClass {id: row.from}), `
+        + `(target:JvmTypeReference {binaryName: row.to}) `
+        + `MERGE (source)-[relation:JvmCompactTypeReference {id: row.id}]->(target) `
+        + `SET relation.stageId = row.stageId, relation.kind = row.kind, `
+        + `relation.confidence = row.confidence, relation.ordinal = row.ordinal`,
+      );
+      await closeResults(await this.connection.execute(statement, { rows: chunk.map((value) => ({
+        ...value, from: value.sourceClassId, to: value.targetBinaryName,
+      })) }));
     });
   }
 

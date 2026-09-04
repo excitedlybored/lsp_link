@@ -31,7 +31,7 @@ export async function publishKnowledgeGraph(
   const { options, pipeline, crawl } = request;
   const callNormalizationBatch = deriveLogicalCalls(request);
 
-  console.log('[stage:jvm-artifact-enrichment] streaming ASM artifact facts');
+  console.log(`[stage:jvm-artifact-enrichment] streaming ${options.artifactAnalyzer} artifact facts (${options.artifactProjection})`);
   const artifactFingerprint = fingerprintArtifactStage(
     options,
     pipeline.crawlFingerprint,
@@ -58,6 +58,10 @@ export async function publishKnowledgeGraph(
       maxDisassembledClasses: options.artifactMaxClasses,
       workerConcurrency: options.artifactConcurrency,
       fetchSources: options.fetchArtifactSources,
+      analyzer: options.artifactAnalyzer,
+      projection: options.artifactProjection,
+      externalBodies: options.artifactExternalBodies,
+      configurationHash: options.runConfigHash,
     },
     request.ladybug ?? (lbug as unknown as LadybugModuleLike),
     options.resume,
@@ -98,8 +102,12 @@ function fingerprintArtifactStage(
   artifacts: readonly NormalizedArtifactDescriptor[],
 ): string {
   return combineCheckpointFingerprint(
-    'jvm-artifact-enrichment-asm-stream-v2-bazel-graph',
+    'jvm-artifact-enrichment-program-stream-v3-bazel-graph',
     crawlFingerprint,
+    options.artifactAnalyzer,
+    options.artifactProjection,
+    options.artifactExternalBodies,
+    analyzerImplementationHash(options.artifactAnalyzer),
     options.artifactMaxClasses ?? null,
     options.fetchArtifactSources,
     artifacts.map((artifact) => ({
@@ -109,6 +117,20 @@ function fingerprintArtifactStage(
       contentHash: hashArtifactDescriptor(artifact),
     })),
   );
+}
+
+function analyzerImplementationHash(provider: LspKnowledgeGraphBuildOptions['artifactAnalyzer']): string {
+  if (provider === 'asm') return 'asm-worker-9.9.1';
+  const hash = createHash('sha256');
+  for (const candidate of [
+    path.resolve('dist/sootup-worker/gitnexus-sootup-worker.jar'),
+    path.resolve('vendor/sootup/2.0.0/dependencies.lock.json'),
+  ]) {
+    hash.update(candidate);
+    try { hash.update(fs.readFileSync(candidate)); }
+    catch { hash.update('missing'); }
+  }
+  return hash.digest('hex');
 }
 
 function hashArtifactDescriptor(artifact: NormalizedArtifactDescriptor): string {
@@ -129,7 +151,7 @@ function logArtifactEnrichment(
   const run = summary.run;
   console.log(
     `[stage:jvm-artifact-enrichment] ${run.status}: ${run.artifactCount} artifacts, `
-    + `${run.classCount} classes, ${run.methodCount} methods, ${run.callSiteCount} bytecode calls, `
+    + `${run.classCount} classes, ${run.methodCount} methods, ${run.callSiteCount} program calls, `
     + `${summary.sourceAssociatedArtifactCount} source-associated artifacts`,
   );
 }

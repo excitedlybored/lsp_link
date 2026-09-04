@@ -1,0 +1,286 @@
+{
+  "schemaVersion": 1,
+  "root": "org.soot-oss:sootup.java.bytecode.frontend:2.0.0",
+  "artifacts": [
+    {
+      "name": "asm-9.7.1.jar",
+      "coordinate": "org.ow2.asm:asm:9.7.1",
+      "sha256": "8cadd43ac5eb6d09de05faecca38b917a040bb9139c7edeb4cc81c740b713281",
+      "pomSha256": "7229b03b30a73ee91008072d9e4569a51d8547fae8c50f527841aef4c1b0baa8",
+      "licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://asm.ow2.io/license.html"
+        }
+      ]
+    },
+    {
+      "name": "asm-analysis-9.7.1.jar",
+      "coordinate": "org.ow2.asm:asm-analysis:9.7.1",
+      "sha256": "85b29371884ba31bb76edf22323c2c24e172c3267a67152eba3d1ccc2e041ef2",
+      "pomSha256": "25c2379f2bfc2a1e64e62c39e2b93cfb0e489707852b08d6fc470b1c6a52b9ee",
+      "licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://asm.ow2.io/license.html"
+        }
+      ]
+    },
+    {
+      "name": "asm-commons-9.7.1.jar",
+      "coordinate": "org.ow2.asm:asm-commons:9.7.1",
+      "sha256": "9a579b54d292ad9be171d4313fd4739c635592c2b5ac3a459bbd1049cddec6a0",
+      "pomSha256": "0bf1d31da0c9f9d8edc2f27dbbfdbbf73f1a715b72cd2fa28f3f195994d74ad1",
+      "licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://asm.ow2.io/license.html"
+        }
+      ]
+    },
+    {
+      "name": "asm-tree-9.7.1.jar",
+      "coordinate": "org.ow2.asm:asm-tree:9.7.1",
+      "sha256": "9929881f59eb6b840e86d54570c77b59ce721d104e6dfd7a40978991c2d3b41f",
+      "pomSha256": "13b905f65e7fd43ca7674f40cdaa37679ba4858c6c9d9fb8f17a7afd9baabc9e",
+      "licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://asm.ow2.io/license.html"
+        }
+      ]
+    },
+    {
+      "name": "asm-util-9.7.1.jar",
+      "coordinate": "org.ow2.asm:asm-util:9.7.1",
+      "sha256": "f885be71b5c90556f5f1ad1c4f9276b29b96057c497d46666fe4ddbec3cb43c6",
+      "pomSha256": "7fb5e63362b2d52d77dca3b754aebad635751d3fc520191e9500ece9e2345b71",
+      "licenses": [
+        {
+          "name": "BSD-3-Clause",
+          "url": "https://asm.ow2.io/license.html"
+        }
+      ]
+    },
+    {
+      "name": "checker-qual-3.43.0.jar",
+      "coordinate": "org.checkerframework:checker-qual:3.43.0",
+      "sha256": "3fbc2e98f05854c3df16df9abaa955b91b15b3ecac33623208ed6424640ef0f6",
+      "pomSha256": "9313bf53b3efd8aaca266eea8b96e307976b65c0b16510cc6f02319fbaebed43",
+      "licenses": [
+        {
+          "name": "The MIT License",
+          "url": "http://opensource.org/licenses/MIT"
+        }
+      ]
+    },
+    {
+      "name": "commons-io-2.16.1.jar",
+      "coordinate": "commons-io:commons-io:2.16.1",
+      "sha256": "f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f",
+      "pomSha256": "5777d292251c7895c04a4c57015683ec3b353a12486c9b3e7178e9b0b3c38fff",
+      "licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "commons-lang3-3.14.0.jar",
+      "coordinate": "org.apache.commons:commons-lang3:3.14.0",
+      "sha256": "7b96bf3ee68949abb5bc465559ac270e0551596fa34523fddf890ec418dde13c",
+      "pomSha256": "110438863bad37c28f906bf87016e38c7a8c758ba321e09d11dc5a2363a8e79e",
+      "licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "error_prone_annotations-2.28.0.jar",
+      "coordinate": "com.google.errorprone:error_prone_annotations:2.28.0",
+      "sha256": "f3fc8a3a0a4020706a373b00e7f57c2512dd26d1f83d28c7d38768f8682b231e",
+      "pomSha256": "0ce909f13a568148476e5ee200f380f98c75ba08971aaf15db295eb77598ef3a",
+      "licenses": [
+        {
+          "name": "Apache 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "failureaccess-1.0.2.jar",
+      "coordinate": "com.google.guava:failureaccess:1.0.2",
+      "sha256": "8a8f81cf9b359e3f6dfa691a1e776985c061ef2f223c9b2c80753e1b458e8064",
+      "pomSha256": "19ebc6f4bdb4edbb3d07b6ee994f846b54ef295582a9b5634719ffa9f31d03b2",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "gson-2.8.9.jar",
+      "coordinate": "com.google.code.gson:gson:2.8.9",
+      "sha256": "d3999291855de495c94c743761b8ab5176cfeabe281a5ab0d8e8d45326fd703e",
+      "pomSha256": "afded6e6a690fbf3ad4ae65ada397f0a90a5f630b303d1b741b9c97926fdd4de",
+      "licenses": [
+        {
+          "name": "Apache-2.0",
+          "url": "https://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "guava-33.3.0-jre.jar",
+      "coordinate": "com.google.guava:guava:33.3.0-jre",
+      "sha256": "dfadc3bce3101eff1452aae47d7c833fee443b47bdf9ef13311b6c7cab663ddf",
+      "pomSha256": "d3cbd0518eafab6a978bb6ca3ff98333ddfe736784b6bfdc499543f0c9723f84",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "j2objc-annotations-3.0.0.jar",
+      "coordinate": "com.google.j2objc:j2objc-annotations:3.0.0",
+      "sha256": "88241573467ddca44ffd4d74aa04c2bbfd11bf7c17e0c342c94c9de7a70a7c64",
+      "pomSha256": "23b3d039e168ad89dd114698e6dd7be383f4a2c577b8877d82c73a6515e74a17",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "jgrapht-core-1.3.1.jar",
+      "coordinate": "org.jgrapht:jgrapht-core:1.3.1",
+      "sha256": "71dc44221c43ae89e59e42d024cce9d1dfaef844afb544ca1cdbf96a4bdf2736",
+      "pomSha256": "c479135d7054340aa0e2249be9b47b8b9bc660687ec350bf9ed602a8667c7669",
+      "licenses": [
+        {
+          "name": "GNU Lesser General Public License Version 2.1, February 1999",
+          "url": "http://jgrapht.sourceforge.net/LGPL.html"
+        },
+        {
+          "name": "Eclipse Public License (EPL) 2.0",
+          "url": "http://www.eclipse.org/legal/epl-v20.html"
+        }
+      ]
+    },
+    {
+      "name": "jheaps-0.10.jar",
+      "coordinate": "org.jheaps:jheaps:0.10",
+      "sha256": "1c04ab9ed8bb649fe70baa9996dae58c987da87b91ee21b82db023d98b2af59f",
+      "pomSha256": "e6be34da8b7785068d02e4552983ecb04d415c87add8ffe86ec5ae02a12255b1",
+      "licenses": [
+        {
+          "name": "Apache License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "jsr305-3.0.2.jar",
+      "coordinate": "com.google.code.findbugs:jsr305:3.0.2",
+      "sha256": "766ad2a0783f2687962c8ad74ceecc38a28b9f72a2d085ee438b7813e928d0c7",
+      "pomSha256": "19889dbdf1b254b2601a5ee645b8147a974644882297684c798afe5d63d78dfe",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar",
+      "coordinate": "com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava",
+      "sha256": "b372a037d4230aa57fbeffdef30fd6123f9c0c2db85d0aced00c91b974f33f99",
+      "pomSha256": "18d4b1db26153d4e55079ce1f76bb1fe05cdb862ef9954a88cbcc4ff38b8679b",
+      "licenses": [
+        {
+          "name": "The Apache Software License, Version 2.0",
+          "url": "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+      ]
+    },
+    {
+      "name": "slf4j-api-2.0.13.jar",
+      "coordinate": "org.slf4j:slf4j-api:2.0.13",
+      "sha256": "e7c2a48e8515ba1f49fa637d57b4e2f590b3f5bd97407ac699c3aa5efb1204a9",
+      "pomSha256": "51805cfda80ca2ac82041b906d9865d39e9823e358a0eeb62379dfed475c1571",
+      "licenses": [
+        {
+          "name": "MIT License",
+          "url": "http://www.opensource.org/licenses/mit-license.php"
+        }
+      ]
+    },
+    {
+      "name": "sootup.analysis.intraprocedural-2.0.0.jar",
+      "coordinate": "org.soot-oss:sootup.analysis.intraprocedural:2.0.0",
+      "sha256": "9b7fe714de22a6bd8e6f3e72f55bf5516d6b80e43113853da9bb03bafa17a42e",
+      "pomSha256": "fdf38f8d748ea8a62802c61a608658175b455161de247ba66ff12942ec7aa300",
+      "licenses": [
+        {
+          "name": "GNU LESSER GENERAL PUBLIC LICENSE 2.1",
+          "url": "https://www.gnu.org/licenses/lgpl-2.1.txt"
+        }
+      ]
+    },
+    {
+      "name": "sootup.core-2.0.0.jar",
+      "coordinate": "org.soot-oss:sootup.core:2.0.0",
+      "sha256": "a6cdc05a88ba12baba8b8a3b51f8f92d0ede76b7669755fa6a6ce0b5b99ded24",
+      "pomSha256": "9a5d8b5b88d1b06592aa05a997757b0f536028ff06ce987bc28c35e48186f6a9",
+      "licenses": [
+        {
+          "name": "GNU LESSER GENERAL PUBLIC LICENSE 2.1",
+          "url": "https://www.gnu.org/licenses/lgpl-2.1.txt"
+        }
+      ]
+    },
+    {
+      "name": "sootup.interceptors-2.0.0.jar",
+      "coordinate": "org.soot-oss:sootup.interceptors:2.0.0",
+      "sha256": "f6c63ea7fe8fbf2a029f687b3ba9d6d27cf4da6f60c38f897faff915972a1fd5",
+      "pomSha256": "c63dd2eca040946a821385c086c4de3b763d9cf0c0a16b4fd9dd727220149927",
+      "licenses": [
+        {
+          "name": "GNU LESSER GENERAL PUBLIC LICENSE 2.1",
+          "url": "https://www.gnu.org/licenses/lgpl-2.1.txt"
+        }
+      ]
+    },
+    {
+      "name": "sootup.java.bytecode.frontend-2.0.0.jar",
+      "coordinate": "org.soot-oss:sootup.java.bytecode.frontend:2.0.0",
+      "sha256": "d8489670850d661caa256b3c95f3f1a14e4855b217f6c76457546505c9198472",
+      "pomSha256": "e061f27850f4fb20f9bfe973b190671a48c4018eb8bf09ecc1e72a0d095b1b1e",
+      "licenses": [
+        {
+          "name": "GNU LESSER GENERAL PUBLIC LICENSE 2.1",
+          "url": "https://www.gnu.org/licenses/lgpl-2.1.txt"
+        }
+      ]
+    },
+    {
+      "name": "sootup.java.core-2.0.0.jar",
+      "coordinate": "org.soot-oss:sootup.java.core:2.0.0",
+      "sha256": "6b28d9d60e71e165d933414ea09cc8694a099eeeceaed7ed4f7d904105600dc9",
+      "pomSha256": "16f6fecb56a4a2485315f6f1e112b8bed39e1052ef0643993cd0aca0bd9a1b5c",
+      "licenses": [
+        {
+          "name": "GNU LESSER GENERAL PUBLIC LICENSE 2.1",
+          "url": "https://www.gnu.org/licenses/lgpl-2.1.txt"
+        }
+      ]
+    }
+  ]
+}

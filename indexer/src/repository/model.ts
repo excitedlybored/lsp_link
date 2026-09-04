@@ -62,15 +62,63 @@ export interface RepositoryDeclaration {
   codeOrigin: CodeOrigin;
 }
 
+export type ConfigurationEvidenceStatus = 'exact' | 'symbolic' | 'unresolved';
+
+export interface ConfigurationKey {
+  id: string;
+  name: string;
+}
+
+export interface ConfigurationValue {
+  id: string;
+  documentId: string;
+  keyId: string;
+  key: string;
+  rawValue: string;
+  resolvedValue?: string;
+  status: ConfigurationEvidenceStatus;
+  sourceKind: 'spring' | 'kubernetes' | 'helm';
+  scope: string;
+  profile?: string;
+  precedence: number;
+  confidence: number;
+  startLine: number;
+  startCharacter: number;
+}
+
+export interface ConfigurationReference {
+  id: string;
+  valueId: string;
+  targetKeyId: string;
+  targetKey: string;
+  kind: 'placeholder' | 'environment' | 'helm-value' | 'config-map' | 'secret';
+  status: ConfigurationEvidenceStatus;
+}
+
+export interface DeploymentUnit {
+  id: string;
+  documentId: string;
+  kind: string;
+  name: string;
+  namespace?: string;
+}
+
 export interface RepositoryInventoryBatch {
   runs: RepositoryInventoryRun[];
   providers: RepositoryProviderRun[];
   documents: RepositoryDocument[];
   declarations: RepositoryDeclaration[];
+  configurationKeys: ConfigurationKey[];
+  configurationValues: ConfigurationValue[];
+  configurationReferences: ConfigurationReference[];
+  deploymentUnits: DeploymentUnit[];
 }
 
 export function emptyRepositoryInventoryBatch(): RepositoryInventoryBatch {
-  return { runs: [], providers: [], documents: [], declarations: [] };
+  return {
+    runs: [], providers: [], documents: [], declarations: [],
+    configurationKeys: [], configurationValues: [], configurationReferences: [], deploymentUnits: [],
+  };
 }
 
 export function repositoryStableId(prefix: string, ...parts: string[]): string {

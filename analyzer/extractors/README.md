@@ -46,7 +46,8 @@ analyzer/extractors/
     assembler.py             builds workflows from query evidence
 ```
 
-Kafka, Spring, gRPC, and persistence extractors belong in sibling directories.
+Kafka is implemented as a sibling extractor. Spring topology, gRPC, and persistence extractors
+belong in additional sibling directories.
 Each can reuse the pipeline while retaining its own vocabulary, queries,
 confidence model, and assembler.
 
@@ -63,6 +64,18 @@ uv run --with-requirements analyzer/requirements.txt \
   --extractor temporal \
   --output /tmp/temporal-workflows.json
 ```
+
+Repeat `--extractor` to compose normalized findings and their evidence graphs:
+
+```bash
+npm run extract -- /path/to/repository/.gitnexus/experiments/sootup/lsp-lbug \
+  --extractor temporal --extractor kafka \
+  --output semantic-flow-report.json
+```
+
+The Kafka extractor reports producer operations, listener annotations, topic/configuration
+candidates, and deployment evidence. It does not select an active profile, Helm values file,
+ConfigMap, Secret, or environment when that runtime scope is unknown.
 
 The Temporal extractor combines independent evidence:
 

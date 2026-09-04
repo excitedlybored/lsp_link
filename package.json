@@ -15,6 +15,8 @@
   "scripts": {
     "index": "tsx indexer/src/cli/build.ts",
     "artifact-worker:build": "node scripts/build-artifact-worker.mjs",
+    "sootup:resolve": "node scripts/resolve-sootup-dependencies.mjs",
+    "sootup-worker:build": "node scripts/build-sootup-worker.mjs",
     "jdt-batch-extension:build": "node scripts/build-jdt-batch-extension.mjs",
     "benchmark:asm": "npm run build && node scripts/benchmark-asm-enrichment.mjs",
     "benchmark:jdt": "npm run build && node scripts/benchmark-jdt-batch.mjs",
@@ -24,13 +26,14 @@
     "graph:summary": "uv run --with-requirements analyzer/requirements.lock.txt python analyzer/query_db.py",
     "mcp:analyzer": "uv run --with-requirements analyzer/requirements.lock.txt python analyzer/mcp_server.py",
     "extract": "uv run --with-requirements analyzer/requirements.lock.txt python -m analyzer.extractors.run",
+    "compare:semantic": "uv run --with-requirements analyzer/requirements.lock.txt python -m analyzer.extractors.parity",
     "test:extractors": "uv run --with-requirements analyzer/requirements.lock.txt python -m unittest analyzer.extractors.test_core",
     "query": "tsx lsp_server/query.ts",
     "indexer:build": "npm run build --workspace lsp-indexer",
     "indexer:test": "npm run test --workspace lsp-indexer",
     "server": "tsx lsp_server/server_launcher.ts",
-    "build": "npm run artifact-worker:build && npm run jdt-batch-extension:build && npm --workspaces run build --if-present",
-    "test": "npm run artifact-worker:build && npm run jdt-batch-extension:build && npm --workspaces run test --if-present && npm run test:extractors",
+    "build": "npm run artifact-worker:build && npm run sootup-worker:build && npm run jdt-batch-extension:build && npm --workspaces run build --if-present",
+    "test": "npm run artifact-worker:build && npm run sootup-worker:build && npm run jdt-batch-extension:build && npm --workspaces run test --if-present && npm run test:extractors",
     "test:samples": "npm run artifact-worker:build && node scripts/run-all-samples-test.mjs"
   },
   "devDependencies": {

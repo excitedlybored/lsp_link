@@ -6,6 +6,7 @@ import os from 'node:os';
 import { globSync } from 'glob';
 
 const PROTOCOL_VERSION = 1;
+export const JVM_PROGRAM_FACT_CONTRACT_VERSION = 1;
 const ASM_HASH = '6f3828a215c920059a5efa2fb55c233d6c54ec5cadca99ce1b1bdd10077c7ddd';
 
 export interface AsmClassFact {
@@ -18,6 +19,7 @@ export interface AsmClassFact {
   superName: string | null;
   interfaces: string[];
   annotations: string[];
+  annotationValues?: Record<string, string>;
   detailed: boolean;
 }
 
@@ -31,6 +33,7 @@ export interface AsmMethodFact {
   hasCode: boolean;
   ordinal: number;
   annotations: string[];
+  annotationValues?: Record<string, string>;
 }
 
 export interface AsmFieldFact {
@@ -42,6 +45,7 @@ export interface AsmFieldFact {
   access: string;
   ordinal: number;
   annotations: string[];
+  annotationValues?: Record<string, string>;
 }
 
 export interface AsmCallFact {
@@ -61,6 +65,7 @@ export interface AsmCallFact {
 export type AsmFact = AsmClassFact | AsmMethodFact | AsmFieldFact | AsmCallFact;
 
 export interface AsmFactBatch {
+  contractVersion: typeof JVM_PROGRAM_FACT_CONTRACT_VERSION;
   artifactId: string;
   sequence: number;
   facts: AsmFact[];
@@ -75,6 +80,9 @@ export interface AsmArtifactRequest {
   selectedClasses?: string[];
   analyzeAll?: boolean;
   emitClassFacts?: boolean;
+  emitSelectedClassFacts?: boolean;
+  emitCalls?: boolean;
+  classpathEntries?: string[];
 }
 
 export interface AsmArtifactResult {
@@ -86,13 +94,29 @@ export interface AsmArtifactResult {
 
 export interface AsmWorkerInfo {
   protocolVersion: number;
-  provider: 'asm';
+  provider: 'asm' | 'sootup';
   providerVersion: string;
   javaVersion: string;
   runtimeMajor: number;
   minimumClassFileMajor: number;
   maximumClassFileMajor: number;
   concurrency: number;
+}
+
+// Provider-neutral names are the public analysis boundary. The historical ASM
+// names remain exported so the production provider and existing integrations
+// stay source-compatible during the experiment.
+export type JvmProgramFact = AsmFact;
+export type JvmProgramFactBatch = AsmFactBatch;
+export type JvmArtifactAnalysisRequest = AsmArtifactRequest;
+export type JvmArtifactAnalysisResult = AsmArtifactResult;
+export type JvmProgramAnalyzerInfo = AsmWorkerInfo;
+
+export interface JvmWorkerLaunch {
+  provider: 'asm' | 'sootup';
+  label: string;
+  mainClass: string;
+  classpath: string[];
 }
 
 export class AsmWorkerProcessError extends Error {}
@@ -116,7 +140,10 @@ export class AsmArtifactWorker {
   private exited = false;
   private stderr = '';
 
-  constructor(private readonly concurrency = 4) {
+  constructor(
+    private readonly concurrency = 4,
+    private readonly launch?: JvmWorkerLaunch,
+  ) {
     if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 16) {
       throw new Error(`ASM worker concurrency must be an integer from 1 to 16, got ${concurrency}`);
     }
@@ -125,17 +152,14 @@ export class AsmArtifactWorker {
   async start(): Promise<AsmWorkerInfo> {
     if (this.process) throw new Error('ASM worker is already started');
     const repository = findRepositoryRoot();
-    const workerJar = process.env.GITNEXUS_ASM_WORKER_JAR
-      ?? path.join(repository, 'dist/jvm-artifact-worker/gitnexus-artifact-worker.jar');
-    const asmJar = process.env.GITNEXUS_ASM_JAR
-      ?? path.join(repository, 'vendor/jdtls/1.57.0/plugins/org.objectweb.asm_9.9.1.jar');
-    for (const required of [workerJar, asmJar]) {
-      if (!fs.existsSync(required)) throw new Error(`ASM worker dependency is missing: ${required}; run npm run build`);
+    const launch = this.launch ?? asmLaunch(repository);
+    for (const required of launch.classpath) {
+      if (!fs.existsSync(required)) throw new Error(`${launch.label} dependency is missing: ${required}; run npm run build`);
     }
     const java = locateJavaExecutable();
     const child = spawn(java, [
-      '-cp', [workerJar, asmJar].join(path.delimiter),
-      'io.gitnexus.artifact.ArtifactWorker',
+      '-cp', launch.classpath.join(path.delimiter),
+      launch.mainClass,
     ], { stdio: ['pipe', 'pipe', 'pipe'] });
     this.process = child;
     child.stderr.setEncoding('utf8');
@@ -161,12 +185,12 @@ export class AsmArtifactWorker {
     const info = new Promise<AsmWorkerInfo>((resolve, reject) => { this.hello = { resolve, reject }; });
     await this.write({ type: 'hello', protocolVersion: PROTOCOL_VERSION, concurrency: this.concurrency });
     const result = await info;
-    if (result.protocolVersion !== PROTOCOL_VERSION || result.provider !== 'asm') {
-      throw new Error(`Unsupported ASM worker handshake: ${JSON.stringify(result)}`);
+    if (result.protocolVersion !== PROTOCOL_VERSION || result.provider !== launch.provider) {
+      throw new Error(`Unsupported ${launch.label} worker handshake: ${JSON.stringify(result)}`);
     }
     if (result.runtimeMajor < 21) {
       await this.close();
-      throw new Error(`ASM artifact enrichment requires JDK 21+, got Java ${result.javaVersion}`);
+      throw new Error(`${launch.label} artifact enrichment requires JDK 21+, got Java ${result.javaVersion}`);
     }
     return result;
   }
@@ -214,6 +238,13 @@ export class AsmArtifactWorker {
     const pending = artifactId ? this.pending.get(artifactId) : undefined;
     if (message.type === 'batch' && pending) {
       const batch = message as unknown as AsmFactBatch;
+      if (batch.contractVersion !== JVM_PROGRAM_FACT_CONTRACT_VERSION) {
+        pending.reject(new AsmArtifactAnalysisError(
+          `Unsupported JVM fact contract ${String(batch.contractVersion)}`,
+        ));
+        this.pending.delete(artifactId!);
+        return;
+      }
       if (batch.sequence !== pending.nextSequence) {
         return this.failAll(new Error(
           `ASM protocol sequence mismatch for ${artifactId}: expected ${pending.nextSequence}, got ${batch.sequence}`,
@@ -308,6 +339,17 @@ function findRepositoryRoot(): string {
     if (parent === candidate) throw new Error('Could not locate the GitNexus repository root');
     candidate = parent;
   }
+}
+
+function asmLaunch(repository: string): JvmWorkerLaunch {
+  const workerJar = process.env.GITNEXUS_ASM_WORKER_JAR
+    ?? path.join(repository, 'dist/jvm-artifact-worker/gitnexus-artifact-worker.jar');
+  const asmJar = process.env.GITNEXUS_ASM_JAR
+    ?? path.join(repository, 'vendor/jdtls/1.57.0/plugins/org.objectweb.asm_9.9.1.jar');
+  return {
+    provider: 'asm', label: 'ASM', mainClass: 'io.gitnexus.artifact.ArtifactWorker',
+    classpath: [workerJar, asmJar],
+  };
 }
 
 function locateJavaExecutable(): string {

@@ -41,6 +41,11 @@ export async function preparePipeline(
   const workspacePath = path.resolve(options.workspace);
   const repositoryInventory = await buildRepositoryInventory(workspacePath, {
     concurrency: options.concurrency,
+    configuration: {
+      sources: options.configurationSources,
+      activeProfiles: options.activeProfiles,
+      helmValuesFiles: options.helmValuesFiles,
+    },
   });
   console.log(
     `[stage:repository-inventory] ${repositoryInventory.documents.length} documents, `

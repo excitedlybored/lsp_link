@@ -1,0 +1,3 @@
+module(name = "sootup_temporal_kafka_flow", version = "1.0.0")
+
+bazel_dep(name = "rules_java", version = "9.2.0")

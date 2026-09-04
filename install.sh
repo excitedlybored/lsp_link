@@ -232,11 +232,11 @@ if [ -z "$spring_tools_server" ]; then
 fi
 echo "  Spring Tools $spring_tools_version OK"
 
-# 6. Compile the classloading-free artifact worker with the locally installed
-#    JDK 21+ and the checksum-verified vendored ASM Core JAR. No network access
-#    is used.
-echo "[6/7] Building the persistent ASM worker and JDT batch extension..."
+# 6. Compile JVM workers from checksum-verified vendored dependencies. No
+#    network access is used.
+echo "[6/7] Building the ASM, SootUp, and JDT batch workers..."
 npm run artifact-worker:build
+npm run sootup-worker:build
 npm run jdt-batch-extension:build
 
 echo "[7/7] Initializing Python .venv..."

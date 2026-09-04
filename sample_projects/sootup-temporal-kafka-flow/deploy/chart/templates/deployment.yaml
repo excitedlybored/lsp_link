@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: neutral-flow
+spec:
+  template:
+    spec:
+      containers:
+        - name: application
+          image: neutral-flow:latest
+          env:
+            - name: TOPIC_NAME
+              value: {{ .Values.messaging.topic }}

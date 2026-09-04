@@ -16,6 +16,14 @@ export class RepositoryInventoryRepository {
     await this.insertRows('RepositoryProviderRun', batch.providers);
     await this.insertRows('RepositoryDocument', batch.documents);
     await this.insertRows('RepositoryDeclaration', batch.declarations);
+    await this.insertRows('ConfigurationKey', batch.configurationKeys);
+    await this.insertRows('ConfigurationValue', batch.configurationValues.map((value) => ({
+      ...value, resolvedValue: value.resolvedValue ?? null, profileName: value.profile ?? null,
+    })));
+    await this.insertRows('ConfigurationReference', batch.configurationReferences);
+    await this.insertRows('DeploymentUnit', batch.deploymentUnits.map((value) => ({
+      ...value, namespace: value.namespace ?? null,
+    })));
     await this.insertRelations(
       'RepositoryInventoryRun', 'RepositoryProviderRun',
       batch.providers.map((value) => ({ from: value.runId, to: value.id, kind: 'USED_PROVIDER' })),
@@ -35,9 +43,40 @@ export class RepositoryInventoryRepository {
       'RepositoryDocument', 'RepositoryDeclaration',
       batch.declarations.map((value) => ({ from: value.documentId, to: value.id, kind: 'DECLARES' })),
     );
+    await this.insertRelations(
+      'RepositoryDocument', 'ConfigurationValue',
+      batch.configurationValues.map((value) => ({
+        from: value.documentId, to: value.id, kind: 'HAS_CONFIGURATION_VALUE',
+      })),
+    );
+    await this.insertRelations(
+      'ConfigurationValue', 'ConfigurationKey',
+      batch.configurationValues.map((value) => ({
+        from: value.id, to: value.keyId, kind: 'ASSIGNS_CONFIGURATION_KEY',
+      })),
+    );
+    await this.insertRelations(
+      'ConfigurationValue', 'ConfigurationReference',
+      batch.configurationReferences.map((value) => ({
+        from: value.valueId, to: value.id, kind: 'HAS_CONFIGURATION_REFERENCE',
+      })),
+    );
+    await this.insertRelations(
+      'ConfigurationReference', 'ConfigurationKey',
+      batch.configurationReferences.map((value) => ({
+        from: value.id, to: value.targetKeyId, kind: 'REFERENCES_CONFIGURATION_KEY',
+      })),
+    );
+    await this.insertRelations(
+      'RepositoryDocument', 'DeploymentUnit',
+      batch.deploymentUnits.map((value) => ({
+        from: value.documentId, to: value.id, kind: 'DECLARES_DEPLOYMENT',
+      })),
+    );
   }
 
   private async insertRows(table: string, rows: object[]): Promise<void> {
+    if (rows.length === 0) return;
     for (const chunk of chunks(rows)) {
       await this.inTransaction(async () => {
         const keys = Object.keys(chunk[0]!);
@@ -55,6 +94,7 @@ export class RepositoryInventoryRepository {
     sourceKind: string, targetKind: string,
     rows: Array<{ from: string; to: string; kind: string }>,
   ): Promise<void> {
+    if (rows.length === 0) return;
     for (const chunk of chunks(rows)) {
       await this.inTransaction(async () => {
         const statement = await this.prepare(

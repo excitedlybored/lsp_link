@@ -110,6 +110,7 @@ public final class ArtifactWorker {
     Set<String> selected = new TreeSet<>(Json.stringArray(request, "selectedClasses"));
     boolean analyzeAll = Json.bool(request, "analyzeAll", selected.isEmpty());
     boolean emitClassFacts = Json.bool(request, "emitClassFacts", true);
+    boolean emitSelectedClassFacts = Json.bool(request, "emitSelectedClassFacts", false);
     long sequence = 0;
     long emittedBatches = 0;
     Batch batch = new Batch(artifactId, sequence);
@@ -125,7 +126,7 @@ public final class ArtifactWorker {
         try {
           byte[] bytes = jar.getInputStream(item.getValue()).readAllBytes();
           ClassFacts facts = new ClassFacts(
-              artifactId, binaryName, detailed, emitClassFacts,
+              artifactId, binaryName, detailed, emitClassFacts || (emitSelectedClassFacts && detailed),
               detailed ? BytecodeOffsets.read(bytes) : Map.of());
           new ClassReader(bytes).accept(facts, ClassReader.SKIP_FRAMES);
           for (Map<String, Object> fact : facts.facts) {
@@ -304,7 +305,8 @@ public final class ArtifactWorker {
     }
 
     Map<String, Object> message() {
-      return Map.of("type", "batch", "artifactId", artifactId, "sequence", sequence, "facts", facts);
+      return Map.of("type", "batch", "contractVersion", 1,
+          "artifactId", artifactId, "sequence", sequence, "facts", facts);
     }
   }
 
@@ -314,6 +316,7 @@ public final class ArtifactWorker {
     final Map<String, Object> clazz = new LinkedHashMap<>();
     final List<Map<String, Object>> facts = new ArrayList<>();
     final List<String> classAnnotations = new ArrayList<>();
+    final Map<String, String> classAnnotationValues = new LinkedHashMap<>();
     final boolean detailed;
     final boolean emitClassFact;
     String binaryName;
@@ -345,13 +348,13 @@ public final class ArtifactWorker {
       clazz.put("superName", dotted(superName));
       clazz.put("interfaces", interfaces == null ? List.of() : Arrays.stream(interfaces).map(ClassFacts::dotted).toList());
       clazz.put("annotations", classAnnotations);
+      clazz.put("annotationValues", classAnnotationValues);
       clazz.put("detailed", detailed);
       if (emitClassFact) facts.add(clazz);
     }
 
     @Override public AnnotationVisitor visitAnnotation(String descriptor, boolean visible) {
-      addAnnotation(classAnnotations, descriptor);
-      return null;
+      return captureAnnotation(classAnnotations, classAnnotationValues, descriptor);
     }
 
     @Override public FieldVisitor visitField(int access, String name, String descriptor,
@@ -359,6 +362,7 @@ public final class ArtifactWorker {
       if (!detailed) return null;
       Map<String, Object> field = new LinkedHashMap<>();
       List<String> annotations = new ArrayList<>();
+      Map<String, String> annotationValues = new LinkedHashMap<>();
       field.put("factType", "field");
       field.put("artifactId", artifactId);
       field.put("owner", binaryName);
@@ -367,11 +371,11 @@ public final class ArtifactWorker {
       field.put("access", accessString(access));
       field.put("ordinal", fieldOrdinal++);
       field.put("annotations", annotations);
+      field.put("annotationValues", annotationValues);
       facts.add(field);
       return new FieldVisitor(Opcodes.ASM9) {
         @Override public AnnotationVisitor visitAnnotation(String annotationDescriptor, boolean visible) {
-          addAnnotation(annotations, annotationDescriptor);
-          return null;
+          return captureAnnotation(annotations, annotationValues, annotationDescriptor);
         }
       };
     }
@@ -381,6 +385,7 @@ public final class ArtifactWorker {
       if (!detailed) return null;
       Map<String, Object> method = new LinkedHashMap<>();
       List<String> annotations = new ArrayList<>();
+      Map<String, String> annotationValues = new LinkedHashMap<>();
       int ordinal = methodOrdinal++;
       method.put("factType", "method");
       method.put("artifactId", artifactId);
@@ -391,14 +396,14 @@ public final class ArtifactWorker {
       method.put("hasCode", false);
       method.put("ordinal", ordinal);
       method.put("annotations", annotations);
+      method.put("annotationValues", annotationValues);
       facts.add(method);
       int[] bytecodeOffsets = invocationOffsets.getOrDefault(name + descriptor, new int[0]);
       return new MethodVisitor(Opcodes.ASM9) {
         int instructionOrdinal;
 
         @Override public AnnotationVisitor visitAnnotation(String annotationDescriptor, boolean visible) {
-          addAnnotation(annotations, annotationDescriptor);
-          return null;
+          return captureAnnotation(annotations, annotationValues, annotationDescriptor);
         }
 
         @Override public void visitCode() { method.put("hasCode", true); }
@@ -440,6 +445,97 @@ public final class ArtifactWorker {
     private static void addAnnotation(List<String> annotations, String descriptor) {
       String name = Type.getType(descriptor).getClassName();
       if (!annotations.contains(name)) annotations.add(name);
+    }
+
+    private static AnnotationVisitor captureAnnotation(
+        List<String> annotations, Map<String, String> annotationValues, String descriptor) {
+      String annotationName = Type.getType(descriptor).getClassName();
+      if (!annotations.contains(annotationName)) annotations.add(annotationName);
+      Map<String, Object> values = new LinkedHashMap<>();
+      return valueVisitor(values, () -> annotationValues.put(annotationName, Json.write(values)));
+    }
+
+    private static AnnotationVisitor valueVisitor(Map<String, Object> values, Runnable completed) {
+      return new AnnotationVisitor(Opcodes.ASM9) {
+        @Override public void visit(String name, Object value) {
+          values.put(name, annotationValue(value));
+        }
+
+        @Override public void visitEnum(String name, String descriptor, String value) {
+          values.put(name, Type.getType(descriptor).getClassName() + "#" + value);
+        }
+
+        @Override public AnnotationVisitor visitAnnotation(String name, String descriptor) {
+          Map<String, Object> nested = new LinkedHashMap<>();
+          values.put(name, nested);
+          return valueVisitor(nested, () -> {});
+        }
+
+        @Override public AnnotationVisitor visitArray(String name) {
+          List<Object> entries = new ArrayList<>();
+          values.put(name, entries);
+          return arrayVisitor(entries);
+        }
+
+        @Override public void visitEnd() { completed.run(); }
+      };
+    }
+
+    private static AnnotationVisitor arrayVisitor(List<Object> values) {
+      return new AnnotationVisitor(Opcodes.ASM9) {
+        @Override public void visit(String name, Object value) {
+          values.add(annotationValue(value));
+        }
+
+        @Override public void visitEnum(String name, String descriptor, String value) {
+          values.add(Type.getType(descriptor).getClassName() + "#" + value);
+        }
+
+        @Override public AnnotationVisitor visitAnnotation(String name, String descriptor) {
+          Map<String, Object> nested = new LinkedHashMap<>();
+          values.add(nested);
+          return valueVisitor(nested, () -> {});
+        }
+
+        @Override public AnnotationVisitor visitArray(String name) {
+          List<Object> nested = new ArrayList<>();
+          values.add(nested);
+          return arrayVisitor(nested);
+        }
+      };
+    }
+
+    private static Object annotationValue(Object value) {
+      if (value instanceof Type type) return type.getClassName();
+      if (value instanceof byte[] array) {
+        List<Integer> result = new ArrayList<>(array.length);
+        for (byte item : array) result.add((int) item);
+        return result;
+      }
+      if (value instanceof boolean[] array) {
+        List<Boolean> result = new ArrayList<>(array.length);
+        for (boolean item : array) result.add(item);
+        return result;
+      }
+      if (value instanceof short[] array) {
+        List<Integer> result = new ArrayList<>(array.length);
+        for (short item : array) result.add((int) item);
+        return result;
+      }
+      if (value instanceof char[] array) {
+        List<String> result = new ArrayList<>(array.length);
+        for (char item : array) result.add(String.valueOf(item));
+        return result;
+      }
+      if (value instanceof int[] array) return Arrays.stream(array).boxed().toList();
+      if (value instanceof long[] array) return Arrays.stream(array).boxed().toList();
+      if (value instanceof float[] array) {
+        List<Float> result = new ArrayList<>(array.length);
+        for (float item : array) result.add(item);
+        return result;
+      }
+      if (value instanceof double[] array) return Arrays.stream(array).boxed().toList();
+      return value;
     }
 
     private static String classKind(int access) {

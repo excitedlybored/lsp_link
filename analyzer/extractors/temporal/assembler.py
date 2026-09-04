@@ -11,12 +11,12 @@ from analyzer.extractors.core import QueryResult
 
 
 def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[str, Any]]:
-    sdk_rows = _rows(results, "sdk_classes")
+    sdk_rows = _all_rows(results, "sdk_classes", "compact_sdk_classes")
     workflow_contracts, workflow_aliases = _contracts(_all_rows(
-        results, "workflow_contracts", "jvm_workflow_contracts"
+        results, "workflow_contracts", "jvm_workflow_contracts", "compact_workflow_contracts"
     ))
     activity_contracts, activity_aliases = _contracts(_all_rows(
-        results, "activity_contracts", "jvm_activity_contracts"
+        results, "activity_contracts", "jvm_activity_contracts", "compact_activity_contracts"
     ))
     contract_aliases = {**workflow_aliases, **activity_aliases}
     workflow_ids = set(workflow_contracts)
@@ -24,7 +24,7 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
 
     methods_by_owner_and_key: dict[str, dict[tuple[str, str], dict[str, Any]]] = defaultdict(dict)
     method_aliases: dict[str, str] = {}
-    for method in _all_rows(results, "annotated_methods", "jvm_annotated_methods"):
+    for method in _all_rows(results, "annotated_methods", "jvm_annotated_methods", "compact_annotated_methods"):
         owner_id = contract_aliases.get(
             method["ownerId"],
             _type_semantic_key(method.get("packageName"), method["ownerName"], "interface"),
@@ -34,9 +34,14 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
             method.get("signature"),
         )
         key = (method["methodName"], method["methodRole"])
+        jvm_signature = _jvm_method_signature(
+            method.get("packageName"), method["ownerName"], method["methodName"],
+            method.get("signature"),
+        )
         existing = methods_by_owner_and_key[owner_id].get(key)
         if existing is None:
             method_aliases[method["methodId"]] = semantic_key
+            method_aliases[jvm_signature] = semantic_key
             methods_by_owner_and_key[owner_id][key] = {
                 **method,
                 "id": semantic_key,
@@ -47,6 +52,7 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
             }
         else:
             method_aliases[method["methodId"]] = existing["semanticKey"]
+            method_aliases[jvm_signature] = existing["semanticKey"]
             _append_unique(existing["lbugNodeIds"], method["methodId"])
             _append_unique(existing["evidenceIds"], method["evidenceId"])
             existing["confidence"] = max(existing["confidence"], method["confidence"])
@@ -59,7 +65,7 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
 
     implementations_by_contract_key: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
     implementation_aliases: dict[str, str] = {}
-    for implementation in _all_rows(results, "implementations", "jvm_implementations"):
+    for implementation in _all_rows(results, "implementations", "jvm_implementations", "compact_implementations"):
         contract_id = contract_aliases.get(implementation["contractId"])
         if contract_id not in workflow_ids | activity_ids:
             continue
@@ -92,7 +98,7 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
     concrete_method_keys: dict[str, set[str]] = defaultdict(set)
     concrete_method_aliases: dict[str, str] = {}
     for implementation in _all_rows(
-        results, "method_implementations", "jvm_method_implementations"
+        results, "method_implementations", "jvm_method_implementations", "compact_method_implementations"
     ):
         contract_method_id = method_aliases.get(implementation["contractMethodId"])
         if contract_method_id is None:
@@ -113,12 +119,12 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
 
     temporal_callsite_ids = {
         row["callSiteId"] for row in _all_rows(
-            results, "temporal_sdk_calls", "jvm_temporal_sdk_calls"
+            results, "temporal_sdk_calls", "jvm_temporal_sdk_calls", "compact_temporal_sdk_calls"
         )
     }
     calls_by_owner: dict[str, list[dict[str, Any]]] = defaultdict(list)
     callsite_ids_by_owner: dict[str, set[str]] = defaultdict(set)
-    for call in _all_rows(results, "resolved_calls", "jvm_resolved_calls"):
+    for call in _all_rows(results, "resolved_calls", "jvm_resolved_calls", "compact_resolved_calls"):
         caller_owner = implementation_aliases.get(call["callerOwnerId"])
         if caller_owner not in implementation_ids:
             continue
@@ -197,7 +203,7 @@ def assemble(results: Mapping[str, QueryResult]) -> tuple[dict[str, Any], dict[s
 
     runtime_calls = []
     seen_runtime_calls: set[str] = set()
-    for call in _all_rows(results, "temporal_sdk_calls", "jvm_temporal_sdk_calls"):
+    for call in _all_rows(results, "temporal_sdk_calls", "jvm_temporal_sdk_calls", "compact_temporal_sdk_calls"):
         if call["callSiteId"] in seen_runtime_calls:
             continue
         seen_runtime_calls.add(call["callSiteId"])
@@ -1041,6 +1047,13 @@ def _method_semantic_key(
 ) -> str:
     owner_key = _type_semantic_key(package, owner_name, "type")
     return f"{owner_key}#method:{method_name}{signature or ''}"
+
+
+def _jvm_method_signature(
+    package: Any, owner_name: str, method_name: str, signature: Any,
+) -> str:
+    owner = f"{package}.{owner_name}" if package else owner_name
+    return f"{owner}#{method_name}{signature or ''}"
 
 
 def _classify_call(

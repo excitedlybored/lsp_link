@@ -56,6 +56,32 @@ From the repository root:
 node sample_projects/bazel-layered-java-monorepo-5000/generate.mjs
 ```
 
+## Enterprise proxy comparison
+
+Use this monorepo as the repeatable scale proxy for ASM graph changes. The two
+configurations keep Bazel scope, JDT batch semantics, concurrency, and quality
+gates identical; only the JVM publication projection changes.
+
+```bash
+./lsp-link index "$PWD/sample_projects/bazel-layered-java-monorepo-5000/workspace" \
+  --config sample_projects/bazel-layered-java-monorepo-5000/index-config-asm-legacy.json \
+  --output "$PWD/sample_projects/bazel-layered-java-monorepo-5000/workspace/.gitnexus/experiments/asm-legacy-proxy/lsp-lbug"
+
+./lsp-link index "$PWD/sample_projects/bazel-layered-java-monorepo-5000/workspace" \
+  --config sample_projects/bazel-layered-java-monorepo-5000/index-config-asm-compact.json \
+  --output "$PWD/sample_projects/bazel-layered-java-monorepo-5000/workspace/.gitnexus/experiments/asm-compact/lsp-lbug"
+
+npm run compare:semantic -- \
+  "$PWD/sample_projects/bazel-layered-java-monorepo-5000/workspace/.gitnexus/experiments/asm-legacy-proxy/lsp-lbug" \
+  "$PWD/sample_projects/bazel-layered-java-monorepo-5000/workspace/.gitnexus/experiments/asm-compact/lsp-lbug" \
+  --extractor temporal
+```
+
+This proxy is deliberately dominated by first-party classes. It verifies
+first-party retention, call fidelity, Temporal extraction, and publication at
+scale. It does not by itself model an enterprise classpath dominated by large
+third-party dependencies, where compact projection is expected to save more.
+
 Generation is reproducible. The ignored `workspace/` directory can be safely
 regenerated because it carries a synthetic-fixture marker. To generate into a
 different empty directory, use `--output /absolute/path`. The generator refuses

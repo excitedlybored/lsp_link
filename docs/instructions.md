@@ -610,6 +610,41 @@ LBUG_REPO=/absolute/path/to/repository/.gitnexus/lsp-lbug npm run mcp:analyzer
 The analyzer does not mutate the database. Its MCP server rejects write
 OpenCypher clauses.
 
+The standard index command uses ASM with the compact JVM projection:
+
+```bash
+./lsp-link index /absolute/path/to/repository
+npm run extract -- /absolute/path/to/repository/.gitnexus/lsp-lbug \
+  --extractor temporal --extractor kafka
+```
+
+This mode uses ASM for extraction but selects a compact graph at the
+first-party boundary. All repository-owned JVM declarations, annotations,
+inheritance, and calls are retained. External declarations are retained when
+referenced by a first-party call, signature, annotation, or hierarchy edge;
+unrelated dependency implementations and dependency-internal calls are not
+published. The rule is based on origin and reachability, not framework names.
+The previous schema remains available as an operational fallback:
+
+```bash
+./lsp-link index /absolute/path/to/repository --config config/asm-legacy.json
+```
+
+Version-1 configurations that omit `artifacts.projection` also retain legacy
+behavior. Version-2 configurations default to compact.
+
+For the isolated compact SootUp experiment, use the same index command with the experiment
+configuration. Its default output is deliberately separate from the production database:
+
+```bash
+./lsp-link index /absolute/path/to/repository --config config/sootup-experiment.json
+npm run extract -- /absolute/path/to/repository/.gitnexus/experiments/sootup/lsp-lbug \
+  --extractor temporal --extractor kafka
+```
+
+See [SOOTUP_EXPERIMENT.md](SOOTUP_EXPERIMENT.md) for the provider boundary, compact selection
+policy, fact cache, configuration evidence, and acceptance fixture.
+
 ## Query a language server directly
 
 ```bash

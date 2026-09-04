@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 2,
+  "name": "sootup-compact-experiment",
+  "bazel": {
+    "buildModelMode": "prepared",
+    "scope": {
+      "includeTargetPatterns": ["//..."],
+      "includeRuleKinds": [
+        "java_binary", "java_library", "java_test",
+        "kt_jvm_binary", "kt_jvm_library", "kt_jvm_test"
+      ],
+      "explicitTargets": [],
+      "excludeTargetNamePatterns": [".*_deploy_bannedcheck$", ".*-sonar$", ".*-sq$"],
+      "excludeLabels": [],
+      "excludeTags": ["coverage", "reporting-only"]
+    },
+    "preparation": {"concurrency": 4, "timeoutMs": 600000}
+  },
+  "crawl": {
+    "profile": "core", "javaSemantics": "batch", "concurrency": 4,
+    "jdtProcesses": 1, "resume": true
+  },
+  "artifacts": {
+    "analyzer": "sootup", "projection": "compact", "externalBodies": "none",
+    "concurrency": 4, "maxClasses": null, "fetchSources": true,
+    "classpathManifests": []
+  },
+  "configuration": {
+    "sources": ["spring", "kubernetes", "helm"],
+    "activeProfiles": [], "helmValuesFiles": []
+  },
+  "quality": {"failOnFailedBuildRoot": true},
+  "checkpoints": {"directory": null}
+}

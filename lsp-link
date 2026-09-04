@@ -80,6 +80,14 @@ run_pipeline() {
     npm run artifact-worker:build
   fi
 
+  local sootup_worker="${repository_root}/dist/sootup-worker/gitnexus-sootup-worker.jar"
+  if [ ! -f "$sootup_worker" ] \
+    || find "${repository_root}/sootup_worker" "${repository_root}/scripts/build-sootup-worker.mjs" \
+      -type f -newer "$sootup_worker" -print -quit | grep -q .; then
+    echo "[pipeline:build-tools] building the SootUp program-analysis worker"
+    npm run sootup-worker:build
+  fi
+
   local jdt_batch_extension="${repository_root}/dist/jdt-batch-extension/gitnexus-jdt-batch-extension.jar"
   if [ ! -f "$jdt_batch_extension" ] \
     || find "${repository_root}/jdt_batch_extension" "${repository_root}/scripts/build-jdt-batch-extension.mjs" \

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "default-index",
   "bazel": {
     "buildModelMode": "prepared",
@@ -35,10 +35,18 @@
     "resume": true
   },
   "artifacts": {
+    "analyzer": "asm",
+    "projection": "compact",
+    "externalBodies": "none",
     "concurrency": 4,
     "maxClasses": null,
     "fetchSources": true,
     "classpathManifests": []
+  },
+  "configuration": {
+    "sources": [],
+    "activeProfiles": [],
+    "helmValuesFiles": []
   },
   "quality": {
     "failOnFailedBuildRoot": true

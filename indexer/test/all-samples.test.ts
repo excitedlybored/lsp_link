@@ -22,6 +22,7 @@ const IGNORED_DIRECTORIES = new Set([
   'bazel-out', 'bazel-testlogs',
 ]);
 const SPRING_ACCEPTANCE_SAMPLE = 'gs-rest-service';
+const MULTI_ROOT_SCALE_SAMPLE = 'bazel-springboot-temporal-monorepo';
 
 interface SampleInventory {
   name: string;
@@ -273,6 +274,10 @@ function endToEndConfig(prebuilt: boolean, sampleName: string): object {
     crawl: {
       profile: sampleName === SPRING_ACCEPTANCE_SAMPLE ? 'exhaustive' : 'core',
       concurrency: 4,
+      // This fixture deliberately contains 40 independent Bazel roots. Keep the
+      // production default at one JDT process, but exercise the explicit
+      // benchmark-supported sharding policy in the scale acceptance test.
+      jdtProcesses: sampleName === MULTI_ROOT_SCALE_SAMPLE ? 4 : 1,
       resume: false,
     },
     artifacts: { concurrency: 4, maxClasses: 1, fetchSources: false, classpathManifests: [] },

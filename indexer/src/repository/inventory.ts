@@ -13,6 +13,7 @@ import {
 } from './model.js';
 import type { IRepositoryDocumentProvider } from './provider.js';
 import { RepositoryDocumentProviderRegistry } from './registry.js';
+import { addConfigurationEvidence, type ConfigurationEvidenceOptions } from './configuration-evidence.js';
 
 const INVENTORY_IGNORE = [
   '**/.git/**', '**/.gitnexus/**', '**/node_modules/**', '**/target/**', '**/build/**',
@@ -23,6 +24,7 @@ export interface RepositoryInventoryOptions {
   concurrency?: number;
   maxFileBytes?: number;
   signal?: AbortSignal;
+  configuration?: ConfigurationEvidenceOptions;
 }
 
 interface RoutedFile {
@@ -88,7 +90,9 @@ export async function buildRepositoryInventory(
         documentCount: documents.length, declarationCount: declarations.length,
       }],
       providers: [...providerStates.values()], documents, declarations,
+      configurationKeys: [], configurationValues: [], configurationReferences: [], deploymentUnits: [],
     };
+    if (options.configuration) await addConfigurationEvidence(batch, options.configuration);
     return batch;
   } finally {
     for (const provider of started.reverse()) {

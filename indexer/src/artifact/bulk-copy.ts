@@ -188,6 +188,7 @@ export async function bulkCopyArtifactGraph(
   rotateConnection?: () => Promise<LbugConnectionLike>,
   selectedResolutions?: ReadonlyMap<string, JvmClassResolution>,
 ): Promise<void> {
+  reportPublicationEstimate(initialization, finalBatch, spoolFiles, run, selectedResolutions);
   let activeConnection = connection;
   const trace = (message: string) => { if (process.env.GITNEXUS_BULK_COPY_TRACE === '1') console.error(`[bulk-copy] ${message}`); };
   let copiedFragments = 0;
@@ -205,6 +206,8 @@ export async function bulkCopyArtifactGraph(
     : new Map<string, JvmClassResolution>();
   const resolutions = selectedResolutions ?? computedResolutions!;
   const references = new Map<string, string>();
+  const methodReferences = new Map<string, JvmArtifactBatch['methodReferences'][number]>();
+  const typeReferences = new Map<string, JvmArtifactBatch['typeReferences'][number]>();
   const chunks = chunked(spoolFiles, COPY_ARTIFACTS_PER_CHUNK);
   try {
     // Generate, import, and remove bounded node CSV chunks. Keeping the
@@ -225,6 +228,8 @@ export async function bulkCopyArtifactGraph(
             for (const value of batch.binaryReferences) {
               references.set(value.binaryName, value.stageId);
             }
+            for (const value of batch.methodReferences ?? []) methodReferences.set(value.signature, value);
+            for (const value of batch.typeReferences ?? []) typeReferences.set(value.binaryName, value);
           }
         },
       );
@@ -239,21 +244,55 @@ export async function bulkCopyArtifactGraph(
       reportChunkProgress('node-copying', chunkIndex, chunks.length, files.length);
     }
 
+    // The final batch contains canonical resolution outcomes computed after all
+    // artifact streams have been observed. Let those outcomes replace the
+    // provisional "external" reference records emitted while streaming.
+    for (const value of finalBatch.methodReferences ?? []) {
+      methodReferences.set(value.signature, value);
+    }
+    for (const value of finalBatch.typeReferences ?? []) {
+      typeReferences.set(value.binaryName, value);
+    }
+
+    if (run.projection === 'legacy') {
+      await copyLookupNodeChunks(
+        workDirectory, 'class-resolutions', 'JvmClassResolution',
+        iterableChunks(resolutions.values(), COPY_LOOKUP_ROWS_PER_CHUNK),
+        Math.ceil(resolutions.size / COPY_LOOKUP_ROWS_PER_CHUNK),
+        (csv, value) => csv.row('JvmClassResolution', [
+          value.binaryName, value.stageId, value.classId, value.artifactId, value.classpathOrdinal,
+        ]),
+        () => activeConnection,
+        async () => checkpointCopiedFragments(),
+      );
+    }
     await copyLookupNodeChunks(
-      workDirectory, 'class-resolutions', 'JvmClassResolution',
-      iterableChunks(resolutions.values(), COPY_LOOKUP_ROWS_PER_CHUNK),
-      Math.ceil(resolutions.size / COPY_LOOKUP_ROWS_PER_CHUNK),
-      (csv, value) => csv.row('JvmClassResolution', [
-        value.binaryName, value.stageId, value.classId, value.artifactId, value.classpathOrdinal,
+      workDirectory, 'method-references', 'JvmMethodReference',
+      iterableChunks(methodReferences.values(), COPY_LOOKUP_ROWS_PER_CHUNK),
+      Math.ceil(methodReferences.size / COPY_LOOKUP_ROWS_PER_CHUNK),
+      (csv, value) => csv.row('JvmMethodReference', [
+        value.signature, value.stageId, value.owner, value.name, value.descriptor, value.status,
       ]),
       () => activeConnection,
       async () => checkpointCopiedFragments(),
     );
+    if (run.projection === 'legacy') {
+      await copyLookupNodeChunks(
+        workDirectory, 'binary-references', 'JvmBinaryReference',
+        iterableChunks(references, COPY_LOOKUP_ROWS_PER_CHUNK),
+        Math.ceil(references.size / COPY_LOOKUP_ROWS_PER_CHUNK),
+        (csv, [binaryName, stageId]) => csv.row('JvmBinaryReference', [binaryName, stageId]),
+        () => activeConnection,
+        async () => checkpointCopiedFragments(),
+      );
+    }
     await copyLookupNodeChunks(
-      workDirectory, 'binary-references', 'JvmBinaryReference',
-      iterableChunks(references, COPY_LOOKUP_ROWS_PER_CHUNK),
-      Math.ceil(references.size / COPY_LOOKUP_ROWS_PER_CHUNK),
-      (csv, [binaryName, stageId]) => csv.row('JvmBinaryReference', [binaryName, stageId]),
+      workDirectory, 'type-references', 'JvmTypeReference',
+      iterableChunks(typeReferences.values(), COPY_LOOKUP_ROWS_PER_CHUNK),
+      Math.ceil(typeReferences.size / COPY_LOOKUP_ROWS_PER_CHUNK),
+      (csv, value) => csv.row('JvmTypeReference', [
+        value.binaryName, value.stageId, value.status,
+      ]),
       () => activeConnection,
       async () => checkpointCopiedFragments(),
     );
@@ -274,7 +313,7 @@ export async function bulkCopyArtifactGraph(
         workDirectory, `relations-${chunkIndex}`, 'relationships', chunkIndex, chunks.length,
         async (output) => {
           for (const file of files) for await (const batch of readBatches(file)) {
-            writeRelationFacts(output, batch);
+            writeRelationFacts(output, batch, run.projection);
           }
         },
       );
@@ -298,7 +337,7 @@ export async function bulkCopyArtifactGraph(
       matchingResolutions(resolutions.values(), references), COPY_LOOKUP_ROWS_PER_CHUNK,
     );
     let resolutionLinkChunkIndex = 0;
-    for (const values of resolutionLinkChunks) {
+    for (const values of run.projection === 'legacy' ? resolutionLinkChunks : []) {
       const chunkIndex = resolutionLinkChunkIndex++;
       const csv = await generateCsvChunk(
         workDirectory, `resolution-links-${chunkIndex}`, 'resolution-links',
@@ -346,7 +385,7 @@ export async function bulkCopyArtifactGraph(
     await repository.mergeBatch(links);
     await withMemoryTelemetry('resolution-finalization', async () => {
       trace('final relations');
-      await repository.finalizeAsmRelations(run.id);
+      if (run.projection === 'legacy') await repository.finalizeAsmRelations(run.id);
       trace('final counts');
       await repository.finalizeAsmRun(run);
     }, { graph: 'jvm' });
@@ -357,13 +396,48 @@ export async function bulkCopyArtifactGraph(
   }
 }
 
+function reportPublicationEstimate(
+  initialization: JvmArtifactBatch,
+  finalBatch: JvmArtifactBatch,
+  spoolFiles: string[],
+  run: JvmArtifactEnrichmentRun,
+  resolutions?: ReadonlyMap<string, JvmClassResolution>,
+): void {
+  const spoolBytes = spoolFiles.reduce((total, file) => {
+    try { return total + fs.statSync(file).size; } catch { return total; }
+  }, 0);
+  const compact = run.projection === 'compact';
+  const declarationNodes = run.classCount + run.methodCount + run.fieldCount;
+  const estimatedNodeRows = 1 + run.artifactCount + declarationNodes
+    + (compact ? run.callSiteCount : run.callSiteCount + (resolutions?.size ?? 0));
+  const estimatedRelationshipRows = run.artifactCount + declarationNodes + run.callSiteCount
+    + initialization.relations.length + finalBatch.relations.length
+    + initialization.bindings.length + finalBatch.bindings.length;
+  console.log(`[stage:jvm-publication-estimate] ${JSON.stringify({
+    provider: run.provider,
+    projection: run.projection,
+    artifacts: run.artifactCount,
+    classes: run.classCount,
+    methods: run.methodCount,
+    fields: run.fieldCount,
+    calls: run.callSiteCount,
+    resolutionCandidates: resolutions?.size ?? 0,
+    estimatedNodeRows,
+    estimatedRelationshipRows,
+    durableSpoolBytes: spoolBytes,
+    durableSpoolMiB: Number((spoolBytes / 1024 / 1024).toFixed(2)),
+  })}`);
+}
+
 const NODE_TABLES = [
-  { key: 'JvmClass', name: 'JvmClass', columns: ['id','stageId','artifactId','binaryName','packageName','simpleName','kind','access','superName','sourceEntry','isSeed','wasDisassembled','codeOrigin'] },
-  { key: 'JvmMethod', name: 'JvmMethod', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access','hasCode','isExternalPlaceholder','codeOrigin'] },
-  { key: 'JvmField', name: 'JvmField', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access','codeOrigin'] },
+  { key: 'JvmClass', name: 'JvmClass', columns: ['id','stageId','artifactId','binaryName','packageName','simpleName','kind','access','superName','sourceEntry','isSeed','wasDisassembled','annotationValuesJson','codeOrigin'] },
+  { key: 'JvmMethod', name: 'JvmMethod', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access','hasCode','isExternalPlaceholder','annotationValuesJson','codeOrigin'] },
+  { key: 'JvmField', name: 'JvmField', columns: ['id','stageId','classId','owner','name','descriptor','declaration','access','annotationValuesJson','codeOrigin'] },
   { key: 'JvmCallSite', name: 'JvmCallSite', columns: ['id','stageId','callerMethodId','bytecodeOffset','opcode','targetOwner','targetName','targetDescriptor','status','codeOrigin'] },
   { key: 'JvmClassResolution', name: 'JvmClassResolution', columns: ['binaryName','stageId','classId','artifactId','classpathOrdinal'] },
   { key: 'JvmBinaryReference', name: 'JvmBinaryReference', columns: ['binaryName','stageId'] },
+  { key: 'JvmMethodReference', name: 'JvmMethodReference', columns: ['signature','stageId','owner','name','descriptor','status'] },
+  { key: 'JvmTypeReference', name: 'JvmTypeReference', columns: ['binaryName','stageId','status'] },
 ] as const;
 const FACT_NODE_TABLES = NODE_TABLES.slice(0, 4);
 
@@ -372,6 +446,8 @@ const RELATION_TABLES = [
     .map(([from, to]) => ({ key: `JvmRelation-${from}-${to}`, table: 'JvmRelation', from, to, columns: ['from','to','id','kind','stageId','status','ordinal'] })),
   ...([['JvmBinaryReference','JvmClass'],['JvmBinaryReference','JvmCallSite']] as const)
     .map(([from, to]) => ({ key: `JvmBinaryReferenceRelation-${to}`, table: 'JvmBinaryReferenceRelation', from, to, columns: ['from','to','id','kind','stageId','ordinal'] })),
+  { key: 'JvmCompactCall-JvmMethod-JvmMethodReference', table: 'JvmCompactCall', from: 'JvmMethod', to: 'JvmMethodReference', columns: ['from','to','id','stageId','bytecodeOffset','opcode','dispatchKind','confidence','evidence','ordinal'] },
+  { key: 'JvmCompactTypeReference-JvmClass-JvmTypeReference', table: 'JvmCompactTypeReference', from: 'JvmClass', to: 'JvmTypeReference', columns: ['from','to','id','stageId','kind','confidence','ordinal'] },
 ] as const;
 
 const RESOLUTION_LINK = {
@@ -389,7 +465,11 @@ function writeNodeFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
   for (const v of batch.callSites) csv.object('JvmCallSite', v as unknown as Record<string, unknown>, NODE_TABLES[3].columns);
 }
 
-function writeRelationFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
+function writeRelationFacts(
+  csv: BulkCsvFiles,
+  batch: JvmArtifactBatch,
+  projection: 'legacy' | 'compact',
+): void {
   for (const v of batch.relations) {
     const key = `JvmRelation-${v.sourceKind}-${v.targetKind}`;
     const spec = RELATION_TABLES.find((value) => value.key === key)!;
@@ -398,7 +478,7 @@ function writeRelationFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
       stageId: v.stageId, status: v.status, ordinal: v.ordinal ?? null,
     }, spec.columns);
   }
-  for (const v of batch.binaryReferenceRelations) {
+  for (const v of projection === 'legacy' ? batch.binaryReferenceRelations : []) {
     const key = `JvmBinaryReferenceRelation-${v.targetKind}`;
     const spec = RELATION_TABLES.find((value) => value.key === key)!;
     csv.object(key, {
@@ -406,6 +486,15 @@ function writeRelationFacts(csv: BulkCsvFiles, batch: JvmArtifactBatch): void {
       stageId: v.stageId, ordinal: v.ordinal,
     }, spec.columns);
   }
+  for (const v of batch.compactCalls ?? []) csv.object('JvmCompactCall-JvmMethod-JvmMethodReference', {
+    from: v.callerMethodId, to: v.targetSignature, id: v.id, stageId: v.stageId,
+    bytecodeOffset: v.bytecodeOffset, opcode: v.opcode, dispatchKind: v.dispatchKind,
+    confidence: v.confidence, evidence: v.evidence, ordinal: v.ordinal,
+  }, RELATION_TABLES[RELATION_TABLES.length - 2]!.columns);
+  for (const v of batch.compactTypeReferences ?? []) csv.object('JvmCompactTypeReference-JvmClass-JvmTypeReference', {
+    from: v.sourceClassId, to: v.targetBinaryName, id: v.id, stageId: v.stageId,
+    kind: v.kind, confidence: v.confidence, ordinal: v.ordinal,
+  }, RELATION_TABLES[RELATION_TABLES.length - 1]!.columns);
 }
 
 async function generateCsvChunk(
@@ -491,7 +580,7 @@ function* matchingResolutions(
 async function copyLookupNodeChunks<T>(
   workDirectory: string,
   name: string,
-  tableName: 'JvmClassResolution' | 'JvmBinaryReference',
+  tableName: 'JvmClassResolution' | 'JvmBinaryReference' | 'JvmMethodReference' | 'JvmTypeReference',
   chunks: Iterable<T[]>,
   chunkCount: number,
   write: (csv: BulkCsvFiles, value: T) => void,

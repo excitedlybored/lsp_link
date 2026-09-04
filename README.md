@@ -102,6 +102,35 @@ npm run graph:summary -- /path/to/repository/.gitnexus/lsp-lbug
 npm run extract -- /path/to/repository/.gitnexus/lsp-lbug --extractor temporal
 ```
 
+The normal one-command workflow now uses ASM with the compact,
+framework-neutral JVM projection and publishes to `.gitnexus/lsp-lbug`:
+
+```bash
+./lsp-link index /path/to/repository
+npm run extract -- /path/to/repository/.gitnexus/lsp-lbug \
+  --extractor temporal --extractor kafka
+```
+
+Compact ASM retains complete first-party declarations and calls plus every
+external signature, annotation, and hierarchy contract reached from first-party
+code. It does not use framework package allowlists or publish unrelated
+dependency implementations. Publication logs a `jvm-publication-estimate`
+before importing JVM rows. Existing version-1 configuration files that omit a
+projection retain legacy behavior. To explicitly recover the old graph schema,
+run `./lsp-link index /path/to/repository --config config/asm-legacy.json`.
+
+The selective SootUp compact-graph experiment uses the same command, writes to a separate
+experimental database by default, and can compose Temporal and Kafka findings:
+
+```bash
+./lsp-link index /path/to/repository --config config/sootup-experiment.json
+npm run extract -- /path/to/repository/.gitnexus/experiments/sootup/lsp-lbug \
+  --extractor temporal --extractor kafka
+```
+
+See [Selective SootUp JVM graph experiment](docs/SOOTUP_EXPERIMENT.md) for its storage policy,
+cache behavior, validation fixture, and current boundaries.
+
 The indexer saves resumable checkpoints beside the output. Re-run the same
 command to resume compatible work. Use `--no-resume` for a deliberately fresh
 crawl, or `--checkpoint-directory PATH` to store checkpoints elsewhere.

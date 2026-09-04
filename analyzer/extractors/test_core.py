@@ -46,6 +46,70 @@ class ExtractorPolicyTest(unittest.TestCase):
         self.assertIn("jvm_workflow_contracts", {query.id for query in extractor.queries})
         self.assertIn("jvm_temporal_sdk_calls", {query.id for query in extractor.queries})
 
+    def test_kafka_extractor_is_portable_and_supports_both_jvm_schemas(self) -> None:
+        extractor = load_extractor("kafka")
+        query_ids = {query.id for query in extractor.queries}
+        self.assertEqual(extractor.data_source, "ladybugdb-only")
+        self.assertEqual(extractor.applicability_semantic_types, ("producer", "listener"))
+        self.assertIn("legacy_producers", query_ids)
+        self.assertIn("compact_producers", query_ids)
+        self.assertIn("configuration_candidates", query_ids)
+        self.assertEqual(
+            next(query for query in extractor.queries if query.id == "legacy_producers").projections,
+            ("legacy",),
+        )
+        self.assertEqual(
+            next(query for query in extractor.queries if query.id == "compact_producers").projections,
+            ("compact",),
+        )
+
+    def test_kafka_assembler_preserves_topic_candidates_and_evidence(self) -> None:
+        from analyzer.extractors.kafka.assembler import assemble
+
+        result = lambda name, rows: QueryResult(name, name, "test", [], rows)
+        summary, findings = assemble({
+            "compact_producers": result("compact_producers", [{
+                "evidenceId": "call", "ownerId": "owner", "packageName": "example",
+                "ownerName": "PublishingActivityImpl", "methodId": "method",
+                "methodName": "publish", "descriptor": "(Ljava/lang/String;)V",
+                "confidence": 0.9,
+            }]),
+            "listeners": result("listeners", [{
+                "evidenceId": "listener", "ownerId": "listener-owner", "packageName": "example",
+                "ownerName": "TopicListener", "methodId": "listener-method", "methodName": "receive",
+                "descriptor": "(Ljava/lang/String;)V", "confidence": 1.0,
+                "annotationValuesJson": '{"listener":"${messaging.topic}"}',
+            }]),
+            "configuration_candidates": result("configuration_candidates", [{
+                "evidenceId": "config", "key": "messaging.topic",
+                "rawValue": "${TOPIC_NAME:neutral.events}", "resolvedValue": "neutral.events",
+                "status": "symbolic", "confidence": 0.65,
+            }]),
+        })
+        self.assertEqual(summary["producerCount"], 1)
+        self.assertEqual(findings["topics"][0]["name"], "neutral.events")
+        self.assertEqual(set(findings["topics"][0]["evidenceIds"]), {"listener", "config"})
+        self.assertEqual(
+            {edge["kind"] for edge in findings["graph"]["edges"]},
+            {"PUBLISHES_TO", "CONSUMED_BY"},
+        )
+
+    def test_semantic_parity_normalization_ignores_provider_specific_ids(self) -> None:
+        from analyzer.extractors.parity import normalized_semantics
+
+        def report(prefix: str) -> SimpleNamespace:
+            return SimpleNamespace(extractor_id="kafka", findings={"graph": {
+                "nodes": [
+                    {"id": f"{prefix}-producer", "kind": "producer", "label": "publish",
+                     "semanticKey": "java:type:example.Activity#method:publish()V"},
+                    {"id": f"{prefix}-topic", "kind": "kafka_topic", "label": "neutral.events"},
+                ],
+                "edges": [{"id": f"{prefix}-edge", "kind": "PUBLISHES_TO",
+                           "source": f"{prefix}-producer", "target": f"{prefix}-topic"}],
+            }})
+
+        self.assertEqual(normalized_semantics([report("asm")]), normalized_semantics([report("sootup")]))
+
     def test_rejects_repository_specific_paths(self) -> None:
         query = EvidenceQuery(
             id="fixture_path",
@@ -683,6 +747,104 @@ class TemporalJvmEvidenceTest(unittest.TestCase):
                 "id": relation_id, "kind": kind,
             },
         )
+
+
+class CompactEvidenceQueryTest(unittest.TestCase):
+    def test_compact_temporal_and_kafka_queries_bind_against_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = ladybug.Database(str(Path(directory) / "compact.lbug"))
+            connection = ladybug.Connection(database)
+            try:
+                statements = [
+                    "CREATE NODE TABLE JvmArtifactEnrichmentRun(id STRING, provider STRING, PRIMARY KEY(id))",
+                    "CREATE NODE TABLE JvmClass(id STRING, stageId STRING, artifactId STRING, binaryName STRING, "
+                    "packageName STRING, simpleName STRING, kind STRING, sourceEntry STRING, "
+                    "annotations STRING[], PRIMARY KEY(id))",
+                    "CREATE NODE TABLE JvmMethod(id STRING, stageId STRING, classId STRING, owner STRING, name STRING, "
+                    "descriptor STRING, annotations STRING[], annotationValuesJson STRING, PRIMARY KEY(id))",
+                    "CREATE NODE TABLE JvmMethodReference(signature STRING, owner STRING, name STRING, "
+                    "descriptor STRING, PRIMARY KEY(signature))",
+                    "CREATE NODE TABLE JvmTypeReference(binaryName STRING, PRIMARY KEY(binaryName))",
+                    "CREATE NODE TABLE ConfigurationValue(id STRING, key STRING, rawValue STRING, "
+                    "resolvedValue STRING, status STRING, sourceKind STRING, scope STRING, "
+                    "profileName STRING, precedence INT32, confidence DOUBLE, documentId STRING, "
+                    "startLine INT32, PRIMARY KEY(id))",
+                    "CREATE NODE TABLE ConfigurationReference(id STRING, valueId STRING, targetKey STRING, "
+                    "kind STRING, status STRING, PRIMARY KEY(id))",
+                    "CREATE NODE TABLE DeploymentUnit(id STRING, kind STRING, name STRING, namespace STRING, "
+                    "documentId STRING, PRIMARY KEY(id))",
+                    "CREATE REL TABLE JvmRelation(FROM JvmClass TO JvmMethod, id STRING, kind STRING)",
+                    "CREATE REL TABLE JvmCompactCall(FROM JvmMethod TO JvmMethodReference, id STRING, "
+                    "confidence DOUBLE, bytecodeOffset INT64, evidence STRING)",
+                    "CREATE REL TABLE JvmCompactTypeReference(FROM JvmClass TO JvmTypeReference, "
+                    "id STRING, kind STRING, confidence DOUBLE)",
+                ]
+                for statement in statements:
+                    connection.execute(statement)
+                client = SimpleNamespace(conn=connection)
+                temporal = load_extractor("temporal")
+                kafka = load_extractor("kafka")
+                for query in [*temporal.queries, *kafka.queries]:
+                    if query.projections == ("compact",) or query.id in {
+                        "listeners", "configuration_candidates", "configuration_references", "deployments"
+                    }:
+                        ExtractionPipeline._execute(client, query)
+
+                connection.execute(
+                    "CREATE (:JvmArtifactEnrichmentRun {id:'stage', provider:'asm'})"
+                )
+                connection.execute(
+                    "CREATE (:JvmClass {id:'caller-class', stageId:'stage', artifactId:'app', "
+                    "binaryName:'example.Driver', packageName:'example', simpleName:'Driver', "
+                    "kind:'class', sourceEntry:'example/Driver.java', annotations:[]})"
+                )
+                connection.execute(
+                    "CREATE (:JvmClass {id:'contract-class', stageId:'stage', artifactId:'app', "
+                    "binaryName:'example.OrderWorkflow', packageName:'example', "
+                    "simpleName:'OrderWorkflow', kind:'interface', "
+                    "sourceEntry:'example/OrderWorkflow.java', annotations:[]})"
+                )
+                connection.execute(
+                    "CREATE (:JvmMethod {id:'caller-method', stageId:'stage', "
+                    "classId:'caller-class', owner:'example.Driver', name:'drive', descriptor:'()V', "
+                    "annotations:[], annotationValuesJson:'{}'})"
+                )
+                connection.execute(
+                    "CREATE (:JvmMethod {id:'signal-method', stageId:'stage', "
+                    "classId:'contract-class', owner:'example.OrderWorkflow', name:'cancel', "
+                    "descriptor:'()V', annotations:['io.temporal.workflow.SignalMethod'], "
+                    "annotationValuesJson:'{}'})"
+                )
+                connection.execute(
+                    "CREATE (:JvmMethodReference {signature:'example.OrderWorkflow#cancel()V', "
+                    "owner:'example.OrderWorkflow', name:'cancel', descriptor:'()V'})"
+                )
+                connection.execute(
+                    "MATCH (c:JvmClass {id:'caller-class'}), (m:JvmMethod {id:'caller-method'}) "
+                    "CREATE (c)-[:JvmRelation {id:'declares-caller', kind:'DECLARES_METHOD'}]->(m)"
+                )
+                connection.execute(
+                    "MATCH (c:JvmClass {id:'contract-class'}), (m:JvmMethod {id:'signal-method'}) "
+                    "CREATE (c)-[:JvmRelation {id:'declares-signal', kind:'DECLARES_METHOD'}]->(m)"
+                )
+                connection.execute(
+                    "MATCH (m:JvmMethod {id:'caller-method'}), "
+                    "(r:JvmMethodReference {signature:'example.OrderWorkflow#cancel()V'}) "
+                    "CREATE (m)-[:JvmCompactCall {id:'signal-call', confidence:1.0, "
+                    "bytecodeOffset:7, evidence:'ASM bytecode invocation'}]->(r)"
+                )
+                sdk_query = next(
+                    query for query in temporal.queries
+                    if query.id == "compact_temporal_sdk_calls"
+                )
+                sdk_result = ExtractionPipeline._execute(client, sdk_query)
+                self.assertEqual(len(sdk_result.rows), 1)
+                self.assertEqual(sdk_result.rows[0]["targetId"], "signal-method")
+                self.assertEqual(sdk_result.rows[0]["targetRole"], "signal")
+                self.assertEqual(sdk_result.rows[0]["providerAuthority"], "asm")
+            finally:
+                connection.close()
+                database.close()
 
 
 if __name__ == "__main__":

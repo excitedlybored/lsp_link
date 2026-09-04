@@ -1,0 +1,65 @@
+{
+  "id": "kafka",
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "description": "Kafka producers, listeners, and topic candidates from JVM and configuration evidence.",
+  "dataSource": "ladybugdb-only",
+  "identityPolicy": "framework-semantic-identities",
+  "semanticTypes": {
+    "producer": "org.springframework.kafka.core.KafkaTemplate",
+    "listener": "org.springframework.kafka.annotation.KafkaListener"
+  },
+  "applicabilitySemanticTypes": ["producer", "listener"],
+  "completenessRequirements": {
+    "tables": ["LspCoverage", "LspAnalysisRun", "JvmArtifactEnrichmentRun"],
+    "lspCapabilities": ["textDocument/documentSymbol"]
+  },
+  "assemblerModule": "analyzer.extractors.kafka.assembler",
+  "requiredTables": [
+    "JvmClass", "JvmMethod", "JvmCallSite", "JvmCompactCall", "JvmMethodReference",
+    "JvmRelation", "ConfigurationValue", "ConfigurationReference", "DeploymentUnit"
+  ],
+  "queries": [
+    {
+      "id": "legacy_producers",
+      "projections": ["legacy"],
+      "category": "producer",
+      "description": "KafkaTemplate send operations from legacy JVM call sites.",
+      "file": "queries/legacy_producers.cypher",
+      "parameters": {"producerType": {"semanticType": "producer"}}
+    },
+    {
+      "id": "compact_producers",
+      "projections": ["compact"],
+      "category": "producer",
+      "description": "KafkaTemplate send operations from compact SootUp calls.",
+      "file": "queries/compact_producers.cypher",
+      "parameters": {"producerType": {"semanticType": "producer"}}
+    },
+    {
+      "id": "listeners",
+      "category": "consumer",
+      "description": "Methods annotated as Kafka listeners.",
+      "file": "queries/listeners.cypher",
+      "parameters": {"listenerType": {"semanticType": "listener"}}
+    },
+    {
+      "id": "configuration_candidates",
+      "category": "configuration",
+      "description": "Topic and Kafka configuration candidates with deployment provenance.",
+      "file": "queries/configuration_candidates.cypher"
+    },
+    {
+      "id": "configuration_references",
+      "category": "configuration",
+      "description": "Framework-neutral references among configuration keys and runtime scopes.",
+      "file": "queries/configuration_references.cypher"
+    },
+    {
+      "id": "deployments",
+      "category": "deployment",
+      "description": "Deployment units available for scoped resolution.",
+      "file": "queries/deployments.cypher"
+    }
+  ]
+}

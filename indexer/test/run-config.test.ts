@@ -13,6 +13,8 @@ const SCALE_SAMPLE_CONFIG = fileURLToPath(new URL(
   '../../sample_projects/bazel-layered-java-monorepo-5000/index-config.json',
   import.meta.url,
 ));
+const SOOTUP_EXPERIMENT_CONFIG = fileURLToPath(new URL('../../config/sootup-experiment.json', import.meta.url));
+const ASM_LEGACY_CONFIG = fileURLToPath(new URL('../../config/asm-legacy.json', import.meta.url));
 
 type JsonObject = Record<string, any>;
 
@@ -87,7 +89,49 @@ test('loads the tracked polyglot default without repository-specific labels', ()
     'kt_jvm_test',
   ]);
   assert.deepEqual(config.bazel.scope.excludeLabels, []);
+  assert.equal(config.artifacts.analyzer, 'asm');
+  assert.equal(config.artifacts.projection, 'compact');
   assert.equal(config.quality.failOnFailedBuildRoot, true);
+  const options = parseLspKnowledgeGraphBuildOptions([
+    'build-index', '/workspace', '--config', TRACKED_DEFAULT_CONFIG,
+  ]);
+  assert.equal(options.output, path.resolve('/workspace/.gitnexus/lsp-lbug'));
+});
+
+test('loads the SootUp experiment and isolates its default output', () => {
+  const config = loadRunConfig(SOOTUP_EXPERIMENT_CONFIG);
+  assert.equal(config.schemaVersion, 2);
+  assert.deepEqual(config.artifacts, {
+    analyzer: 'sootup', projection: 'compact', externalBodies: 'none', concurrency: 4,
+    maxClasses: undefined, fetchSources: true, classpathManifests: [],
+  });
+  assert.deepEqual(config.configuration.sources, ['spring', 'kubernetes', 'helm']);
+  const options = parseLspKnowledgeGraphBuildOptions([
+    'build-index', '/workspace', '--config', SOOTUP_EXPERIMENT_CONFIG,
+  ]);
+  assert.equal(options.output, path.resolve('/workspace/.gitnexus/experiments/sootup/lsp-lbug'));
+  assert.equal(options.checkpointDirectory, `${options.output}.checkpoints`);
+  assert.throws(() => parseLspKnowledgeGraphBuildOptions([
+    'build-index', '/workspace', '--config', SOOTUP_EXPERIMENT_CONFIG,
+    '--output', '/workspace/.gitnexus/lsp-lbug',
+  ]), /cannot publish to the production ASM database path/);
+});
+
+test('uses compact ASM for unconfigured CLI runs and publishes to the normal database', () => {
+  const options = parseLspKnowledgeGraphBuildOptions(['build-index', '/workspace']);
+  assert.equal(options.artifactAnalyzer, 'asm');
+  assert.equal(options.artifactProjection, 'compact');
+  assert.equal(options.output, path.resolve('/workspace/.gitnexus/lsp-lbug'));
+});
+
+test('keeps the explicit ASM legacy configuration as an operational fallback', () => {
+  const config = loadRunConfig(ASM_LEGACY_CONFIG);
+  assert.equal(config.artifacts.analyzer, 'asm');
+  assert.equal(config.artifacts.projection, 'legacy');
+  const options = parseLspKnowledgeGraphBuildOptions([
+    'build-index', '/workspace', '--config', ASM_LEGACY_CONFIG,
+  ]);
+  assert.equal(options.output, path.resolve('/workspace/.gitnexus/lsp-lbug'));
 });
 
 test('loads every explicit version-1 config field', () => {
@@ -113,11 +157,15 @@ test('loads every explicit version-1 config field', () => {
     profile: 'core', javaSemantics: 'batch', concurrency: 2, jdtProcesses: 1, resume: false,
   });
   assert.deepEqual(config.artifacts, {
+    analyzer: 'asm',
+    projection: 'legacy',
+    externalBodies: 'none',
     concurrency: 5,
     maxClasses: 1200,
     fetchSources: false,
     classpathManifests: ['/opt/shared/compile.json', path.join(directory, 'manifests/runtime.json')],
   });
+  assert.deepEqual(config.configuration, { sources: [], activeProfiles: [], helmValuesFiles: [] });
   assert.deepEqual(config.quality, { failOnFailedBuildRoot: false });
   assert.deepEqual(config.checkpoints, { directory: path.join(directory, 'checkpoints') });
 });
@@ -140,11 +188,15 @@ test('applies every omitted-field default', () => {
     profile: 'exhaustive', javaSemantics: 'batch', concurrency: 4, jdtProcesses: 1, resume: true,
   });
   assert.deepEqual(config.artifacts, {
+    analyzer: 'asm',
+    projection: 'legacy',
+    externalBodies: 'none',
     concurrency: 4,
     maxClasses: undefined,
     fetchSources: true,
     classpathManifests: [],
   });
+  assert.deepEqual(config.configuration, { sources: [], activeProfiles: [], helmValuesFiles: [] });
   assert.deepEqual(config.quality, { failOnFailedBuildRoot: true });
   assert.deepEqual(config.checkpoints, { directory: undefined });
 });
@@ -251,9 +303,15 @@ test('each semantic field changes the semantic hash', () => {
     ['scope.excludeTags', (value) => { value.bazel.scope.excludeTags = []; }],
     ['crawl.profile', (value) => { value.crawl.profile = 'exhaustive'; }],
     ['crawl.javaSemantics', (value) => { value.crawl.javaSemantics = 'lsp'; }],
+    ['artifacts.analyzer', (value) => { value.artifacts.analyzer = 'sootup'; }],
+    ['artifacts.projection', (value) => { value.artifacts.analyzer = 'sootup'; value.artifacts.projection = 'compact'; }],
+    ['artifacts.externalBodies', (value) => { value.artifacts.externalBodies = 'all'; }],
     ['artifacts.maxClasses', (value) => { value.artifacts.maxClasses = 1; }],
     ['artifacts.fetchSources', (value) => { value.artifacts.fetchSources = true; }],
     ['artifacts.classpathManifests', (value) => { value.artifacts.classpathManifests = []; }],
+    ['configuration.sources', (value) => { value.configuration = { sources: ['spring'] }; }],
+    ['configuration.activeProfiles', (value) => { value.configuration = { activeProfiles: ['prod'] }; }],
+    ['configuration.helmValuesFiles', (value) => { value.configuration = { helmValuesFiles: ['values-prod.yaml'] }; }],
   ];
   for (const [field, change] of changes) {
     const value = completeConfig();
@@ -262,8 +320,11 @@ test('each semantic field changes the semantic hash', () => {
   }
 });
 
-test('rejects unsupported schema, missing required objects, and malformed JSON', () => {
-  assert.throws(() => loadRunConfig(configFile({ ...minimalConfig(), schemaVersion: 2 })), /schemaVersion/);
+test('accepts experiment schema and rejects unsupported schema, missing required objects, and malformed JSON', () => {
+  const version2 = loadRunConfig(configFile({ ...minimalConfig(), schemaVersion: 2 }));
+  assert.equal(version2.schemaVersion, 2);
+  assert.equal(version2.artifacts.projection, 'compact');
+  assert.throws(() => loadRunConfig(configFile({ ...minimalConfig(), schemaVersion: 3 })), /schemaVersion/);
   assert.throws(() => loadRunConfig(configFile({ schemaVersion: 1 })), /config\.bazel must be an object/);
   assert.throws(() => loadRunConfig(configFile({ schemaVersion: 1, bazel: {} })), /config\.bazel\.scope must be an object/);
   const malformed = configFile();
@@ -279,6 +340,8 @@ test('rejects invalid name, enums, booleans, regexes, and paths', () => {
     ['profile', (value) => { value.crawl.profile = 'fast'; }, /config\.crawl\.profile must be one of/],
     ['resume', (value) => { value.crawl.resume = 'yes'; }, /config\.crawl\.resume must be boolean/],
     ['fetchSources', (value) => { value.artifacts.fetchSources = 1; }, /config\.artifacts\.fetchSources must be boolean/],
+    ['analyzer', (value) => { value.artifacts.analyzer = 'bytecode'; }, /config\.artifacts\.analyzer must be one of/],
+    ['projection', (value) => { value.artifacts.projection = 'dense'; }, /config\.artifacts\.projection must be one of/],
     ['failOnFailedBuildRoot', (value) => { value.quality.failOnFailedBuildRoot = null; }, /config\.quality\.failOnFailedBuildRoot must be boolean/],
     ['target regex', (value) => { value.bazel.scope.excludeTargetNamePatterns = ['[']; }, /Invalid target-name regex/],
     ['checkpoint directory', (value) => { value.checkpoints.directory = ''; }, /config\.checkpoints\.directory must be a non-empty string/],
@@ -356,6 +419,7 @@ test('rejects unknown keys at every object level', () => {
     ['preparation', (value) => { value.bazel.preparation.unexpected = true; }, /config\.bazel\.preparation contains unknown keys/],
     ['crawl', (value) => { value.crawl.unexpected = true; }, /config\.crawl contains unknown keys/],
     ['artifacts', (value) => { value.artifacts.unexpected = true; }, /config\.artifacts contains unknown keys/],
+    ['configuration', (value) => { value.configuration = { unexpected: true }; }, /config\.configuration contains unknown keys/],
     ['quality', (value) => { value.quality.unexpected = true; }, /config\.quality contains unknown keys/],
     ['checkpoints', (value) => { value.checkpoints.unexpected = true; }, /config\.checkpoints contains unknown keys/],
   ];
@@ -394,6 +458,10 @@ test('maps every config field used by the build command', () => {
   assert.equal(options.artifactMaxClasses, config.artifacts.maxClasses);
   assert.equal(options.fetchArtifactSources, config.artifacts.fetchSources);
   assert.deepEqual(options.artifactManifestPaths, config.artifacts.classpathManifests);
+  assert.equal(options.artifactAnalyzer, config.artifacts.analyzer);
+  assert.equal(options.artifactProjection, config.artifacts.projection);
+  assert.equal(options.artifactExternalBodies, config.artifacts.externalBodies);
+  assert.deepEqual(options.configurationSources, config.configuration.sources);
   assert.equal(options.checkpointDirectory, config.checkpoints.directory);
   assert.equal(options.failOnFailedBuildRoot, config.quality.failOnFailedBuildRoot);
 });
