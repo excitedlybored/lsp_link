@@ -9,7 +9,7 @@ from typing import Any
 import ladybug
 
 
-DEFAULT_LBUG_BUFFER_POOL_MIB = 4_096
+DEFAULT_LBUG_BUFFER_POOL_MIB = 12_288
 
 
 def open_read_only_lbug_database(database_path: str | Path) -> ladybug.Database:
@@ -18,7 +18,7 @@ def open_read_only_lbug_database(database_path: str | Path) -> ladybug.Database:
     Ladybug's implicit reader pool is intentionally small.  That is suitable
     for interactive metadata queries, but not for an extractor joining a large
     compact JVM call graph.  Keep the published database read-only while using
-    the indexer's four-GiB default; an operator may lower or raise it for the
+    the indexer's twelve-GiB default; an operator may lower or raise it for the
     host through ``GITNEXUS_LBUG_BUFFER_POOL_MB``.
     """
 
